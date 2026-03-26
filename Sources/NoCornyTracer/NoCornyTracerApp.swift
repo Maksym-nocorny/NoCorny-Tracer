@@ -42,11 +42,8 @@ struct NoCornyTracerApp: App {
             img.isTemplate = true
             return img
         }
-        // Use a custom bundle locator to avoid SPM's auto-generated Bundle.module which crashes when packed in .app
-        let bundleName = "NoCornyTracer_NoCornyTracer"
-        let bundleURL = Bundle.main.url(forResource: bundleName, withExtension: "bundle") ??
-                        Bundle.main.bundleURL.appendingPathComponent("\(bundleName).bundle")
-        let appBundle = Bundle(url: bundleURL) ?? Bundle.main
+        
+        let appBundle = Bundle.appResources
         
         if let resourceURL = appBundle.url(forResource: "menubar_icon", withExtension: "png", subdirectory: "Resources") ??
                              appBundle.url(forResource: "menubar_icon", withExtension: "png"),

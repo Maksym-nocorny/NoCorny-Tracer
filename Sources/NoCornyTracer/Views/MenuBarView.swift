@@ -70,9 +70,18 @@ struct MenuBarView: View {
         HStack {
             // App branding
             HStack(spacing: 6) {
-                Image(systemName: "record.circle.fill")
-                    .font(.system(size: 16))
-                    .foregroundStyle(.red.gradient)
+                if let resourceURL = Bundle.appResources.url(forResource: "in_app_icon", withExtension: "png", subdirectory: "Resources") ??
+                                     Bundle.appResources.url(forResource: "in_app_icon", withExtension: "png"),
+                   let nsImage = NSImage(contentsOf: resourceURL) {
+                    Image(nsImage: nsImage)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: 18, height: 18)
+                } else {
+                    Image(systemName: "record.circle.fill")
+                        .font(.system(size: 16))
+                        .foregroundStyle(.red.gradient)
+                }
 
                 Text("NoCorny Tracer")
                     .font(.system(size: 15, weight: .bold))

@@ -114,5 +114,16 @@
         length="3011120"
         type="application/octet-stream"/>
     </item>
+      <item>
+      <title>Version 1.4.1</title>
+      <pubDate>Thu, 26 Mar 2026 05:38:13 +0000</pubDate>
+      <sparkle:version>1.4.1</sparkle:version>
+      <sparkle:shortVersionString>1.4.1</sparkle:shortVersionString>
+      <enclosure
+        url="https://github.com/Maksym-nocorny/NoCorny-Tracer/releases/download/v1.4.1/NoCorny Tracer-1.4.1.dmg"
+        sparkle:edSignature="m3ChKSCJCPXYqHvVbecG+rRAfWiO36moXc1Z1bLk1TdFjsLQrdUmXjxufwb32qsR/Gz0EcFXFi+eN8J95HhqBw=="
+        length="3015675"
+        type="application/octet-stream"/>
+    </item>
   </channel>
 </rss>

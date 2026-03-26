@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.4.1] - 2026-03-26
+### Added
+- **Custom Branding**: Replaced the system recording icon in the app header with a new custom branded icon.
+
 ## [1.4.0] - 2026-03-26
 ### Changed
 - **Branding**: Renamed the application from "NoCornyTracer" to "NoCorny Tracer" (added a space) for better readability across the OS.
