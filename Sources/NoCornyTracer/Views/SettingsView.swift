@@ -219,7 +219,7 @@ struct SettingsView: View {
             Label("About", systemImage: "info.circle")
                 .font(.system(size: 13, weight: .semibold))
 
-            Text("NoCornyTracer v1.3.2")
+            Text("NoCornyTracer v1.3.3")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
 

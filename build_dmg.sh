@@ -4,7 +4,7 @@ set -e
 # === Configuration ===
 APP_NAME="NoCornyTracer"
 BUNDLE_ID="com.nocornytracer.app"
-VERSION="1.3.2"
+VERSION="1.3.3"
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD_DIR="$PROJECT_DIR/.build/release"
 APP_BUNDLE="$PROJECT_DIR/dist/$APP_NAME.app"
@@ -109,8 +109,8 @@ else
     if [ -d "$APP_BUNDLE/Contents/Frameworks/SparkleCore.framework" ]; then
         codesign --force --sign - "$APP_BUNDLE/Contents/Frameworks/SparkleCore.framework"
     fi
-    codesign --force --sign - --entitlements "$ENTITLEMENTS" "$APP_BUNDLE"
-    echo "✅ Code signed (ad-hoc) with entitlements"
+    codesign --force --sign - --requirements "=designated => identifier \"$BUNDLE_ID\"" --entitlements "$ENTITLEMENTS" "$APP_BUNDLE"
+    echo "✅ Code signed (ad-hoc) with a stable designated requirement"
 fi
 
 # === Step 4: Create DMG with drag-to-Applications ===

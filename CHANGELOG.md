@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.3.2] - 2026-03-26 (Current)
+## [1.3.3] - 2026-03-26 (Current)
 
 ### Fixed
 - **Fatal Error on Launch**: Resolved a critical issue where the app would crash when loaded from a `.app` bundle due to the resource bundle not being found. Fixed by implementing a robust custom bundle locator in `NoCornyTracerApp.swift` that correctly targets the `Contents/Resources` directory.
