@@ -77,6 +77,8 @@ struct MenuBarView: View {
                         .resizable()
                         .aspectRatio(contentMode: .fit)
                         .frame(width: 18, height: 18)
+                        .background(Color.white)
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
                 } else {
                     Image(systemName: "record.circle.fill")
                         .font(.system(size: 16))

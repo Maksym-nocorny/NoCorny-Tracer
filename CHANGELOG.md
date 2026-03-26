@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.4.6] - 2026-03-26
+### Fixed
+- **In-App Icon Visibility**: Re-added the white background to the custom in-app header icon to ensure the 'N' is readable in transparent areas on dark mode.
+
 ## [1.4.5] - 2026-03-26
 ### Fixed
 - **Icon Visibility**: Swapped the light and dark tray icon logic so white icons correctly display on dark menu bars, and black icons display on light menu bars.
