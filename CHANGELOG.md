@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.4.0] - 2026-03-26
+### Changed
+- **Branding**: Renamed the application from "NoCornyTracer" to "NoCorny Tracer" (added a space) for better readability across the OS.
+
 ## [1.3.9] - 2026-03-26
 ### Added
 - **New Visual Identity**: Completely redesigned application and tray icons for a more modern, cohesive look.

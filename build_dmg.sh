@@ -2,7 +2,8 @@
 set -e
 
 # === Configuration ===
-APP_NAME="NoCornyTracer"
+APP_NAME="NoCorny Tracer"
+BINARY_NAME="NoCornyTracer"
 BUNDLE_ID="com.nocornytracer.app"
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$PROJECT_DIR/Sources/NoCornyTracer/Info.plist")
@@ -27,7 +28,7 @@ mkdir -p "$APP_BUNDLE/Contents/MacOS"
 mkdir -p "$APP_BUNDLE/Contents/Resources"
 
 # Copy the binary
-cp "$BUILD_DIR/$APP_NAME" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
+cp "$BUILD_DIR/$BINARY_NAME" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 
 # Copy the SPM resource bundle to Contents/Resources and symlink from Contents/MacOS/
 # SPM's auto-generated Bundle.module accessor looks in Bundle.main.bundleURL which
