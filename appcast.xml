@@ -4,5 +4,16 @@
     <title>BetterLoom Updates</title>
     <language>en</language>
     <!-- Add new versions at the top -->
+      <item>
+      <title>Version 1.3.1</title>
+      <pubDate>Thu, 26 Mar 2026 02:54:13 +0000</pubDate>
+      <sparkle:version>1.3.1</sparkle:version>
+      <sparkle:shortVersionString>1.3.1</sparkle:shortVersionString>
+      <enclosure
+        url="https://github.com/Maksym-nocorny/NoCorny-Tracer/releases/download/v1.3.1/BetterLoom-1.3.1.dmg"
+        sparkle:edSignature="6T83flMn9VEt/xKdv8iR3mUqquVhcvKjAUqh9awMjJwabmaGSoTYZl5IQyitykXi9N/BW00ByDikDhcUszYQBg=="
+        length="1492341"
+        type="application/octet-stream"/>
+    </item>
   </channel>
 </rss>

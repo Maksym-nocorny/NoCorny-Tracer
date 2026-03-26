@@ -31,5 +31,7 @@
     </array>
     <key>SUFeedURL</key>
     <string>https://raw.githubusercontent.com/Maksym-nocorny/NoCorny-Tracer/main/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>/rTgsbxP0R+H+r4jls5rHpV5S2JltlI5k1hlIKJ0NSg=</string>
 </dict>
 </plist>
