@@ -4,7 +4,7 @@ set -e
 # === Configuration ===
 APP_NAME="NoCornyTracer"
 BUNDLE_ID="com.nocornytracer.app"
-VERSION="1.3.3"
+VERSION="1.3.4"
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD_DIR="$PROJECT_DIR/.build/release"
 APP_BUNDLE="$PROJECT_DIR/dist/$APP_NAME.app"

@@ -1,7 +1,7 @@
 import SwiftUI
 import Sparkle
 
-/// NoCornyTracer — A macOS menu bar screen recording app
+/// NoCorny Tracer — A macOS menu bar screen recording app
 @main
 struct NoCornyTracerApp: App {
     @State private var appState = AppState()
@@ -55,7 +55,7 @@ struct NoCornyTracerApp: App {
             image.size = NSSize(width: 18, height: 18)
             return image
         }
-        let fallback = NSImage(systemSymbolName: "record.circle", accessibilityDescription: "NoCornyTracer")!
+        let fallback = NSImage(systemSymbolName: "record.circle", accessibilityDescription: "NoCorny Tracer")!
         fallback.isTemplate = true
         return fallback
     }

@@ -202,7 +202,7 @@ struct SettingsView: View {
             Label("General", systemImage: "gear")
                 .font(.system(size: 13, weight: .semibold))
 
-            Toggle("Start NoCornyTracer on System Startup", isOn: $appState.launchAtLogin)
+            Toggle("Start NoCorny Tracer on System Startup", isOn: $appState.launchAtLogin)
                 .controlSize(.small)
                 .font(.system(size: 12))
                 .onChange(of: appState.launchAtLogin) {
@@ -219,7 +219,7 @@ struct SettingsView: View {
             Label("About", systemImage: "info.circle")
                 .font(.system(size: 13, weight: .semibold))
 
-            Text("NoCornyTracer v1.3.3")
+            Text("NoCorny Tracer v1.3.4")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
 

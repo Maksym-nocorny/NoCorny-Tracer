@@ -29,7 +29,7 @@ struct MenuBarView: View {
                 appState.launchAtLogin = false
             }
         } message: {
-            Text("Would you like NoCornyTracer to start automatically when you log in to your Mac?")
+            Text("Would you like NoCorny Tracer to start automatically when you log in to your Mac?")
         }
     }
 
@@ -74,7 +74,7 @@ struct MenuBarView: View {
                     .font(.system(size: 16))
                     .foregroundStyle(.red.gradient)
 
-                Text("NoCornyTracer")
+                Text("NoCorny Tracer")
                     .font(.system(size: 15, weight: .bold))
             }
 
