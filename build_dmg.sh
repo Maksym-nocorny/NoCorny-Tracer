@@ -10,7 +10,7 @@ VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$PROJE
 BUILD_DIR="$PROJECT_DIR/.build/release"
 APP_BUNDLE="$PROJECT_DIR/dist/$APP_NAME.app"
 DMG_DIR="$PROJECT_DIR/dist"
-DMG_NAME="$APP_NAME-$VERSION"
+DMG_NAME="NoCornyTracer-$VERSION"
 DMG_PATH="$DMG_DIR/$DMG_NAME.dmg"
 
 echo "🔨 Building $APP_NAME v$VERSION..."

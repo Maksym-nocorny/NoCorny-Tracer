@@ -16,7 +16,7 @@ APPCAST="$PROJECT_DIR/appcast.xml"
 
 # Read version from Info.plist
 VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$PROJECT_DIR/Sources/NoCornyTracer/Info.plist")
-DMG_NAME="NoCorny Tracer-$VERSION"
+DMG_NAME="NoCornyTracer-$VERSION"
 DMG_PATH="$PROJECT_DIR/dist/$DMG_NAME.dmg"
 GITHUB_REPO="Maksym-nocorny/NoCorny-Tracer"
 
@@ -65,8 +65,7 @@ fi
 echo ""
 echo "📝 Updating appcast.xml..."
 
-ENCODED_DMG_NAME=$(echo "$DMG_NAME" | sed 's/ /%20/g')
-DOWNLOAD_URL="https://github.com/$GITHUB_REPO/releases/download/v$VERSION/$ENCODED_DMG_NAME.dmg"
+DOWNLOAD_URL="https://github.com/$GITHUB_REPO/releases/download/v$VERSION/$DMG_NAME.dmg"
 PUB_DATE=$(date -u '+%a, %d %b %Y %H:%M:%S %z')
 
 # Insert new item before the closing </channel> tag
