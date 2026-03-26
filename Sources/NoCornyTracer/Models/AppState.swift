@@ -129,6 +129,9 @@ final class AppState {
     // MARK: - Recording Lifecycle
 
     func startRecording() async throws {
+        // Wait 0.5 seconds to allow UI/popovers to completely hide before recording starts
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        
         try await recordingManager.startRecording(
             microphoneEnabled: isMicrophoneEnabled,
             microphoneDeviceID: selectedMicrophoneID,

@@ -102,9 +102,9 @@ struct RecordingControlsView: View {
             .padding(.horizontal)
         } else {
             Button {
+                dismiss()
                 Task {
                     try? await appState.startRecording()
-                    dismiss()
                 }
             } label: {
                 HStack(spacing: 10) {
