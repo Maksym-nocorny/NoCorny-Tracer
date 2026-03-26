@@ -40,6 +40,18 @@ fi
 # Copy Info.plist
 cp "$PROJECT_DIR/Sources/BetterLoom/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
 
+# Embed Frameworks (Sparkle)
+echo "📦 Embedding Frameworks..."
+mkdir -p "$APP_BUNDLE/Contents/Frameworks"
+if [ -d "$BUILD_DIR/Sparkle.framework" ]; then
+    cp -R "$BUILD_DIR/Sparkle.framework" "$APP_BUNDLE/Contents/Frameworks/"
+    if [ -d "$BUILD_DIR/SparkleCore.framework" ]; then
+        cp -R "$BUILD_DIR/SparkleCore.framework" "$APP_BUNDLE/Contents/Frameworks/"
+    fi
+    # Add rpath so the executable can find the frameworks
+    install_name_tool -add_rpath @executable_path/../Frameworks "$APP_BUNDLE/Contents/MacOS/$APP_NAME" 2>/dev/null || true
+fi
+
 # Add CFBundleExecutable and CFBundleIconFile to Info.plist
 /usr/libexec/PlistBuddy -c "Add :CFBundleExecutable string $APP_NAME" "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null || \
 /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable $APP_NAME" "$APP_BUNDLE/Contents/Info.plist"
@@ -77,12 +89,26 @@ SIGN_IDENTITY="BetterLoom Dev"
 
 # Check if the signing identity exists
 if security find-identity -p codesigning | grep -q "$SIGN_IDENTITY"; then
+    if [ -d "$APP_BUNDLE/Contents/Frameworks/Sparkle.framework" ]; then
+        codesign --force --sign "$SIGN_IDENTITY" "$APP_BUNDLE/Contents/Frameworks/Sparkle.framework/Versions/B/Autoupdate" 2>/dev/null || true
+        codesign --force --sign "$SIGN_IDENTITY" "$APP_BUNDLE/Contents/Frameworks/Sparkle.framework/Versions/B/Updater.app" 2>/dev/null || true
+        codesign --force --sign "$SIGN_IDENTITY" "$APP_BUNDLE/Contents/Frameworks/Sparkle.framework"
+    fi
+    if [ -d "$APP_BUNDLE/Contents/Frameworks/SparkleCore.framework" ]; then
+        codesign --force --sign "$SIGN_IDENTITY" "$APP_BUNDLE/Contents/Frameworks/SparkleCore.framework"
+    fi
     codesign --force --sign "$SIGN_IDENTITY" --entitlements "$ENTITLEMENTS" "$APP_BUNDLE"
     echo "✅ Code signed with '$SIGN_IDENTITY' certificate"
 else
     echo "⚠️  '$SIGN_IDENTITY' certificate not found, falling back to ad-hoc signing"
-    echo "   Run: openssl req -x509 -newkey rsa:2048 -keyout /tmp/bl_key.pem -out /tmp/bl_cert.pem -days 3650 -nodes -subj '/CN=BetterLoom Dev'"
-    echo "   Then: security import (convert to .p12 first) to add to keychain"
+    if [ -d "$APP_BUNDLE/Contents/Frameworks/Sparkle.framework" ]; then
+        codesign --force --sign - "$APP_BUNDLE/Contents/Frameworks/Sparkle.framework/Versions/B/Autoupdate" 2>/dev/null || true
+        codesign --force --sign - "$APP_BUNDLE/Contents/Frameworks/Sparkle.framework/Versions/B/Updater.app" 2>/dev/null || true
+        codesign --force --sign - "$APP_BUNDLE/Contents/Frameworks/Sparkle.framework"
+    fi
+    if [ -d "$APP_BUNDLE/Contents/Frameworks/SparkleCore.framework" ]; then
+        codesign --force --sign - "$APP_BUNDLE/Contents/Frameworks/SparkleCore.framework"
+    fi
     codesign --force --sign - --entitlements "$ENTITLEMENTS" "$APP_BUNDLE"
     echo "✅ Code signed (ad-hoc) with entitlements"
 fi
