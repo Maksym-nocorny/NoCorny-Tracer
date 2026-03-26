@@ -9,9 +9,15 @@ mkdir -p "$APP_ICON_DIR"
 mkdir -p "$MENU_ICON_DIR"
 
 # Ensure we have the logos
-LOGO="app logo.png"
+LOGO="new NoCorny Tracer Ico.png"
 if [ ! -f "$LOGO" ]; then
     echo "Logo not found!"
+    exit 1
+fi
+
+TRAY_LOGO="new tray ico.png"
+if [ ! -f "$TRAY_LOGO" ]; then
+    echo "Tray Logo not found!"
     exit 1
 fi
 
@@ -46,9 +52,9 @@ JSON
 
 # Menu bar icons
 echo "Processing Menu Bar Icons..."
-cp "menubar icons/Frame.png" "$MENU_ICON_DIR/icon_16.png"
-cp "menubar icons/Frame-1.png" "$MENU_ICON_DIR/icon_32.png"
-cp "menubar icons/Frame-2.png" "$MENU_ICON_DIR/icon_48.png"
+sips -z 16 16 "$TRAY_LOGO" --out "$MENU_ICON_DIR/icon_16.png" > /dev/null
+sips -z 32 32 "$TRAY_LOGO" --out "$MENU_ICON_DIR/icon_32.png" > /dev/null
+sips -z 48 48 "$TRAY_LOGO" --out "$MENU_ICON_DIR/icon_48.png" > /dev/null
 
 # Important: "template-rendering-intent": "template" tells macOS to recolor it for dark/light mode
 cat << 'JSON' > "$MENU_ICON_DIR/Contents.json"
