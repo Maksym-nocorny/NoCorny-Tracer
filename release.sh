@@ -65,7 +65,8 @@ fi
 echo ""
 echo "📝 Updating appcast.xml..."
 
-DOWNLOAD_URL="https://github.com/$GITHUB_REPO/releases/download/v$VERSION/$DMG_NAME.dmg"
+ENCODED_DMG_NAME=$(echo "$DMG_NAME" | sed 's/ /%20/g')
+DOWNLOAD_URL="https://github.com/$GITHUB_REPO/releases/download/v$VERSION/$ENCODED_DMG_NAME.dmg"
 PUB_DATE=$(date -u '+%a, %d %b %Y %H:%M:%S %z')
 
 # Insert new item before the closing </channel> tag

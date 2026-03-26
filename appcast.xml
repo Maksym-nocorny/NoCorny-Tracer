@@ -109,7 +109,7 @@
       <sparkle:version>1.4.0</sparkle:version>
       <sparkle:shortVersionString>1.4.0</sparkle:shortVersionString>
       <enclosure
-        url="https://github.com/Maksym-nocorny/NoCorny-Tracer/releases/download/v1.4.0/NoCorny Tracer-1.4.0.dmg"
+        url="https://github.com/Maksym-nocorny/NoCorny-Tracer/releases/download/v1.4.0/NoCorny%20Tracer-1.4.0.dmg"
         sparkle:edSignature="eWgUiYbFqltwVgzOYz1tw0I0+n3vY0oft9G7pDp+7iaoBtkh788rQOtZCOATrF5IjA1PqImZl7O9yJV+lFfQAg=="
         length="3011120"
         type="application/octet-stream"/>
@@ -120,9 +120,20 @@
       <sparkle:version>1.4.1</sparkle:version>
       <sparkle:shortVersionString>1.4.1</sparkle:shortVersionString>
       <enclosure
-        url="https://github.com/Maksym-nocorny/NoCorny-Tracer/releases/download/v1.4.1/NoCorny Tracer-1.4.1.dmg"
+        url="https://github.com/Maksym-nocorny/NoCorny-Tracer/releases/download/v1.4.1/NoCorny%20Tracer-1.4.1.dmg"
         sparkle:edSignature="m3ChKSCJCPXYqHvVbecG+rRAfWiO36moXc1Z1bLk1TdFjsLQrdUmXjxufwb32qsR/Gz0EcFXFi+eN8J95HhqBw=="
         length="3015675"
+        type="application/octet-stream"/>
+    </item>
+      <item>
+      <title>Version 1.4.2</title>
+      <pubDate>Thu, 26 Mar 2026 05:40:13 +0000</pubDate>
+      <sparkle:version>1.4.2</sparkle:version>
+      <sparkle:shortVersionString>1.4.2</sparkle:shortVersionString>
+      <enclosure
+        url="https://github.com/Maksym-nocorny/NoCorny-Tracer/releases/download/v1.4.2/NoCorny%20Tracer-1.4.2.dmg"
+        sparkle:edSignature="rV48BOU6+1mhmb3hbAOLzsdYcimxgU/fuOXrfOQ0E4/QsKPfGgD4Azg6ck2s4ElaJhuPyfDJ8ZYwfneWd3VRDA=="
+        length="3015814"
         type="application/octet-stream"/>
     </item>
   </channel>

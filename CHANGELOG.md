@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.4.2] - 2026-03-26
+### Fixed
+- **Updater Failure**: Fixed an "Update Error" in Sparkle caused by unencoded spaces in the download URLs.
+
 ## [1.4.1] - 2026-03-26
 ### Added
 - **Custom Branding**: Replaced the system recording icon in the app header with a new custom branded icon.
