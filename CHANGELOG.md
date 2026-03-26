@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.4.4] - 2026-03-26
+### Added
+- **Dynamic Tray Icons**: Menu bar icon now accurately reflects your chosen aesthetic depending on whether your macOS theme is light or dark, and whether you are actively recording.
+
 ## [1.4.3] - 2026-03-26
 ### Fixed
 - **Updater Stability**: Final fix for the Sparkle "Update Error" by unifying DMG filenames to a no-space format while preserving the "NoCorny Tracer" display name.

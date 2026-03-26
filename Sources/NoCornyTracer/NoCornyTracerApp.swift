@@ -6,6 +6,7 @@ import Sparkle
 struct NoCornyTracerApp: App {
     @State private var appState = AppState()
     @State private var cameraWindowManager = CameraWindowManager()
+    @Environment(\.colorScheme) var colorScheme
     
     // Sparkle auto-updater
     private let updaterController: SPUStandardUpdaterController
@@ -35,24 +36,30 @@ struct NoCornyTracerApp: App {
         }
     }
 
-    /// Returns the appropriate menu bar icon based on recording state
+    /// Returns the appropriate menu bar icon based on recording state and system theme
     private var currentMenuBarIcon: NSImage {
-        if appState.recordingManager.isRecording {
-            let img = NSImage(systemSymbolName: "record.circle.fill", accessibilityDescription: "Recording")!
-            img.isTemplate = true
-            return img
+        let isRecording = appState.recordingManager.isRecording
+        let isDark = colorScheme == .dark
+        
+        let imageName: String
+        if isRecording {
+            imageName = isDark ? "menubar_recording_dark" : "menubar_recording_light"
+        } else {
+            imageName = isDark ? "menubar_normal_dark" : "menubar_normal_light"
         }
         
         let appBundle = Bundle.appResources
         
-        if let resourceURL = appBundle.url(forResource: "menubar_icon", withExtension: "png", subdirectory: "Resources") ??
-                             appBundle.url(forResource: "menubar_icon", withExtension: "png"),
+        if let resourceURL = appBundle.url(forResource: imageName, withExtension: "png", subdirectory: "Resources") ??
+                             appBundle.url(forResource: imageName, withExtension: "png"),
            let image = NSImage(contentsOf: resourceURL) {
-            image.isTemplate = true
+            image.isTemplate = false
             image.size = NSSize(width: 18, height: 18)
             return image
         }
-        let fallback = NSImage(systemSymbolName: "record.circle", accessibilityDescription: "NoCorny Tracer")!
+        
+        // Fallback
+        let fallback = NSImage(systemSymbolName: isRecording ? "record.circle.fill" : "record.circle", accessibilityDescription: "NoCorny Tracer")!
         fallback.isTemplate = true
         return fallback
     }
