@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.9] - 2026-03-26
+### Changed
+- **UI/UX Polish**: Standardized section padding across the app for a more consistent visual rhythm.
+- **Improved Readability**: Increased footer font size to 11pt and improved the visibility of the empty recordings state.
+- **Settings Alignment**: Corrected the indentation of recording settings rows for better alignment with icons.
+- **Branding**: Shortened the launch-at-login toggle label for a cleaner settings interface.
+
+
 ## [1.4.8] - 2026-03-26
 ### Fixed
 - **Tray Icon State**: Fixed a race condition where the tray icon would fail to update to the "active recording" state on the first try after a video format change. State mutations are now guaranteed to occur on the main thread for reliable UI updates.
