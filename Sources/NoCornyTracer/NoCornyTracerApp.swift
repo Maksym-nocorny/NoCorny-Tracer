@@ -43,9 +43,9 @@ struct NoCornyTracerApp: App {
         
         let imageName: String
         if isRecording {
-            imageName = isDark ? "menubar_recording_dark" : "menubar_recording_light"
+            imageName = isDark ? "menubar_recording_light" : "menubar_recording_dark"
         } else {
-            imageName = isDark ? "menubar_normal_dark" : "menubar_normal_light"
+            imageName = isDark ? "menubar_normal_light" : "menubar_normal_dark"
         }
         
         let appBundle = Bundle.appResources

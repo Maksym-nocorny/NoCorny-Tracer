@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.4.5] - 2026-03-26
+### Fixed
+- **Icon Visibility**: Swapped the light and dark tray icon logic so white icons correctly display on dark menu bars, and black icons display on light menu bars.
+
 ## [1.4.4] - 2026-03-26
 ### Added
 - **Dynamic Tray Icons**: Menu bar icon now accurately reflects your chosen aesthetic depending on whether your macOS theme is light or dark, and whether you are actively recording.
