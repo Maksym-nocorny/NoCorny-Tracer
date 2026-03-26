@@ -1,0 +1,14 @@
+# BetterLoom
+
+## Build
+.build/
+.swiftpm/
+dist/
+*.dmg
+
+## Secrets (NEVER commit)
+Sources/BetterLoom/Secrets.swift
+
+## macOS
+.DS_Store
+*.xcuserdata
