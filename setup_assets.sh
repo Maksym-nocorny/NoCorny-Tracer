@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-ASSETS_DIR="Sources/BetterLoom/Assets.xcassets"
+ASSETS_DIR="Sources/NoCornyTracer/Assets.xcassets"
 APP_ICON_DIR="$ASSETS_DIR/AppIcon.appiconset"
 MENU_ICON_DIR="$ASSETS_DIR/MenuBarIcon.imageset"
 

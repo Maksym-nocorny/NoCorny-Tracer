@@ -153,7 +153,6 @@ struct SettingsView: View {
                     }
                     .pickerStyle(.menu)
                     .controlSize(.small)
-                    .frame(width: 140)
                 }
 
                 HStack {
@@ -167,7 +166,6 @@ struct SettingsView: View {
                     }
                     .pickerStyle(.menu)
                     .controlSize(.small)
-                    .frame(width: 140)
                 }
 
                 HStack {
@@ -204,7 +202,7 @@ struct SettingsView: View {
             Label("General", systemImage: "gear")
                 .font(.system(size: 13, weight: .semibold))
 
-            Toggle("Start BetterLoom on System Startup", isOn: $appState.launchAtLogin)
+            Toggle("Start NoCornyTracer on System Startup", isOn: $appState.launchAtLogin)
                 .controlSize(.small)
                 .font(.system(size: 12))
                 .onChange(of: appState.launchAtLogin) {
@@ -221,7 +219,7 @@ struct SettingsView: View {
             Label("About", systemImage: "info.circle")
                 .font(.system(size: 13, weight: .semibold))
 
-            Text("BetterLoom v1.3.1")
+            Text("NoCornyTracer v1.3.2")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
 

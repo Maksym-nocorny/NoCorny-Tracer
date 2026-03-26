@@ -24,7 +24,7 @@ final class VideoWriter {
     private var isWriting = false
 
     // MARK: - Thread Safety
-    private let writingQueue = DispatchQueue(label: "com.betterloom.videowriter", qos: .userInitiated)
+    private let writingQueue = DispatchQueue(label: "com.nocornytracer.videowriter", qos: .userInitiated)
 
     init(
         outputURL: URL,

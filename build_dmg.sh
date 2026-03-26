@@ -2,9 +2,9 @@
 set -e
 
 # === Configuration ===
-APP_NAME="BetterLoom"
-BUNDLE_ID="com.betterloom.app"
-VERSION="1.3.1"
+APP_NAME="NoCornyTracer"
+BUNDLE_ID="com.nocornytracer.app"
+VERSION="1.3.2"
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD_DIR="$PROJECT_DIR/.build/release"
 APP_BUNDLE="$PROJECT_DIR/dist/$APP_NAME.app"
@@ -32,13 +32,13 @@ cp "$BUILD_DIR/$APP_NAME" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 # Copy the SPM resource bundle to Contents/Resources and symlink from Contents/MacOS/
 # SPM's auto-generated Bundle.module accessor looks in Bundle.main.bundleURL which
 # resolves to Contents/MacOS/ for an executable. The symlink bridges the two locations.
-if [ -d "$BUILD_DIR/BetterLoom_BetterLoom.bundle" ]; then
-    cp -R "$BUILD_DIR/BetterLoom_BetterLoom.bundle" "$APP_BUNDLE/Contents/Resources/"
-    ln -s "../Resources/BetterLoom_BetterLoom.bundle" "$APP_BUNDLE/Contents/MacOS/BetterLoom_BetterLoom.bundle"
+if [ -d "$BUILD_DIR/NoCornyTracer_NoCornyTracer.bundle" ]; then
+    cp -R "$BUILD_DIR/NoCornyTracer_NoCornyTracer.bundle" "$APP_BUNDLE/Contents/Resources/"
+    ln -s "../Resources/NoCornyTracer_NoCornyTracer.bundle" "$APP_BUNDLE/Contents/MacOS/NoCornyTracer_NoCornyTracer.bundle"
 fi
 
 # Copy Info.plist
-cp "$PROJECT_DIR/Sources/BetterLoom/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
+cp "$PROJECT_DIR/Sources/NoCornyTracer/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
 
 # Embed Frameworks (Sparkle)
 echo "📦 Embedding Frameworks..."
@@ -84,8 +84,8 @@ fi
 
 # === Step 3: Code sign with self-signed certificate and entitlements ===
 echo "🔏 Code signing..."
-ENTITLEMENTS="$PROJECT_DIR/Sources/BetterLoom/BetterLoom.entitlements"
-SIGN_IDENTITY="BetterLoom Dev"
+ENTITLEMENTS="$PROJECT_DIR/Sources/NoCornyTracer/NoCornyTracer.entitlements"
+SIGN_IDENTITY="NoCornyTracer Dev"
 
 # Check if the signing identity exists
 if security find-identity -p codesigning | grep -q "$SIGN_IDENTITY"; then
@@ -144,4 +144,4 @@ echo "   📱 App:  $APP_BUNDLE"
 echo "   💿 DMG:  $DMG_PATH"
 echo "============================================"
 echo ""
-echo "To install: Open the DMG and drag BetterLoom to Applications"
+echo "To install: Open the DMG and drag NoCornyTracer to Applications"

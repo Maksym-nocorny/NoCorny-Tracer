@@ -40,7 +40,7 @@ final class RecordingManager {
         // Generate output file path
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
-        let fileName = "BetterLoom_\(formatter.string(from: Date())).mp4"
+        let fileName = "NoCornyTracer_\(formatter.string(from: Date())).mp4"
         let outputURL = AppState.recordingsDirectory.appendingPathComponent(fileName)
         currentFileURL = outputURL
 

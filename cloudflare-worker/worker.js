@@ -1,9 +1,9 @@
-// BetterLoom Gemini API Proxy Worker
+// NoCornyTracer Gemini API Proxy Worker
 // Deployed on Cloudflare Workers — holds the real Gemini API key
 //
 // Environment variables (set in Cloudflare dashboard):
 //   GEMINI_API_KEY  — your Google Gemini API key
-//   APP_SECRET      — shared secret with the BetterLoom app
+//   APP_SECRET      — shared secret with the NoCornyTracer app
 
 const GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
 const RATE_LIMIT_WINDOW = 60; // seconds

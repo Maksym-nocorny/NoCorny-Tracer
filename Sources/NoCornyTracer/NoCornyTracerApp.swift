@@ -1,9 +1,9 @@
 import SwiftUI
 import Sparkle
 
-/// BetterLoom — A macOS menu bar screen recording app
+/// NoCornyTracer — A macOS menu bar screen recording app
 @main
-struct BetterLoomApp: App {
+struct NoCornyTracerApp: App {
     @State private var appState = AppState()
     @State private var cameraWindowManager = CameraWindowManager()
     
@@ -43,7 +43,7 @@ struct BetterLoomApp: App {
             return img
         }
         // Use a custom bundle locator to avoid SPM's auto-generated Bundle.module which crashes when packed in .app
-        let bundleName = "BetterLoom_BetterLoom"
+        let bundleName = "NoCornyTracer_NoCornyTracer"
         let bundleURL = Bundle.main.url(forResource: bundleName, withExtension: "bundle") ??
                         Bundle.main.bundleURL.appendingPathComponent("\(bundleName).bundle")
         let appBundle = Bundle(url: bundleURL) ?? Bundle.main
@@ -55,7 +55,7 @@ struct BetterLoomApp: App {
             image.size = NSSize(width: 18, height: 18)
             return image
         }
-        let fallback = NSImage(systemSymbolName: "record.circle", accessibilityDescription: "BetterLoom")!
+        let fallback = NSImage(systemSymbolName: "record.circle", accessibilityDescription: "NoCornyTracer")!
         fallback.isTemplate = true
         return fallback
     }

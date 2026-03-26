@@ -3,7 +3,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "BetterLoom",
+    name: "NoCornyTracer",
     platforms: [
         .macOS(.v14)
     ],
@@ -12,12 +12,12 @@ let package = Package(
     ],
     targets: [
         .executableTarget(
-            name: "BetterLoom",
+            name: "NoCornyTracer",
             dependencies: [
                 .product(name: "Sparkle", package: "Sparkle"),
             ],
-            path: "Sources/BetterLoom",
-            exclude: ["BetterLoom.entitlements", "Secrets.swift.template"],
+            path: "Sources/NoCornyTracer",
+            exclude: ["NoCornyTracer.entitlements", "Secrets.swift.template", "Info.plist"],
             resources: [
                 .process("Assets.xcassets"),
                 .copy("Resources")
@@ -27,7 +27,7 @@ let package = Package(
                     "-Xlinker", "-sectcreate",
                     "-Xlinker", "__TEXT",
                     "-Xlinker", "__info_plist",
-                    "-Xlinker", "Sources/BetterLoom/Info.plist"
+                    "-Xlinker", "Sources/NoCornyTracer/Info.plist"
                 ])
             ]
         ),

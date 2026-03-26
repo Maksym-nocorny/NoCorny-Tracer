@@ -2,6 +2,8 @@ import Foundation
 
 /// Available video recording resolutions
 enum VideoResolution: String, CaseIterable, Identifiable, Codable {
+    case sd480 = "480p"
+    case hd720 = "720p"
     case hd1080 = "1080p"
     case hd1440 = "1440p"
     case uhd4k = "4K"
@@ -10,6 +12,8 @@ enum VideoResolution: String, CaseIterable, Identifiable, Codable {
 
     var width: Int {
         switch self {
+        case .sd480: return 854
+        case .hd720: return 1280
         case .hd1080: return 1920
         case .hd1440: return 2560
         case .uhd4k: return 3840
@@ -18,6 +22,8 @@ enum VideoResolution: String, CaseIterable, Identifiable, Codable {
 
     var height: Int {
         switch self {
+        case .sd480: return 480
+        case .hd720: return 720
         case .hd1080: return 1080
         case .hd1440: return 1440
         case .uhd4k: return 2160
@@ -26,6 +32,8 @@ enum VideoResolution: String, CaseIterable, Identifiable, Codable {
 
     var displayName: String {
         switch self {
+        case .sd480: return "854 × 480"
+        case .hd720: return "1280 × 720"
         case .hd1080: return "1920 × 1080"
         case .hd1440: return "2560 × 1440"
         case .uhd4k: return "3840 × 2160"

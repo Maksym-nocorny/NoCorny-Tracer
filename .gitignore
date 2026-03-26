@@ -1,4 +1,4 @@
-# BetterLoom
+# NoCornyTracer
 
 ## Build
 .build/
@@ -7,7 +7,7 @@ dist/
 *.dmg
 
 ## Secrets (NEVER commit)
-Sources/BetterLoom/Secrets.swift
+Sources/NoCornyTracer/Secrets.swift
 
 ## macOS
 .DS_Store

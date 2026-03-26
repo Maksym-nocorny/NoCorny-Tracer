@@ -15,7 +15,7 @@ final class CameraWindowManager {
             for await _ in NotificationCenter.default.notifications(named: UserDefaults.didChangeNotification) {
                 // It's checked inside the AppState's didSet, but we can also poll here or bind.
                 // An easier way is just to manually update when AppState calls it, but SwiftUI
-                // can also just observe it. We'll use a direct approach in BetterLoomApp.
+                // can also just observe it. We'll use a direct approach in NoCornyTracerApp.
             }
         }
     }

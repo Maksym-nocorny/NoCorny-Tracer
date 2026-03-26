@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-# === BetterLoom Release Script ===
+# === NoCornyTracer Release Script ===
 # Builds the app, creates a DMG, signs it for Sparkle, and updates appcast.xml.
 #
 # Usage: ./release.sh
@@ -15,12 +15,12 @@ SIGN_UPDATE="$PROJECT_DIR/.build/artifacts/sparkle/Sparkle/bin/sign_update"
 APPCAST="$PROJECT_DIR/appcast.xml"
 
 # Read version from Info.plist
-VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$PROJECT_DIR/Sources/BetterLoom/Info.plist")
-DMG_NAME="BetterLoom-$VERSION"
+VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$PROJECT_DIR/Sources/NoCornyTracer/Info.plist")
+DMG_NAME="NoCornyTracer-$VERSION"
 DMG_PATH="$PROJECT_DIR/dist/$DMG_NAME.dmg"
 GITHUB_REPO="Maksym-nocorny/NoCorny-Tracer"
 
-echo "🚀 Release BetterLoom v$VERSION"
+echo "🚀 Release NoCornyTracer v$VERSION"
 echo ""
 
 # === Step 1: Build DMG ===

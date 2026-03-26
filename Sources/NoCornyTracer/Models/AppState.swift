@@ -158,7 +158,7 @@ final class AppState {
         Task { await self.processRecording(id: recordingID) }
     }
 
-    /// Cached Google Drive folder ID for "betterloom"
+    /// Cached Google Drive folder ID for "nocornytracer"
     private var driveFolderID: String?
 
     /// Background processing: upload → AI name → rename → subtitles → cleanup
@@ -179,7 +179,7 @@ final class AppState {
 
                 if driveFolderID == nil {
                     driveFolderID = try await driveUploadManager.findOrCreateFolder(
-                        name: "betterloom",
+                        name: "nocornytracer",
                         accessToken: token
                     )
                 }
@@ -289,7 +289,7 @@ final class AppState {
 
     static var recordingsDirectory: URL {
         let dir = FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("BetterLoom", isDirectory: true)
+            .appendingPathComponent("NoCornyTracer", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }
