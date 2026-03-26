@@ -50,6 +50,7 @@ final class ScreenRecorder: NSObject {
 
     // MARK: - Capture
 
+    @MainActor
     func startCapture(width: Int = 1920, height: Int = 1080, fps: Int = 30) async throws {
         guard let display = selectedDisplay else {
             throw ScreenRecorderError.noDisplaySelected
@@ -82,6 +83,7 @@ final class ScreenRecorder: NSObject {
         isCapturing = true
     }
 
+    @MainActor
     func stopCapture() async {
         guard let stream = stream else { return }
         do {

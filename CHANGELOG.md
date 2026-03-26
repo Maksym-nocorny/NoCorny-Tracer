@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.4.8] - 2026-03-26
+### Fixed
+- **Tray Icon State**: Fixed a race condition where the tray icon would fail to update to the "active recording" state on the first try after a video format change. State mutations are now guaranteed to occur on the main thread for reliable UI updates.
+
 ## [1.4.7] - 2026-03-26
 ### Changed
 - **UI Enhancements**: Increased the size of the custom in-app header icon and app title text for better visibility.

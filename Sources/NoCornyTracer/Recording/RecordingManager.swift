@@ -22,6 +22,7 @@ final class RecordingManager {
 
     // MARK: - Start Recording
 
+    @MainActor
     func startRecording(
         microphoneEnabled: Bool,
         microphoneDeviceID: String?,
@@ -86,6 +87,7 @@ final class RecordingManager {
 
     // MARK: - Stop Recording
 
+    @MainActor
     func stopRecording() async -> Recording? {
         guard isRecording else { return nil }
 
