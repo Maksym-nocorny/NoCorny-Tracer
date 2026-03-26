@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.7] - 2026-03-26
+### Changed
+- **UI Enhancements**: Increased the size of the custom in-app header icon and app title text for better visibility.
+- **Header Clean-up**: Removed the green connected indicator dot from the menu bar UI for a cleaner top bar.
+### Fixed
+- **Settings Version**: The About section in settings now displays the correct live version dynamically.
+
 ## [1.4.6] - 2026-03-26
 ### Fixed
 - **In-App Icon Visibility**: Re-added the white background to the custom in-app header icon to ensure the 'N' is readable in transparent areas on dark mode.

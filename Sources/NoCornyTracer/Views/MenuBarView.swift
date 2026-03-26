@@ -76,28 +76,22 @@ struct MenuBarView: View {
                     Image(nsImage: nsImage)
                         .resizable()
                         .aspectRatio(contentMode: .fit)
-                        .frame(width: 18, height: 18)
+                        .frame(width: 27, height: 27)
                         .background(Color.white)
-                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
                 } else {
                     Image(systemName: "record.circle.fill")
-                        .font(.system(size: 16))
+                        .font(.system(size: 24))
                         .foregroundStyle(.red.gradient)
                 }
 
                 Text("NoCorny Tracer")
-                    .font(.system(size: 15, weight: .bold))
+                    .font(.system(size: 19, weight: .bold))
             }
 
             Spacer()
 
-            // Google account indicator
-            if appState.googleAuthManager.isSignedIn {
-                Circle()
-                    .fill(.green)
-                    .frame(width: 8, height: 8)
-                    .help("Google Drive connected")
-            }
+            Spacer()
 
             // Settings gear
             Button {

@@ -219,7 +219,8 @@ struct SettingsView: View {
             Label("About", systemImage: "info.circle")
                 .font(.system(size: 13, weight: .semibold))
 
-            Text("NoCorny Tracer v1.3.4")
+            let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Unknown"
+            Text("NoCorny Tracer v\(appVersion)")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
 
