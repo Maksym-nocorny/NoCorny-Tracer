@@ -9,13 +9,13 @@ mkdir -p "$APP_ICON_DIR"
 mkdir -p "$MENU_ICON_DIR"
 
 # Ensure we have the logos
-LOGO="new NoCorny Tracer Ico.png"
+LOGO="NoCorny Tracer Ico.png"
 if [ ! -f "$LOGO" ]; then
     echo "Logo not found!"
     exit 1
 fi
 
-TRAY_LOGO="new tray ico.png"
+TRAY_LOGO="NoCorny Tracer Tray Ico.png"
 if [ ! -f "$TRAY_LOGO" ]; then
     echo "Tray Logo not found!"
     exit 1

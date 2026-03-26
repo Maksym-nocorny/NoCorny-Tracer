@@ -1,6 +1,14 @@
 # Changelog
 
-## [1.3.4] - 2026-03-26 (Current)
+## [1.3.9] - 2026-03-26
+### Added
+- **New Visual Identity**: Completely redesigned application and tray icons for a more modern, cohesive look.
+
+### Fixed
+- **UI Capture Glitch**: Added a 0.5s delay before recording starts to ensure the tray popover is fully hidden and not captured in the video.
+- **Tray Icon Scaling**: Fixed an issue where the tray icon wasn't correctly applying from the asset catalog by hard-coding the resource bundle path.
+
+## [1.3.4] - 2026-03-26
 
 ### Fixed
 - **Fatal Error on Launch**: Resolved a critical issue where the app would crash when loaded from a `.app` bundle due to the resource bundle not being found. Fixed by implementing a robust custom bundle locator in `NoCornyTracerApp.swift` that correctly targets the `Contents/Resources` directory.
