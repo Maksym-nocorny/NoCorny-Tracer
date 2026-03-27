@@ -19,6 +19,7 @@ struct RecordingControlsView: View {
             // Camera controls
             cameraSection
         }
+        .padding(.horizontal, 16)
     }
 
     @Environment(\.dismiss) var dismiss
@@ -53,7 +54,6 @@ struct RecordingControlsView: View {
                 }
                 .buttonStyle(.plain)
             }
-            .padding(.horizontal)
         }
     }
 
@@ -99,7 +99,6 @@ struct RecordingControlsView: View {
                 }
                 .buttonStyle(.plain)
             }
-            .padding(.horizontal)
         } else {
             Button {
                 dismiss()
@@ -120,7 +119,6 @@ struct RecordingControlsView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 10))
             }
             .buttonStyle(.plain)
-            .padding(.horizontal)
         }
     }
 
@@ -166,8 +164,7 @@ struct RecordingControlsView: View {
                 }
             }
         }
-        .padding(.horizontal)
-    }
+        }
     
     // MARK: - Camera Section
 
@@ -200,8 +197,7 @@ struct RecordingControlsView: View {
                 .controlSize(.small)
             }
         }
-        .padding(.horizontal)
-    }
+        }
 }
 
 // MARK: - Audio Level View

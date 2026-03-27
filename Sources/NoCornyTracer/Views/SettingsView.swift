@@ -16,7 +16,7 @@ struct SettingsView: View {
                 } label: {
                     Image(systemName: "chevron.left")
                         .font(.system(size: 14, weight: .semibold))
-                        .frame(width: 32, height: 32)
+                        .frame(width: 27, height: 27)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -27,7 +27,8 @@ struct SettingsView: View {
 
                 Spacer()
             }
-            .padding()
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
 
             Divider()
 
@@ -188,7 +189,7 @@ struct SettingsView: View {
                     .font(.system(size: 11))
                 }
             }
-            .padding(.leading, 4)
+            .padding(.leading, 24)
         }
     }
 
@@ -202,7 +203,7 @@ struct SettingsView: View {
             Label("General", systemImage: "gear")
                 .font(.system(size: 13, weight: .semibold))
 
-            Toggle("Start NoCorny Tracer on System Startup", isOn: $appState.launchAtLogin)
+            Toggle("Launch at Login", isOn: $appState.launchAtLogin)
                 .controlSize(.small)
                 .font(.system(size: 12))
                 .onChange(of: appState.launchAtLogin) {
@@ -240,7 +241,7 @@ struct SettingsView: View {
             }
             .buttonStyle(.plain)
             .foregroundStyle(.blue)
-            .padding(.top, 4)
+            .padding(.top, 6)
         }
     }
 }

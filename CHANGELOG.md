@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.5.0] - 2026-03-27
+### Changed
+- **UI Consistency**: Reduced the Settings header height to 51pt to match the main screen for a more uniform visual experience.
+- **Header Alignment**: Standardized the back button size and vertical padding across navigation transitions.
+
 ## [1.4.9] - 2026-03-26
 ### Changed
 - **UI/UX Polish**: Standardized section padding across the app for a more consistent visual rhythm.

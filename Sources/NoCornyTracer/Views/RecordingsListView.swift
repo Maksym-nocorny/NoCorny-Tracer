@@ -31,7 +31,7 @@ struct RecordingsListView: View {
                     VStack(spacing: 6) {
                         Image(systemName: "video.slash")
                             .font(.system(size: 24))
-                            .foregroundStyle(.quaternary)
+                            .foregroundStyle(.tertiary)
                         Text("No recordings yet")
                             .font(.system(size: 12))
                             .foregroundStyle(.secondary)

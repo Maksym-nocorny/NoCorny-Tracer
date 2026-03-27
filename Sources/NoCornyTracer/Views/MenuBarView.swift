@@ -54,7 +54,7 @@ struct MenuBarView: View {
 
             // Recordings List
             RecordingsListView(appState: appState)
-                .padding(.vertical, 8)
+                .padding(.vertical, 10)
 
             Divider()
 
@@ -91,8 +91,6 @@ struct MenuBarView: View {
 
             Spacer()
 
-            Spacer()
-
             // Settings gear
             Button {
                 appState.showSettings.toggle()
@@ -103,7 +101,8 @@ struct MenuBarView: View {
             }
             .buttonStyle(.plain)
         }
-        .padding()
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
     }
 
     // MARK: - Keyboard Shortcuts
@@ -128,7 +127,7 @@ struct MenuBarView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal)
-        .padding(.vertical, 10)
+        .padding(.vertical, 12)
     }
 
     private func shortcutRow(keys: String, action: String) -> some View {
@@ -154,10 +153,10 @@ struct MenuBarView: View {
             if appState.googleAuthManager.isSignedIn {
                 HStack(spacing: 4) {
                     Image(systemName: "checkmark.icloud.fill")
-                        .font(.system(size: 10))
+                        .font(.system(size: 11))
                         .foregroundStyle(.green)
                     Text("Drive connected")
-                        .font(.system(size: 10))
+                        .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 }
             } else if appState.googleAuthManager.isConfigured {
@@ -166,9 +165,9 @@ struct MenuBarView: View {
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "icloud.slash")
-                            .font(.system(size: 10))
+                            .font(.system(size: 11))
                         Text("Connect Google Drive")
-                            .font(.system(size: 10))
+                            .font(.system(size: 11))
                     }
                     .foregroundStyle(.blue)
                 }
@@ -176,9 +175,9 @@ struct MenuBarView: View {
             } else {
                 HStack(spacing: 4) {
                     Image(systemName: "exclamationmark.triangle")
-                        .font(.system(size: 10))
+                        .font(.system(size: 11))
                     Text("Drive not configured")
-                        .font(.system(size: 10))
+                        .font(.system(size: 11))
                 }
                 .foregroundStyle(.secondary)
             }
@@ -189,7 +188,7 @@ struct MenuBarView: View {
                 NSApplication.shared.terminate(nil)
             } label: {
                 Text("Quit")
-                    .font(.system(size: 10))
+                    .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
