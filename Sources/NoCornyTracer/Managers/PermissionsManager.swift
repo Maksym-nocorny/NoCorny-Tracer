@@ -63,14 +63,12 @@ final class PermissionsManager {
         }
     }
 
-    /// Are ALL tracked permissions and settings granted/enabled?
+    /// Are ALL mandatory system permissions granted?
     var hasAllRequiredPermissions: Bool {
         return isScreenRecordingGranted &&
                isCameraGranted &&
                isMicrophoneGranted &&
-               isAccessibilityGranted &&
-               isAutoUpdateEnabled &&
-               isLaunchAtLoginEnabled
+               isAccessibilityGranted
     }
     
     // MARK: - Actions
