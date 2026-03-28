@@ -5,6 +5,7 @@ import Sparkle
 struct SettingsView: View {
     @Bindable var appState: AppState
     let updaterController: SPUStandardUpdaterController
+    @Environment(\.openWindow) var openWindow
 
 
     var body: some View {
@@ -209,6 +210,14 @@ struct SettingsView: View {
                 .onChange(of: appState.launchAtLogin) {
                     appState.updateLaunchAtLogin()
                 }
+                
+            Button("Permissions...") {
+                openWindow(id: "permissions")
+                NSApp.activate(ignoringOtherApps: true)
+            }
+            .controlSize(.small)
+            .font(.system(size: 12))
+            .padding(.top, 4)
         }
     }
 

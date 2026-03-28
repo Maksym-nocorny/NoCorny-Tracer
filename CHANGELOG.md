@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.0] - 2026-03-28
+### Added
+- **Permissions Window**: A new centralized window that checks for required permissions (Screen Recording, Camera, Microphone, Accessibility) on launch and provides easy "Grant" buttons.
+- **Real-time Status Tracking**: The permissions window now updates in real-time as permissions are granted in System Settings.
+- **Launch at Login & Auto-Update Toggles**: Integrated these settings directly into the Permissions window for easier setup.
+- **Manual Permissions Check**: Added a "Permissions..." button in the General settings tab.
+
 ## [1.5.0] - 2026-03-27
 ### Changed
 - **UI Consistency**: Reduced the Settings header height to 51pt to match the main screen for a more uniform visual experience.

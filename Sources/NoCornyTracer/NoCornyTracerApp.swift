@@ -7,17 +7,22 @@ struct NoCornyTracerApp: App {
     @State private var appState = AppState()
     @State private var cameraWindowManager = CameraWindowManager()
     @Environment(\.colorScheme) var colorScheme
+    @State private var permissionsManager: PermissionsManager
     
     // Sparkle auto-updater
     private let updaterController: SPUStandardUpdaterController
 
     init() {
         // Initialize Sparkle updater (auto-checks for updates on launch)
-        updaterController = SPUStandardUpdaterController(
+        let updater = SPUStandardUpdaterController(
             startingUpdater: true,
             updaterDelegate: nil,
             userDriverDelegate: nil
         )
+        self.updaterController = updater
+        
+        let pManager = PermissionsManager(updaterController: updater)
+        self._permissionsManager = State(initialValue: pManager)
     }
 
     var body: some Scene {
@@ -28,12 +33,22 @@ struct NoCornyTracerApp: App {
                     cameraWindowManager.updateVisibility(isEnabled: appState.isCameraEnabled, appState: appState)
                 }
         } label: {
-            Image(nsImage: currentMenuBarIcon)
+            MenuBarLabelView(
+                appState: appState,
+                permissionsManager: permissionsManager,
+                currentMenuBarIcon: currentMenuBarIcon
+            )
         }
         .menuBarExtraStyle(.window)
         .onChange(of: appState.isCameraEnabled) { _, newValue in
             cameraWindowManager.updateVisibility(isEnabled: newValue, appState: appState)
         }
+        
+        // Permissions Window
+        Window("Permissions", id: "permissions") {
+            PermissionsView(permissionsManager: permissionsManager)
+        }
+        .windowResizability(.contentSize)
     }
 
     /// Returns the appropriate menu bar icon based on recording state and system theme
@@ -62,5 +77,25 @@ struct NoCornyTracerApp: App {
         let fallback = NSImage(systemSymbolName: isRecording ? "record.circle.fill" : "record.circle", accessibilityDescription: "NoCorny Tracer")!
         fallback.isTemplate = true
         return fallback
+    }
+}
+
+/// A wrapper view for the MenuBar icon that can evaluate permissions and open windows on app launch
+private struct MenuBarLabelView: View {
+    @Bindable var appState: AppState
+    var permissionsManager: PermissionsManager
+    var currentMenuBarIcon: NSImage
+    
+    @Environment(\.openWindow) var openWindow
+
+    var body: some View {
+        Image(nsImage: currentMenuBarIcon)
+            .onAppear {
+                // Check permissions as soon as the menu bar icon appears (on app launch)
+                if !permissionsManager.hasAllRequiredPermissions {
+                    openWindow(id: "permissions")
+                    NSApp.activate(ignoringOtherApps: true)
+                }
+            }
     }
 }
