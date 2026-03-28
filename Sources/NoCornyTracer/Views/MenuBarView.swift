@@ -150,23 +150,23 @@ struct MenuBarView: View {
     @ViewBuilder
     private var footerView: some View {
         HStack {
-            if appState.googleAuthManager.isSignedIn {
+            if appState.dropboxAuthManager.isSignedIn {
                 HStack(spacing: 4) {
                     Image(systemName: "checkmark.icloud.fill")
                         .font(.system(size: 11))
                         .foregroundStyle(.green)
-                    Text("Drive connected")
+                    Text("Dropbox connected")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 }
-            } else if appState.googleAuthManager.isConfigured {
+            } else if appState.dropboxAuthManager.isConfigured {
                 Button {
-                    appState.googleAuthManager.signIn()
+                    appState.dropboxAuthManager.signIn()
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "icloud.slash")
                             .font(.system(size: 11))
-                        Text("Connect Google Drive")
+                        Text("Connect Dropbox")
                             .font(.system(size: 11))
                     }
                     .foregroundStyle(.blue)
@@ -176,7 +176,7 @@ struct MenuBarView: View {
                 HStack(spacing: 4) {
                     Image(systemName: "exclamationmark.triangle")
                         .font(.system(size: 11))
-                    Text("Drive not configured")
+                    Text("Dropbox not configured")
                         .font(.system(size: 11))
                 }
                 .foregroundStyle(.secondary)

@@ -9,26 +9,15 @@
     <key>CFBundleIdentifier</key>
     <string>com.nocornytracer.app</string>
     <key>CFBundleVersion</key>
-    <string>1.6.0</string>
+    <string>1.7.0</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.6.0</string>
+    <string>1.7.0</string>
     <key>NSCameraUsageDescription</key>
     <string>NoCorny Tracer needs access to your camera to show a floating face cam while recording.</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>NoCorny Tracer needs access to your microphone to record audio with your screen recordings.</string>
     <key>NSScreenCaptureUsageDescription</key>
     <string>NoCorny Tracer needs screen recording access to capture your screen.</string>
-    <key>CFBundleURLTypes</key>
-    <array>
-        <dict>
-            <key>CFBundleURLSchemes</key>
-            <array>
-                <string>com.googleusercontent.apps.87990119532-bo0igbnckio9a4qulpjkgmsuladrqkju</string>
-            </array>
-            <key>CFBundleURLName</key>
-            <string>Google Sign-In</string>
-        </dict>
-    </array>
     <key>SUFeedURL</key>
     <string>https://raw.githubusercontent.com/Maksym-nocorny/NoCorny-Tracer/main/appcast.xml</string>
     <key>SUPublicEDKey</key>

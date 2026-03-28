@@ -35,8 +35,8 @@ struct SettingsView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    // Google Account Section
-                    googleAccountSection
+                    // Dropbox Account Section
+                    dropboxAccountSection
 
                     Divider()
                     
@@ -58,30 +58,30 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: - Google Account
+    // MARK: - Dropbox Account
 
     @ViewBuilder
-    private var googleAccountSection: some View {
+    private var dropboxAccountSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label("Google Account", systemImage: "person.circle")
+            Label("Dropbox", systemImage: "person.circle")
                 .font(.system(size: 13, weight: .semibold))
 
-            if appState.googleAuthManager.isSignedIn {
+            if appState.dropboxAuthManager.isSignedIn {
                 HStack(spacing: 10) {
                     // User avatar placeholder
                     Circle()
                         .fill(.blue.gradient)
                         .frame(width: 36, height: 36)
                         .overlay {
-                            Text(String(appState.googleAuthManager.userName?.prefix(1) ?? "?"))
+                            Text(String(appState.dropboxAuthManager.userName?.prefix(1) ?? "?"))
                                 .font(.system(size: 16, weight: .semibold))
                                 .foregroundStyle(.white)
                         }
 
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(appState.googleAuthManager.userName ?? "User")
+                        Text(appState.dropboxAuthManager.userName ?? "User")
                             .font(.system(size: 13, weight: .medium))
-                        Text(appState.googleAuthManager.userEmail ?? "")
+                        Text(appState.dropboxAuthManager.userEmail ?? "")
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                     }
@@ -89,33 +89,33 @@ struct SettingsView: View {
                     Spacer()
 
                     Button("Sign Out") {
-                        appState.googleAuthManager.signOut()
+                        appState.dropboxAuthManager.signOut()
                     }
                     .controlSize(.small)
                 }
-            } else if !appState.googleAuthManager.isConfigured {
+            } else if !appState.dropboxAuthManager.isConfigured {
                 // Not configured yet
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 6) {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .foregroundStyle(.yellow)
                             .font(.system(size: 12))
-                        Text("Google Sign-In not configured")
+                        Text("Dropbox not configured")
                             .font(.system(size: 12, weight: .medium))
                     }
 
-                    Text("To enable Google Drive upload, set your OAuth Client ID in GoogleAuthManager.swift")
+                    Text("To enable Dropbox upload, set your App Key in Secrets.swift")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             } else {
                 Button {
-                    appState.googleAuthManager.signIn()
+                    appState.dropboxAuthManager.signIn()
                 } label: {
                     HStack(spacing: 8) {
-                        Image(systemName: "globe")
-                        Text("Sign in with Google")
+                        Image(systemName: "arrow.down.doc")
+                        Text("Connect Dropbox")
                     }
                     .frame(maxWidth: .infinity)
                     .frame(height: 36)
@@ -126,7 +126,7 @@ struct SettingsView: View {
                 }
                 .buttonStyle(.plain)
 
-                if let error = appState.googleAuthManager.errorMessage {
+                if let error = appState.dropboxAuthManager.errorMessage {
                     Text(error)
                         .font(.system(size: 11))
                         .foregroundStyle(.red)
@@ -234,7 +234,7 @@ struct SettingsView: View {
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
 
-            Text("A screen recording app with Google Drive integration")
+            Text("A screen recording app with Dropbox integration")
                 .font(.system(size: 11))
                 .foregroundStyle(.tertiary)
 

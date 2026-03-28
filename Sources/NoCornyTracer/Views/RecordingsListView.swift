@@ -96,9 +96,9 @@ struct RecordingRowView: View {
             Spacer()
 
             // Copy URL button (only when uploaded)
-            if recording.driveURL != nil {
+            if recording.shareURL != nil {
                 Button {
-                    if let url = recording.driveURL {
+                    if let url = recording.shareURL {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(url.absoluteString, forType: .string)
                         showCopied = true
@@ -144,8 +144,8 @@ struct RecordingRowView: View {
         .background(.clear)
         .contentShape(Rectangle())
         .onTapGesture(count: 2) {
-            if let driveURL = recording.driveURL {
-                NSWorkspace.shared.open(driveURL)
+            if let shareURL = recording.shareURL {
+                NSWorkspace.shared.open(shareURL)
             } else if FileManager.default.fileExists(atPath: recording.fileURL.path) {
                 NSWorkspace.shared.open(recording.fileURL)
             }

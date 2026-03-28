@@ -8,7 +8,9 @@ struct Recording: Identifiable, Codable {
     var duration: TimeInterval
     var aiGeneratedName: String?
     var uploadStatus: UploadStatus
-    var driveFileID: String?
+    var driveFileID: String?       // Legacy: old Google Drive file ID (kept for backward compat)
+    var dropboxPath: String?       // Dropbox file path (e.g. "/Recording_2026-03-28.mp4")
+    var dropboxSharedURL: String?  // Dropbox shared link URL
     var thumbnailData: Data?
 
     init(
@@ -42,10 +44,16 @@ struct Recording: Identifiable, Codable {
         return String(format: "%02d:%02d", minutes, seconds)
     }
 
-    /// Google Drive URL for the uploaded video
-    var driveURL: URL? {
-        guard let fileID = driveFileID else { return nil }
-        return URL(string: "https://drive.google.com/file/d/\(fileID)/view")
+    /// Shared URL for the uploaded video (Dropbox or legacy Google Drive)
+    var shareURL: URL? {
+        if let sharedURL = dropboxSharedURL {
+            return URL(string: sharedURL)
+        }
+        // Legacy fallback for old Google Drive recordings
+        if let fileID = driveFileID {
+            return URL(string: "https://drive.google.com/file/d/\(fileID)/view")
+        }
+        return nil
     }
 
     var formattedDate: String {

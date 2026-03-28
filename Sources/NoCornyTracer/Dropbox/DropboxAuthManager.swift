@@ -3,37 +3,33 @@ import AuthenticationServices
 import AppKit
 import CryptoKit
 
-/// Manages Google OAuth2 authentication for Drive access without using the Google Sign-In SDK
+/// Manages Dropbox OAuth2 authentication using PKCE (no SDK dependency)
 @Observable
-final class GoogleAuthManager: NSObject {
+final class DropboxAuthManager: NSObject {
     // MARK: - State
     var isSignedIn = false
     var userName: String?
     var userEmail: String?
-    var userPhotoURL: URL?
     var accessToken: String?
     var isLoading = false
     var errorMessage: String?
 
     // MARK: - Configuration
-    private let clientID = AppSecrets.googleClientID
-    private let driveScope = "https://www.googleapis.com/auth/drive.file"
-    private let emailScope = "email"
-    private let profileScope = "profile"
-    
+    private let appKey = AppSecrets.dropboxAppKey
+
     private var redirectURI: String {
-        "com.googleusercontent.apps." + clientID.components(separatedBy: ".").first! + ":/oauth2callback"
+        "db-\(appKey)://oauth2callback"
     }
 
-    /// Whether real Google credentials have been configured
+    /// Whether real Dropbox credentials have been configured
     var isConfigured: Bool {
-        !clientID.contains("YOUR_GOOGLE_CLIENT_ID")
+        !appKey.contains("YOUR_DROPBOX_APP_KEY")
     }
 
     // UserDefaults keys
-    private let tokenKey = "GoogleAuthAccessToken"
-    private let refreshTokenKey = "GoogleAuthRefreshToken"
-    private let expiresAtKey = "GoogleAuthTokenExpiry"
+    private let tokenKey = "DropboxAccessToken"
+    private let refreshTokenKey = "DropboxRefreshToken"
+    private let expiresAtKey = "DropboxTokenExpiry"
 
     private var authSession: ASWebAuthenticationSession?
 
@@ -45,7 +41,7 @@ final class GoogleAuthManager: NSObject {
     // MARK: - Sign In
     func signIn() {
         guard isConfigured else {
-            errorMessage = "Google Client ID not configured."
+            errorMessage = "Dropbox App Key not configured."
             return
         }
 
@@ -54,28 +50,26 @@ final class GoogleAuthManager: NSObject {
 
         let codeVerifier = generateCodeVerifier()
         let codeChallenge = generateCodeChallenge(verifier: codeVerifier)
-        
-        var comp = URLComponents(string: "https://accounts.google.com/o/oauth2/v2/auth")!
+
+        var comp = URLComponents(string: "https://www.dropbox.com/oauth2/authorize")!
         comp.queryItems = [
-            URLQueryItem(name: "client_id", value: clientID),
+            URLQueryItem(name: "client_id", value: appKey),
             URLQueryItem(name: "redirect_uri", value: redirectURI),
             URLQueryItem(name: "response_type", value: "code"),
-            URLQueryItem(name: "scope", value: "\(driveScope) \(emailScope) \(profileScope)"),
             URLQueryItem(name: "code_challenge", value: codeChallenge),
-            URLQueryItem(name: "code_challenge_method", value: "S256")
+            URLQueryItem(name: "code_challenge_method", value: "S256"),
+            URLQueryItem(name: "token_access_type", value: "offline"),
         ]
-        
+
         guard let authURL = comp.url else {
             errorMessage = "Failed to construct auth URL"
             isLoading = false
             return
         }
-        
-        let scheme = redirectURI.components(separatedBy: ":").first!
-        
+
+        let scheme = "db-\(appKey)"
+
         authSession = ASWebAuthenticationSession(url: authURL, callbackURLScheme: scheme) { [weak self] callbackURL, error in
-            print("Auth session returned callback: \(String(describing: callbackURL)), error: \(String(describing: error))")
-            
             DispatchQueue.main.async {
                 self?.isLoading = false
                 if let error = error {
@@ -86,22 +80,21 @@ final class GoogleAuthManager: NSObject {
                     }
                     return
                 }
-                
+
                 guard let callbackURL = callbackURL,
                       let comp = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false),
                       let code = comp.queryItems?.first(where: { $0.name == "code" })?.value else {
                     self?.errorMessage = "Invalid callback URL"
                     return
                 }
-                
+
                 self?.exchangeCodeForToken(code: code, codeVerifier: codeVerifier)
             }
         }
-        
+
         authSession?.presentationContextProvider = self
-        // This makes it skip the permission alert if possible, or shows it anchored to the window
         authSession?.prefersEphemeralWebBrowserSession = false
-        
+
         if authSession?.start() == false {
             errorMessage = "Failed to start authentication session."
             isLoading = false
@@ -113,11 +106,10 @@ final class GoogleAuthManager: NSObject {
         UserDefaults.standard.removeObject(forKey: tokenKey)
         UserDefaults.standard.removeObject(forKey: refreshTokenKey)
         UserDefaults.standard.removeObject(forKey: expiresAtKey)
-        
+
         isSignedIn = false
         userName = nil
         userEmail = nil
-        userPhotoURL = nil
         accessToken = nil
     }
 
@@ -125,11 +117,11 @@ final class GoogleAuthManager: NSObject {
     private func restorePreviousSignIn() {
         guard isConfigured,
               let _ = UserDefaults.standard.string(forKey: refreshTokenKey) else { return }
-        
+
         Task {
             if let token = await refreshTokenIfNeeded() {
                 self.accessToken = token
-                await fetchUserInfo(token: token)
+                await fetchAccountInfo(token: token)
             }
         }
     }
@@ -137,89 +129,94 @@ final class GoogleAuthManager: NSObject {
     // MARK: - Token Refresh
     func refreshTokenIfNeeded() async -> String? {
         guard let refreshToken = UserDefaults.standard.string(forKey: refreshTokenKey) else { return nil }
-        
+
         // Check if token is still valid (add 5 min buffer)
         if let expiry = UserDefaults.standard.object(forKey: expiresAtKey) as? Date,
            let currentToken = UserDefaults.standard.string(forKey: tokenKey),
            Date().addingTimeInterval(300) < expiry {
             return currentToken
         }
-        
-        var comp = URLComponents(string: "https://oauth2.googleapis.com/token")!
-        comp.queryItems = [
-            URLQueryItem(name: "client_id", value: clientID),
-            URLQueryItem(name: "refresh_token", value: refreshToken),
-            URLQueryItem(name: "grant_type", value: "refresh_token")
-        ]
-        
-        var request = URLRequest(url: comp.url!)
+
+        let url = URL(string: "https://api.dropboxapi.com/oauth2/token")!
+        var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        
+
+        var bodyComp = URLComponents()
+        bodyComp.queryItems = [
+            URLQueryItem(name: "grant_type", value: "refresh_token"),
+            URLQueryItem(name: "refresh_token", value: refreshToken),
+            URLQueryItem(name: "client_id", value: appKey),
+        ]
+        request.httpBody = bodyComp.query?.data(using: .utf8)
+
         do {
             let (data, _) = try await URLSession.shared.data(for: request)
             if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                let newAccessToken = json["access_token"] as? String {
-                
+
                 if let expiresIn = json["expires_in"] as? TimeInterval {
                     UserDefaults.standard.set(Date().addingTimeInterval(expiresIn), forKey: expiresAtKey)
                 }
                 UserDefaults.standard.set(newAccessToken, forKey: tokenKey)
-                
+
                 DispatchQueue.main.async {
                     self.accessToken = newAccessToken
                 }
                 return newAccessToken
             }
         } catch {
-            print("Failed to refresh token: \(error)")
+            print("Failed to refresh Dropbox token: \(error)")
         }
-        
+
         return nil
     }
 
     // MARK: - Private API Calls
     private func exchangeCodeForToken(code: String, codeVerifier: String) {
         isLoading = true
-        var comp = URLComponents(string: "https://oauth2.googleapis.com/token")!
-        comp.queryItems = [
-            URLQueryItem(name: "client_id", value: clientID),
-            URLQueryItem(name: "code", value: code),
-            URLQueryItem(name: "code_verifier", value: codeVerifier),
-            URLQueryItem(name: "redirect_uri", value: redirectURI),
-            URLQueryItem(name: "grant_type", value: "authorization_code")
-        ]
-        
-        var request = URLRequest(url: comp.url!)
+
+        let url = URL(string: "https://api.dropboxapi.com/oauth2/token")!
+        var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        
+
+        var bodyComp = URLComponents()
+        bodyComp.queryItems = [
+            URLQueryItem(name: "grant_type", value: "authorization_code"),
+            URLQueryItem(name: "code", value: code),
+            URLQueryItem(name: "client_id", value: appKey),
+            URLQueryItem(name: "code_verifier", value: codeVerifier),
+            URLQueryItem(name: "redirect_uri", value: redirectURI),
+        ]
+        request.httpBody = bodyComp.query?.data(using: .utf8)
+
         URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
             DispatchQueue.main.async {
                 self?.isLoading = false
-                
+
                 if let error = error {
                     self?.errorMessage = "Token exchange failed: \(error.localizedDescription)"
                     return
                 }
-                
+
                 guard let data = data else {
                     self?.errorMessage = "No data from token exchange"
                     return
                 }
-                
+
                 do {
                     if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
                         if let errorMsg = json["error_description"] as? String ?? json["error"] as? String {
                             self?.errorMessage = errorMsg
                             return
                         }
-                        
+
                         guard let token = json["access_token"] as? String else {
                             self?.errorMessage = "No access token in response"
                             return
                         }
-                        
+
                         // Save tokens
                         UserDefaults.standard.set(token, forKey: self?.tokenKey ?? "")
                         if let refreshToken = json["refresh_token"] as? String {
@@ -228,12 +225,12 @@ final class GoogleAuthManager: NSObject {
                         if let expiresIn = json["expires_in"] as? TimeInterval {
                             UserDefaults.standard.set(Date().addingTimeInterval(expiresIn), forKey: self?.expiresAtKey ?? "")
                         }
-                        
+
                         self?.accessToken = token
-                        
-                        // Fetch user info
+
+                        // Fetch account info
                         Task { [weak self] in
-                            await self?.fetchUserInfo(token: token)
+                            await self?.fetchAccountInfo(token: token)
                         }
                     }
                 } catch {
@@ -242,28 +239,28 @@ final class GoogleAuthManager: NSObject {
             }
         }.resume()
     }
-    
-    private func fetchUserInfo(token: String) async {
-        var request = URLRequest(url: URL(string: "https://www.googleapis.com/oauth2/v2/userinfo")!)
+
+    private func fetchAccountInfo(token: String) async {
+        var request = URLRequest(url: URL(string: "https://api.dropboxapi.com/2/users/get_current_account")!)
+        request.httpMethod = "POST"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        
+
         do {
             let (data, _) = try await URLSession.shared.data(for: request)
             if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
                 DispatchQueue.main.async {
                     self.isSignedIn = true
                     self.userEmail = json["email"] as? String
-                    self.userName = json["name"] as? String
-                    if let picURL = json["picture"] as? String {
-                        self.userPhotoURL = URL(string: picURL)
+                    if let name = json["name"] as? [String: Any] {
+                        self.userName = name["display_name"] as? String
                     }
                 }
             }
         } catch {
-            print("Failed to fetch user info: \(error)")
+            print("Failed to fetch Dropbox account info: \(error)")
         }
     }
-    
+
     // MARK: - PKCE Helpers
     private func generateCodeVerifier() -> String {
         var buffer = [UInt8](repeating: 0, count: 32)
@@ -287,9 +284,8 @@ final class GoogleAuthManager: NSObject {
 }
 
 // MARK: - ASWebAuthenticationPresentationContextProviding
-extension GoogleAuthManager: ASWebAuthenticationPresentationContextProviding {
+extension DropboxAuthManager: ASWebAuthenticationPresentationContextProviding {
     func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
-        // Return the main window if available, otherwise a generic empty window
         return NSApplication.shared.windows.first ?? ASPresentationAnchor()
     }
 }

@@ -8,8 +8,8 @@ import ServiceManagement
 final class AppState {
     // MARK: - Managers
     let recordingManager = RecordingManager()
-    let googleAuthManager = GoogleAuthManager()
-    let driveUploadManager = DriveUploadManager()
+    let dropboxAuthManager = DropboxAuthManager()
+    let dropboxUploadManager = DropboxUploadManager()
     let aiNamingService = AINamingService()
     let hotkeyManager = HotkeyManager()
     let cameraManager = CameraManager()
@@ -161,45 +161,45 @@ final class AppState {
         Task { await self.processRecording(id: recordingID) }
     }
 
-    /// Cached Google Drive folder ID for "nocornytracer"
-    private var driveFolderID: String?
-
-    /// Background processing: upload → AI name → rename → subtitles → cleanup
+    /// Background processing: upload → shared link → subtitles → AI name → rename → cleanup
     private func processRecording(id: UUID) async {
         guard let index = recordings.firstIndex(where: { $0.id == id }) else { return }
         let fileURL = recordings[index].fileURL
 
-        // Step 1: Upload to GDrive immediately with default timestamp name
-        var driveFileID: String?
+        // Step 1: Upload to Dropbox immediately with default timestamp name
+        var dropboxPath: String?
         var token = ""
 
-        if autoUploadEnabled && googleAuthManager.isSignedIn {
+        if autoUploadEnabled && dropboxAuthManager.isSignedIn {
             recordings[index].uploadStatus = .uploading
             saveRecordings()
 
             do {
-                token = await googleAuthManager.refreshTokenIfNeeded() ?? googleAuthManager.accessToken ?? ""
+                token = await dropboxAuthManager.refreshTokenIfNeeded() ?? dropboxAuthManager.accessToken ?? ""
 
-                if driveFolderID == nil {
-                    driveFolderID = try await driveUploadManager.findOrCreateFolder(
-                        name: "nocornytracer",
-                        accessToken: token
-                    )
-                }
-
-                let uploadedID = try await driveUploadManager.upload(
+                let uploadedPath = try await dropboxUploadManager.upload(
                     fileURL: fileURL,
                     fileName: recordings[index].displayName + ".mp4",
-                    accessToken: token,
-                    folderID: driveFolderID
+                    accessToken: token
                 )
 
                 if let idx = recordings.firstIndex(where: { $0.id == id }) {
-                    recordings[idx].driveFileID = uploadedID
+                    recordings[idx].dropboxPath = uploadedPath
                     recordings[idx].uploadStatus = .uploaded
-                    driveFileID = uploadedID
+                    dropboxPath = uploadedPath
                     saveRecordings()
-                    print("📤 Upload: ✅ Uploaded with default name")
+                    print("📤 Upload: ✅ Uploaded to Dropbox: \(uploadedPath)")
+                }
+
+                // Create shared link immediately after upload
+                let sharedURL = try await dropboxUploadManager.createSharedLink(
+                    path: uploadedPath,
+                    accessToken: token
+                )
+                if let idx = recordings.firstIndex(where: { $0.id == id }) {
+                    recordings[idx].dropboxSharedURL = sharedURL
+                    saveRecordings()
+                    print("🔗 Shared link: ✅ \(sharedURL)")
                 }
             } catch {
                 if let idx = recordings.firstIndex(where: { $0.id == id }) {
@@ -210,8 +210,6 @@ final class AppState {
             }
         }
 
-        // Step 2: AI naming (runs even if upload failed — updates local name)
-        print("🤖 Starting AI naming...")
         // Step 2: Generate and upload subtitles
         print("🤖 Starting subtitle generation...")
         var generatedSubtitles: String? = nil
@@ -222,14 +220,12 @@ final class AppState {
                !token.isEmpty {
                 let srtFileName = recordings[idx].displayName + ".srt"
                 do {
-                    let srtFileID = try await driveUploadManager.uploadTextFile(
+                    let srtPath = try await dropboxUploadManager.uploadTextFile(
                         content: subtitles,
                         fileName: srtFileName,
-                        mimeType: "application/x-subrip",
-                        folderID: driveFolderID,
                         accessToken: token
                     )
-                    print("📤 Subtitles: ✅ Uploaded as \"\(srtFileName)\" (ID: \(srtFileID))")
+                    print("📤 Subtitles: ✅ Uploaded as \"\(srtFileName)\" (path: \(srtPath))")
                 } catch {
                     print("📤 Subtitles: ❌ Upload failed: \(error)")
                 }
@@ -244,15 +240,17 @@ final class AppState {
                 saveRecordings()
                 print("🤖 AI Naming: ✅ Named: \"\(aiName)\"")
 
-                // Step 4: Rename on GDrive if uploaded
-                if let fileID = driveFileID, !token.isEmpty {
+                // Step 4: Rename on Dropbox if uploaded
+                if let currentPath = dropboxPath, !token.isEmpty {
                     do {
-                        try await driveUploadManager.renameFile(
-                            fileID: fileID,
-                            newName: aiName + ".mp4",
+                        let newPath = try await dropboxUploadManager.renameFile(
+                            fromPath: currentPath,
+                            toNewName: aiName + ".mp4",
                             accessToken: token
                         )
-                        print("📤 Rename: ✅ Renamed on GDrive to \"\(aiName).mp4\"")
+                        recordings[idx].dropboxPath = newPath
+                        saveRecordings()
+                        print("📤 Rename: ✅ Renamed on Dropbox to \"\(aiName).mp4\"")
                     } catch {
                         print("📤 Rename: ❌ \(error)")
                     }
@@ -261,7 +259,7 @@ final class AppState {
         }
 
         // Step 5: Delete local file after everything is done
-        if driveFileID != nil {
+        if dropboxPath != nil {
             try? FileManager.default.removeItem(at: fileURL)
             print("🗑️ Local file deleted")
         }
