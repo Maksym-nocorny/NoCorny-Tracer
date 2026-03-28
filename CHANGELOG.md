@@ -1,5 +1,20 @@
 # Changelog
 
+## [2.2.1] - 2026-03-28
+### Added
+- **Robust Dropbox Uploads**: Refactored session uploads to stream from disk, drastically reducing memory usage for large files.
+- **Automatic Retries**: Implemented 3x retry logic for all cloud operations to handle brief network interruptions.
+
+## [2.2.0] - 2026-03-28
+### Added
+- **Video Thumbnails**: Recent recordings now show actual video thumbnails from Dropbox instead of placeholders.
+- **Improved Metadata**: Added actual video duration and file size to the recordings list.
+- **Cloud Management**: Added a "Delete" button (on hover) to remove recordings from Dropbox with confirmation.
+- **Detailed Storage Info**: The Dropbox storage bar now shows used and allocated space in GB/MB.
+### Changed
+- **Upload Feedback**: The "upload complete" green cloud icon now automatically hides after 5 seconds.
+- **Empty State**: Improved the layout of the empty recordings list.
+
 ## [2.1.1] - 2026-03-28
 ### Fixed
 - **UI Layout**: Improved the spacing and alignment of the Recordings list and Dropbox Storage bar.

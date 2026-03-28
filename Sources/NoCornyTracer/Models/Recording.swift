@@ -12,6 +12,8 @@ struct Recording: Identifiable, Codable {
     var dropboxPath: String?       // Dropbox file path (e.g. "/Recording_2026-03-28.mp4")
     var dropboxSharedURL: String?  // Dropbox shared link URL
     var thumbnailData: Data?
+    var fileSize: UInt64?
+    var uploadCompletedAt: Date?
 
     init(
         id: UUID = UUID(),
@@ -60,6 +62,14 @@ struct Recording: Identifiable, Codable {
         let formatter = DateFormatter()
         formatter.dateFormat = "MMM d, HH:mm"
         return formatter.string(from: createdAt)
+    }
+
+    var formattedFileSize: String {
+        guard let size = fileSize else { return "" }
+        let formatter = ByteCountFormatter()
+        formatter.allowedUnits = [.useAll]
+        formatter.countStyle = .file
+        return formatter.string(fromByteCount: Int64(size))
     }
 }
 

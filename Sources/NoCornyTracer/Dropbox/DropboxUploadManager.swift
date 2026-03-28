@@ -7,12 +7,14 @@ final class DropboxUploadManager {
         case invalidToken
         case uploadFailed(String)
         case noData
+        case fileError(String)
 
         var errorDescription: String? {
             switch self {
             case .invalidToken: return "Invalid or expired Dropbox access token"
             case .uploadFailed(let msg): return "Upload failed: \(msg)"
             case .noData: return "No data received from server"
+            case .fileError(let msg): return "File operation failed: \(msg)"
             }
         }
     }
@@ -30,13 +32,17 @@ final class DropboxUploadManager {
             throw DropboxError.invalidToken
         }
 
-        let fileData = try Data(contentsOf: fileURL)
+        let attributes = try FileManager.default.attributesOfItem(atPath: fileURL.path)
+        let fileSize = attributes[.size] as? UInt64 ?? 0
         let dropboxPath = "/NoCorny Tracer/\(fileName)"
 
-        if fileData.count <= simpleUploadLimit {
-            return try await simpleUpload(data: fileData, path: dropboxPath, accessToken: accessToken)
+        if fileSize <= UInt64(simpleUploadLimit) {
+            let fileData = try Data(contentsOf: fileURL)
+            return try await withRetry {
+                try await self.simpleUpload(data: fileData, path: dropboxPath, accessToken: accessToken)
+            }
         } else {
-            return try await sessionUpload(data: fileData, path: dropboxPath, accessToken: accessToken)
+            return try await sessionUpload(fileURL: fileURL, fileSize: fileSize, path: dropboxPath, accessToken: accessToken)
         }
     }
 
@@ -79,43 +85,56 @@ final class DropboxUploadManager {
 
     // MARK: - Session Upload (for files > 150MB)
 
-    private func sessionUpload(data: Data, path: String, accessToken: String) async throws -> String {
-        // Start session with first chunk
-        let firstChunkEnd = min(chunkSize, data.count)
-        let firstChunk = data.subdata(in: 0..<firstChunkEnd)
-        let sessionID = try await startUploadSession(data: firstChunk, accessToken: accessToken)
+    private func sessionUpload(fileURL: URL, fileSize: UInt64, path: String, accessToken: String) async throws -> String {
+        let fileHandle = try FileHandle(forReadingFrom: fileURL)
+        defer { try? fileHandle.close() }
 
-        // Upload middle chunks
-        var offset = firstChunkEnd
-        while offset < data.count {
-            let end = min(offset + chunkSize, data.count)
-            let isLast = (end == data.count)
+        // Start session with first chunk
+        let firstChunkData = try fileHandle.read(upToCount: chunkSize) ?? Data()
+        let sessionID = try await withRetry {
+            try await self.startUploadSession(data: firstChunkData, accessToken: accessToken)
+        }
+
+        var offset = UInt64(firstChunkData.count)
+        
+        while offset < fileSize {
+            let remaining = fileSize - offset
+            let currentChunkSize = Int(min(UInt64(chunkSize), remaining))
+            let isLast = (remaining <= UInt64(chunkSize))
+
+            guard let chunkData = try fileHandle.read(upToCount: currentChunkSize) else {
+                throw DropboxError.fileError("Could not read chunk at offset \(offset)")
+            }
 
             if isLast {
                 // Finish with last chunk
-                let lastChunk = data.subdata(in: offset..<end)
-                return try await finishUploadSession(
-                    sessionID: sessionID,
-                    offset: offset,
-                    data: lastChunk,
-                    path: path,
-                    accessToken: accessToken
-                )
+                return try await withRetry {
+                    try await self.finishUploadSession(
+                        sessionID: sessionID,
+                        offset: Int(offset),
+                        data: chunkData,
+                        path: path,
+                        accessToken: accessToken
+                    )
+                }
             } else {
-                let chunk = data.subdata(in: offset..<end)
-                try await appendUploadSession(sessionID: sessionID, offset: offset, data: chunk, accessToken: accessToken)
-                offset = end
+                try await withRetry {
+                    try await self.appendUploadSession(sessionID: sessionID, offset: Int(offset), data: chunkData, accessToken: accessToken)
+                }
+                offset += UInt64(chunkData.count)
             }
         }
 
-        // If file fit in first chunk, finish with empty data
-        return try await finishUploadSession(
-            sessionID: sessionID,
-            offset: firstChunkEnd,
-            data: Data(),
-            path: path,
-            accessToken: accessToken
-        )
+        // If we somehow didn't finish (shouldn't happen with total flow above)
+        return try await withRetry {
+            try await self.finishUploadSession(
+                sessionID: sessionID,
+                offset: Int(offset),
+                data: Data(),
+                path: path,
+                accessToken: accessToken
+            )
+        }
     }
 
     private func startUploadSession(data: Data, accessToken: String) async throws -> String {
@@ -206,6 +225,24 @@ final class DropboxUploadManager {
         return pathDisplay
     }
 
+    // MARK: - Retry Logic
+
+    private func withRetry<T>(attempts: Int = 3, delay: UInt64 = 1_000_000_000, operation: @escaping () async throws -> T) async throws -> T {
+        var lastError: Error?
+        for attempt in 1...attempts {
+            do {
+                return try await operation()
+            } catch {
+                lastError = error
+                print("⚠️ Upload Attempt \(attempt) failed: \(error.localizedDescription). Retrying in \(Double(delay)/1_000_000_000)s...")
+                if attempt < attempts {
+                    try await Task.sleep(nanoseconds: delay)
+                }
+            }
+        }
+        throw lastError ?? DropboxError.uploadFailed("Unknown retry error")
+    }
+
     // MARK: - Shared Links
 
     /// Creates a shared link for a file. Returns the shared URL string.
@@ -227,24 +264,26 @@ final class DropboxUploadManager {
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (responseData, response) = try await URLSession.shared.data(for: request)
+        return try await withRetry {
+            let (responseData, response) = try await URLSession.shared.data(for: request)
 
-        if let httpResponse = response as? HTTPURLResponse,
-           (200...299).contains(httpResponse.statusCode),
-           let json = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
-           let sharedURL = json["url"] as? String {
-            return sharedURL
+            if let httpResponse = response as? HTTPURLResponse,
+               (200...299).contains(httpResponse.statusCode),
+               let json = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
+               let sharedURL = json["url"] as? String {
+                return sharedURL
+            }
+
+            // If shared link already exists, try to get it
+            if let responseStr = String(data: responseData, encoding: .utf8),
+               responseStr.contains("shared_link_already_exists") {
+                return try await self.getExistingSharedLink(path: path, accessToken: accessToken)
+            }
+
+            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+            let bodyStr = String(data: responseData, encoding: .utf8) ?? ""
+            throw DropboxError.uploadFailed("Failed to create shared link: HTTP \(statusCode): \(bodyStr)")
         }
-
-        // If shared link already exists, try to get it
-        if let responseStr = String(data: responseData, encoding: .utf8),
-           responseStr.contains("shared_link_already_exists") {
-            return try await getExistingSharedLink(path: path, accessToken: accessToken)
-        }
-
-        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
-        let bodyStr = String(data: responseData, encoding: .utf8) ?? ""
-        throw DropboxError.uploadFailed("Failed to create shared link: HTTP \(statusCode): \(bodyStr)")
     }
 
     /// Gets existing shared links for a path
@@ -329,18 +368,15 @@ final class DropboxUploadManager {
     }
 
     // MARK: - API Structs
-    struct DropboxFile: Codable {
+    // MARK: - API Structs
+    
+    // Simple struct for recordings list
+    struct DropboxFileSimple {
         let name: String
         let pathDisplay: String
         let clientModified: String
         let size: UInt64
-        
-        enum CodingKeys: String, CodingKey {
-            case name
-            case pathDisplay = "path_display"
-            case clientModified = "client_modified"
-            case size
-        }
+        let duration: TimeInterval?
     }
 
     // MARK: - App State Syncing methods
@@ -367,7 +403,7 @@ final class DropboxUploadManager {
     }
 
     /// List files in the NoCorny Tracer folder
-    func listFolder(path: String = "/NoCorny Tracer", accessToken: String) async throws -> [DropboxFile] {
+    func listFolder(path: String = "/NoCorny Tracer", accessToken: String) async throws -> [DropboxFileSimple] {
         guard !accessToken.isEmpty else { throw DropboxError.invalidToken }
         let url = URL(string: "https://api.dropboxapi.com/2/files/list_folder")!
         var request = URLRequest(url: url)
@@ -393,18 +429,30 @@ final class DropboxUploadManager {
             throw DropboxError.noData
         }
         
-        struct ListFolderResponse: Codable {
-            let entries: [DropboxFile]?
+        guard let json = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
+              let entries = json["entries"] as? [[String: Any]] else {
+            return []
         }
         
-        // Custom decoding to safely ignore folders or malformed entries
-        let decoder = JSONDecoder()
-        if let decodedResponse = try? decoder.decode(ListFolderResponse.self, from: responseData) {
-            // Filter only files with size (folders don't have size / client_modified in same way, and we only want files)
-            return decodedResponse.entries?.filter { $0.pathDisplay.lowercased().hasSuffix(".mp4") } ?? []
+        var files: [DropboxFileSimple] = []
+        for entry in entries {
+            guard let name = entry["name"] as? String,
+                  let path = entry["path_display"] as? String,
+                  let modified = entry["client_modified"] as? String,
+                  let size = entry["size"] as? UInt64 else { continue }
+            
+            if !path.lowercased().hasSuffix(".mp4") { continue }
+            
+            var duration: TimeInterval?
+            if let mediaInfo = entry["media_info"] as? [String: Any],
+               let metadata = mediaInfo["metadata"] as? [String: Any],
+               let dur = metadata["duration"] as? Double {
+                duration = dur / 1000.0 // Dropbox gives ms for video
+            }
+            
+            files.append(DropboxFileSimple(name: name, pathDisplay: path, clientModified: modified, size: size, duration: duration))
         }
-        
-        return []
+        return files
     }
 
     /// Fetches all shared links dict (path_display -> url)
@@ -428,11 +476,62 @@ final class DropboxUploadManager {
         
         var map: [String: String] = [:]
         for link in links {
-            if let pathDisplay = link["path_lower"] as? String, // lowercase is safer for keys
-               let linkUrl = link["url"] as? String {
-                map[pathDisplay] = linkUrl
+            if let path = link["path_lower"] as? String,
+               let url = link["url"] as? String {
+                map[path] = url
             }
         }
         return map
+    }
+
+    /// Deletes a file at path
+    func deleteFile(path: String, accessToken: String) async throws {
+        guard !accessToken.isEmpty else { throw DropboxError.invalidToken }
+        let url = URL(string: "https://api.dropboxapi.com/2/files/delete_v2")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let body: [String: Any] = ["path": path]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        try await withRetry {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  (200...299).contains(httpResponse.statusCode) else {
+                throw DropboxError.noData
+            }
+        }
+    }
+
+    /// Fetches a thumbnail for a file
+    func getThumbnail(path: String, accessToken: String) async throws -> Data {
+        guard !accessToken.isEmpty else { throw DropboxError.invalidToken }
+        let url = URL(string: "https://content.dropboxapi.com/2/files/get_thumbnail_v2")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        
+        let arg: [String: Any] = [
+            "resource": [".tag": "path", "path": path],
+            "format": "jpeg",
+            "size": "w128h128",
+            "mode": "bestfit"
+        ]
+        let argData = try JSONSerialization.data(withJSONObject: arg)
+        
+        if let jsonString = String(data: argData, encoding: .utf8) {
+            request.setValue(jsonString, forHTTPHeaderField: "Dropbox-API-Arg")
+        }
+        
+        return try await withRetry {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  (200...299).contains(httpResponse.statusCode) else {
+                throw DropboxError.noData
+            }
+            return data
+        }
     }
 }

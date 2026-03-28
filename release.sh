@@ -68,22 +68,22 @@ echo "📝 Updating appcast.xml..."
 DOWNLOAD_URL="https://github.com/$GITHUB_REPO/releases/download/v$VERSION/$DMG_NAME.dmg"
 PUB_DATE=$(date -u '+%a, %d %b %Y %H:%M:%S %z')
 
-# Insert new item before the closing </channel> tag
+# Insert new item AFTER <language>en</language>
 ITEM="    <item>\\
       <title>Version $VERSION</title>\\
       <pubDate>$PUB_DATE</pubDate>\\
       <sparkle:version>$VERSION</sparkle:version>\\
       <sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>\\
       <enclosure\\
-        url=\"$DOWNLOAD_URL\"\\
-        sparkle:edSignature=\"$ED_SIGNATURE\"\\
-        length=\"$DMG_SIZE\"\\
-        type=\"application/octet-stream\"/>\\
+        url=\\\"$DOWNLOAD_URL\\\"\\
+        sparkle:edSignature=\\\"$ED_SIGNATURE\\\"\\
+        length=\\\"$DMG_SIZE\\\"\\
+        type=\\\"application/octet-stream\\\"/>\\
     </item>"
 
-# Use sed to insert before </channel>
-sed -i '' "s|</channel>|$ITEM\\
-  </channel>|" "$APPCAST"
+# Use sed to insert after <language>en</language>
+sed -i '' "s|<language>en</language>|<language>en</language>\\
+$ITEM|" "$APPCAST"
 
 echo "✅ appcast.xml updated"
 

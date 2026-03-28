@@ -34,24 +34,21 @@ struct RecordingsListView: View {
             .padding(.horizontal)
 
             if appState.recordings.isEmpty {
-                HStack {
-                    Spacer()
-                    VStack(spacing: 6) {
-                        Image(systemName: "video.slash")
-                            .font(.system(size: 24))
-                            .foregroundStyle(.tertiary)
-                        Text("No recordings yet")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.vertical, 16)
-                    Spacer()
+                VStack(spacing: 6) {
+                    Image(systemName: "video.slash")
+                        .font(.system(size: 24))
+                        .foregroundStyle(.tertiary)
+                    Text("No recordings yet")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
                 }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 24)
             } else {
                 ScrollView {
                     VStack(spacing: 4) {
                         ForEach(appState.recordings.prefix(10)) { recording in
-                            RecordingRowView(recording: recording)
+                            RecordingRowView(appState: appState, recording: recording)
                         }
                     }
                 }
@@ -64,22 +61,56 @@ struct RecordingsListView: View {
 // MARK: - Recording Row
 
 struct RecordingRowView: View {
+    @Bindable var appState: AppState // Need bindable for delete
     let recording: Recording
     @State private var showCopied = false
     @State private var isLinkHovered = false
+    @State private var isHovered = false
+    @State private var showingDeleteAlert = false
+    @State private var uptime = Date() // For Timer trigger
+    
+    let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+
+    private var showCloudIcon: Bool {
+        guard let completedAt = recording.uploadCompletedAt else { return false }
+        return Date().timeIntervalSince(completedAt) < 5
+    }
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 12) {
             // Play icon / thumbnail
-            ZStack {
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(.quaternary)
-                    .frame(width: 40, height: 28)
-
-                Image(systemName: "play.fill")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
+            Button {
+                if let shareURL = recording.shareURL {
+                    NSWorkspace.shared.open(shareURL)
+                }
+            } label: {
+                ZStack {
+                    if let path = recording.dropboxPath {
+                        DropboxThumbnailView(path: path, appState: appState)
+                    } else {
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(.quaternary)
+                            .frame(width: 48, height: 32)
+                        
+                        Image(systemName: "play.fill")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                    }
+                    
+                    // Hover overlay
+                    if isHovered {
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(Color.black.opacity(0.15))
+                            .overlay {
+                                Image(systemName: "play.circle.fill")
+                                    .font(.system(size: 16))
+                                    .foregroundStyle(.white)
+                            }
+                    }
+                }
+                .frame(width: 48, height: 32)
             }
+            .buttonStyle(.plain)
 
             // Recording info
             VStack(alignment: .leading, spacing: 2) {
@@ -94,6 +125,15 @@ struct RecordingRowView: View {
 
                     Text("·")
                         .foregroundStyle(.quaternary)
+                    
+                    if !recording.formattedFileSize.isEmpty {
+                        Text(recording.formattedFileSize)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                        
+                        Text("·")
+                            .foregroundStyle(.quaternary)
+                    }
 
                     Text(recording.formattedDate)
                         .font(.system(size: 10))
@@ -104,51 +144,71 @@ struct RecordingRowView: View {
             Spacer()
 
             // Copy URL button (only when uploaded)
-            if recording.shareURL != nil {
-                Button {
-                    if let url = recording.shareURL {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(url.absoluteString, forType: .string)
-                        showCopied = true
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                            showCopied = false
-                        }
-                    }
-                } label: {
-                    Image(systemName: showCopied ? "checkmark" : "link")
-                        .font(.system(size: 11))
-                        .foregroundStyle(showCopied ? .green : (isLinkHovered ? .blue : .secondary))
-                        .frame(width: 24, height: 24)
-                        .background(isLinkHovered ? Color.blue.opacity(0.1) : Color.clear)
-                        .clipShape(RoundedRectangle(cornerRadius: 4))
-                        .animation(.easeInOut(duration: 0.15), value: isLinkHovered)
-                        .animation(.easeInOut(duration: 0.2), value: showCopied)
-                }
-                .buttonStyle(.plain)
-                .onHover { hovering in
-                    isLinkHovered = hovering
-                }
-                .overlay(alignment: .top) {
-                    if showCopied {
-                        Text("Copied!")
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(Color.black.opacity(0.8))
+            HStack(spacing: 8) {
+                if isHovered {
+                    // Trash / Delete button
+                    Button {
+                        showingDeleteAlert = true
+                    } label: {
+                        Image(systemName: "trash")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.red)
+                            .frame(width: 24, height: 24)
+                            .background(Color.red.opacity(0.1))
                             .clipShape(RoundedRectangle(cornerRadius: 4))
-                            .offset(y: -28)
-                            .transition(.opacity.combined(with: .move(edge: .bottom)))
-                            .animation(.easeOut(duration: 0.2), value: showCopied)
+                    }
+                    .buttonStyle(.plain)
+                    .alert("Delete Recording?", isPresented: $showingDeleteAlert) {
+                        Button("Cancel", role: .cancel) { }
+                        Button("Delete", role: .destructive) {
+                            Task {
+                                await appState.deleteRecording(recording)
+                            }
+                        }
+                    } message: {
+                        Text("Are you sure you want to delete this recording from Dropbox? This action cannot be undone.")
                     }
                 }
-            }
+                
+                if recording.shareURL != nil {
+                    Button {
+                        if let url = recording.shareURL {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(url.absoluteString, forType: .string)
+                            showCopied = true
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                                showCopied = false
+                            }
+                        }
+                    } label: {
+                        Image(systemName: showCopied ? "checkmark" : "link")
+                            .font(.system(size: 11))
+                            .foregroundStyle(showCopied ? .green : (isLinkHovered ? .blue : .secondary))
+                            .frame(width: 24, height: 24)
+                            .background(isLinkHovered ? Color.blue.opacity(0.1) : Color.clear)
+                            .clipShape(RoundedRectangle(cornerRadius: 4))
+                    }
+                    .buttonStyle(.plain)
+                    .onHover { hovering in
+                        isLinkHovered = hovering
+                    }
+                }
 
-            // Upload status
-            uploadStatusIcon
+                // Upload status
+                uploadStatusIcon
+            }
         }
         .padding(.horizontal)
         .padding(.vertical, 6)
+        .background(isHovered ? Color.primary.opacity(0.03) : Color.clear)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .padding(.horizontal, 4)
+        .onHover { hovering in
+            isHovered = hovering
+        }
+        .onReceive(timer) { input in
+            uptime = input
+        }
         .background(.clear)
         .contentShape(Rectangle())
         .onTapGesture(count: 2) {
@@ -171,9 +231,11 @@ struct RecordingRowView: View {
             ProgressView()
                 .controlSize(.small)
         case .uploaded:
-            Image(systemName: "checkmark.icloud.fill")
-                .font(.system(size: 12))
-                .foregroundStyle(.green)
+            if showCloudIcon {
+                Image(systemName: "checkmark.icloud.fill")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.green)
+            }
         case .failed:
             Image(systemName: "exclamationmark.icloud.fill")
                 .font(.system(size: 12))

@@ -190,6 +190,7 @@ final class AppState {
                 if let idx = recordings.firstIndex(where: { $0.id == id }) {
                     recordings[idx].dropboxPath = uploadedPath
                     recordings[idx].uploadStatus = .uploaded
+                    recordings[idx].uploadCompletedAt = Date()
                     dropboxPath = uploadedPath
                     saveRecordings()
                     print("📤 Upload: ✅ Uploaded to Dropbox: \(uploadedPath)")
@@ -322,9 +323,10 @@ final class AppState {
                 }
                 
                 let fakeURL = URL(fileURLWithPath: "/tmp/\(file.name)")
-                var rec = Recording(id: existingID, fileURL: fakeURL, createdAt: date, duration: 0, uploadStatus: .uploaded)
+                var rec = Recording(id: existingID, fileURL: fakeURL, createdAt: date, duration: file.duration ?? 0, uploadStatus: .uploaded)
                 rec.dropboxPath = file.pathDisplay
                 rec.dropboxSharedURL = sharedUrl
+                rec.fileSize = file.size
                 
                 let baseName = (file.name as NSString).deletingPathExtension
                 if !baseName.starts(with: "Recording_") {
@@ -367,6 +369,33 @@ final class AppState {
     func clearHistory() {
         recordings.removeAll()
         saveRecordings()
+    }
+
+    func deleteRecording(_ recording: Recording) async {
+        // 1. Delete from remote if uploaded
+        if let path = recording.dropboxPath, dropboxAuthManager.isSignedIn {
+            do {
+                let token = await dropboxAuthManager.refreshTokenIfNeeded() ?? dropboxAuthManager.accessToken ?? ""
+                try await dropboxUploadManager.deleteFile(path: path, accessToken: token)
+                print("🗑️ Remote: Deleted \(path)")
+            } catch {
+                print("❌ Remote Delete Failed: \(error)")
+            }
+        }
+        
+        // 2. Delete local if exists
+        if FileManager.default.fileExists(atPath: recording.fileURL.path) {
+            try? FileManager.default.removeItem(at: recording.fileURL)
+        }
+        
+        // 3. Remove from state
+        DispatchQueue.main.async {
+            self.recordings.removeAll { $0.id == recording.id }
+            self.saveRecordings()
+        }
+        
+        // 4. Sync storage info
+        await syncDropboxState()
     }
 
     // MARK: - Recordings Directory

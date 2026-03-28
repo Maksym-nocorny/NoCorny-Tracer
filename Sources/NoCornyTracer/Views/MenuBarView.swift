@@ -207,7 +207,6 @@ struct MenuBarView: View {
 
     // MARK: - Storage Bar
 
-    @ViewBuilder
     private var storageBarView: some View {
         let used = Double(appState.dropboxUsedSpace)
         let allocated = Double(appState.dropboxAllocatedSpace)
@@ -218,7 +217,13 @@ struct MenuBarView: View {
         let approxMinutes = remaining / (46.0 * 1024 * 1024)
         let isLowSpace = percentLeft < 0.2
         
-        VStack(alignment: .leading, spacing: 6) {
+        let formatter = ByteCountFormatter()
+        formatter.allowedUnits = [.useGB, .useMB]
+        formatter.countStyle = .file
+        let usedStr = formatter.string(fromByteCount: Int64(used))
+        let allocatedStr = formatter.string(fromByteCount: Int64(allocated))
+        
+        return VStack(alignment: .leading, spacing: 6) {
             HStack {
                 HStack(spacing: 6) {
                     Image(systemName: "icloud")
@@ -229,7 +234,7 @@ struct MenuBarView: View {
                 
                 Spacer()
                 
-                Text("\(Int(approxMinutes)) min left")
+                Text("\(usedStr) / \(allocatedStr) • \(Int(approxMinutes)) min left")
                     .font(.system(size: 10, weight: .medium))
             }
             .foregroundStyle(isLowSpace ? .red : .secondary)
