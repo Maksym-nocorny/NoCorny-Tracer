@@ -447,7 +447,7 @@ final class DropboxUploadManager {
             if let mediaInfo = entry["media_info"] as? [String: Any],
                let metadata = mediaInfo["metadata"] as? [String: Any],
                let dur = metadata["duration"] as? Double {
-                duration = dur / 1000.0 // Dropbox gives ms for video
+                duration = dur // Dropbox metadata duration is in seconds (floating point)
             }
             
             files.append(DropboxFileSimple(name: name, pathDisplay: path, clientModified: modified, size: size, duration: duration))

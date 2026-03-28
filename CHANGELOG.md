@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.2.2] - 2026-03-28
+### Fixed
+- **UI Jumping**: Stabilized recordings list layout to prevent items from shifting on hover.
+- **Delete Bug**: Fixed an issue where the delete confirmation dialog would disappear if the mouse moved.
+- **Duration Parsing**: Corrected video duration display (no longer shows 00:00).
+- **Window Scaling**: Increased window height and list area to fit more recordings.
+### Changed
+- Renamed "Your Recordings" instead of "Recent Recordings".
+
 ## [2.2.1] - 2026-03-28
 ### Added
 - **Robust Dropbox Uploads**: Refactored session uploads to stream from disk, drastically reducing memory usage for large files.

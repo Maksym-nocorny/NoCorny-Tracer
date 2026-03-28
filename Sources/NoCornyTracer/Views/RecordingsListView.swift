@@ -7,7 +7,7 @@ struct RecordingsListView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("Recent Recordings")
+                Text("Your Recordings")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.secondary)
                     .textCase(.uppercase)
@@ -52,7 +52,7 @@ struct RecordingsListView: View {
                         }
                     }
                 }
-                .frame(maxHeight: 200)
+                .frame(maxHeight: 800)
             }
         }
     }
@@ -144,31 +144,22 @@ struct RecordingRowView: View {
             Spacer()
 
             // Copy URL button (only when uploaded)
+            // Action buttons container (fixed width to prevent jumping)
             HStack(spacing: 8) {
-                if isHovered {
-                    // Trash / Delete button
-                    Button {
-                        showingDeleteAlert = true
-                    } label: {
-                        Image(systemName: "trash")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.red)
-                            .frame(width: 24, height: 24)
-                            .background(Color.red.opacity(0.1))
-                            .clipShape(RoundedRectangle(cornerRadius: 4))
-                    }
-                    .buttonStyle(.plain)
-                    .alert("Delete Recording?", isPresented: $showingDeleteAlert) {
-                        Button("Cancel", role: .cancel) { }
-                        Button("Delete", role: .destructive) {
-                            Task {
-                                await appState.deleteRecording(recording)
-                            }
-                        }
-                    } message: {
-                        Text("Are you sure you want to delete this recording from Dropbox? This action cannot be undone.")
-                    }
+                // Trash / Delete button (always takes space but hides opacity)
+                Button {
+                    showingDeleteAlert = true
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.red)
+                        .frame(width: 24, height: 24)
+                        .background(Color.red.opacity(0.1))
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
                 }
+                .buttonStyle(.plain)
+                .opacity(isHovered || showingDeleteAlert ? 1 : 0)
+                .disabled(!isHovered && !showingDeleteAlert)
                 
                 if recording.shareURL != nil {
                     Button {
@@ -196,6 +187,16 @@ struct RecordingRowView: View {
 
                 // Upload status
                 uploadStatusIcon
+            }
+            .alert("Delete Recording?", isPresented: $showingDeleteAlert) {
+                Button("Cancel", role: .cancel) { }
+                Button("Delete", role: .destructive) {
+                    Task {
+                        await appState.deleteRecording(recording)
+                    }
+                }
+            } message: {
+                Text("Are you sure you want to delete this recording from Dropbox? This action cannot be undone.")
             }
         }
         .padding(.horizontal)
