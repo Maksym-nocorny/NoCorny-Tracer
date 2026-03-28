@@ -15,7 +15,6 @@ struct MenuBarView: View {
             }
         }
         .frame(width: 340)
-        .frame(minHeight: 750)
         .onAppear {
             appState.cameraManager.refreshDevices()
             appState.recordingManager.audioCaptureManager.refreshDevices()

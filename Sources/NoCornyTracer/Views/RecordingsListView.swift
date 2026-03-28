@@ -52,7 +52,7 @@ struct RecordingsListView: View {
                         }
                     }
                 }
-                .frame(maxHeight: 450)
+                .frame(minHeight: 150, maxHeight: 450)
             }
         }
     }
@@ -188,13 +188,13 @@ struct RecordingRowView: View {
                 // Upload status
                 uploadStatusIcon
             }
-            .alert("Delete Recording?", isPresented: $showingDeleteAlert) {
-                Button("Cancel", role: .cancel) { }
+            .confirmationDialog("Delete Recording?", isPresented: $showingDeleteAlert, titleVisibility: .visible) {
                 Button("Delete", role: .destructive) {
                     Task {
                         await appState.deleteRecording(recording)
                     }
                 }
+                Button("Cancel", role: .cancel) { }
             } message: {
                 Text("Are you sure you want to delete this recording from Dropbox? This action cannot be undone.")
             }

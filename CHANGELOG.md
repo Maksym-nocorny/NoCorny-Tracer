@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.2.4] - 2026-03-28
+### Fixed
+- **Video Duration**: Corrected duration display by converting Dropbox API milliseconds to seconds (was always showing 00:00).
+- **Delete Button**: Replaced `.alert()` with `.confirmationDialog()` so the delete confirmation no longer closes the app panel.
+- **Recordings List Height**: Added a minimum height (150pt) so the list is compact with few recordings, and capped at 450pt maximum for many recordings.
+
 ## [2.2.3] - 2026-03-28
 ### Fixed
 - **Window Scaling**: Corrected window height to be a reasonable 750px (2.5x of standard) instead of the previous 1250px.
