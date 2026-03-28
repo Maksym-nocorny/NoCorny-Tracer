@@ -52,7 +52,7 @@ struct RecordingsListView: View {
                         }
                     }
                 }
-                .frame(maxHeight: 800)
+                .frame(maxHeight: 450)
             }
         }
     }

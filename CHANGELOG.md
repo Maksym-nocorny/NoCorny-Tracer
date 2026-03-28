@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.2.3] - 2026-03-28
+### Fixed
+- **Window Scaling**: Corrected window height to be a reasonable 750px (2.5x of standard) instead of the previous 1250px.
+- **Duration Parsing**: Improved numeric extraction from Dropbox metadata to ensure video length is correctly displayed.
+
 ## [2.2.2] - 2026-03-28
 ### Fixed
 - **UI Jumping**: Stabilized recordings list layout to prevent items from shifting on hover.
