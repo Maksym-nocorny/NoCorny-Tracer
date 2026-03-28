@@ -144,59 +144,75 @@ struct RecordingRowView: View {
             Spacer()
 
             // Copy URL button (only when uploaded)
-            // Action buttons container (fixed width to prevent jumping)
+            // Action buttons container
             HStack(spacing: 8) {
-                // Trash / Delete button (always takes space but hides opacity)
-                Button {
-                    showingDeleteAlert = true
-                } label: {
-                    Image(systemName: "trash")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.red)
-                        .frame(width: 24, height: 24)
-                        .background(Color.red.opacity(0.1))
-                        .clipShape(RoundedRectangle(cornerRadius: 4))
-                }
-                .buttonStyle(.plain)
-                .opacity(isHovered || showingDeleteAlert ? 1 : 0)
-                .disabled(!isHovered && !showingDeleteAlert)
-                
-                if recording.shareURL != nil {
-                    Button {
-                        if let url = recording.shareURL {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(url.absoluteString, forType: .string)
-                            showCopied = true
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                                showCopied = false
-                            }
+                if showingDeleteAlert {
+                    Button("Delete") {
+                        Task {
+                            await appState.deleteRecording(recording)
                         }
+                    }
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.red)
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                    .buttonStyle(.plain)
+                    
+                    Button("Cancel") {
+                        showingDeleteAlert = false
+                    }
+                    .font(.system(size: 11))
+                    .foregroundStyle(.primary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.primary.opacity(0.1))
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                    .buttonStyle(.plain)
+                } else {
+                    // Trash / Delete button (always takes space but hides opacity)
+                    Button {
+                        showingDeleteAlert = true
                     } label: {
-                        Image(systemName: showCopied ? "checkmark" : "link")
+                        Image(systemName: "trash")
                             .font(.system(size: 11))
-                            .foregroundStyle(showCopied ? .green : (isLinkHovered ? .blue : .secondary))
+                            .foregroundStyle(.red)
                             .frame(width: 24, height: 24)
-                            .background(isLinkHovered ? Color.blue.opacity(0.1) : Color.clear)
+                            .background(Color.red.opacity(0.1))
                             .clipShape(RoundedRectangle(cornerRadius: 4))
                     }
                     .buttonStyle(.plain)
-                    .onHover { hovering in
-                        isLinkHovered = hovering
+                    .opacity(isHovered || showingDeleteAlert ? 1 : 0)
+                    .disabled(!isHovered && !showingDeleteAlert)
+                    
+                    if recording.shareURL != nil {
+                        Button {
+                            if let url = recording.shareURL {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(url.absoluteString, forType: .string)
+                                showCopied = true
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                                    showCopied = false
+                                }
+                            }
+                        } label: {
+                            Image(systemName: showCopied ? "checkmark" : "link")
+                                .font(.system(size: 11))
+                                .foregroundStyle(showCopied ? .green : (isLinkHovered ? .blue : .secondary))
+                                .frame(width: 24, height: 24)
+                                .background(isLinkHovered ? Color.blue.opacity(0.1) : Color.clear)
+                                .clipShape(RoundedRectangle(cornerRadius: 4))
+                        }
+                        .buttonStyle(.plain)
+                        .onHover { hovering in
+                            isLinkHovered = hovering
+                        }
                     }
-                }
 
-                // Upload status
-                uploadStatusIcon
-            }
-            .confirmationDialog("Delete Recording?", isPresented: $showingDeleteAlert, titleVisibility: .visible) {
-                Button("Delete", role: .destructive) {
-                    Task {
-                        await appState.deleteRecording(recording)
-                    }
+                    // Upload status
+                    uploadStatusIcon
                 }
-                Button("Cancel", role: .cancel) { }
-            } message: {
-                Text("Are you sure you want to delete this recording from Dropbox? This action cannot be undone.")
             }
         }
         .padding(.horizontal)

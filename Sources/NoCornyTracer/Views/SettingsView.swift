@@ -33,28 +33,26 @@ struct SettingsView: View {
 
             Divider()
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    // Dropbox Account Section
-                    dropboxAccountSection
+            VStack(alignment: .leading, spacing: 20) {
+                // Dropbox Account Section
+                dropboxAccountSection
 
-                    Divider()
-                    
-                    // Recording Settings
-                    recordingSettingsSection
+                Divider()
+                
+                // Recording Settings
+                recordingSettingsSection
 
-                    Divider()
+                Divider()
 
-                    // General Settings
-                    generalSection
+                // General Settings
+                generalSection
 
-                    Divider()
+                Divider()
 
-                    // About
-                    aboutSection
-                }
-                .padding()
+                // About
+                aboutSection
             }
+            .padding()
         }
     }
 

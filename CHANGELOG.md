@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.2.5] - 2026-03-28
+### Fixed
+- **Settings View Height**: Removed fixed scrollable constraints, allowing the settings menu to size itself correctly to its content.
+- **Delete Button**: Replaced macOS alert dialog with inline buttons to fix click detection and MenuBarExtra focus loss issues.
+- **Video Duration**: Inherited original local recording duration while Dropbox backend processes video metadata to prevent temporary `00:00` durations.
+
 ## [2.2.4] - 2026-03-28
 ### Fixed
 - **Video Duration**: Corrected duration display by converting Dropbox API milliseconds to seconds (was always showing 00:00).

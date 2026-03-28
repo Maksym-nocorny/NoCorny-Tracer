@@ -318,12 +318,15 @@ final class AppState {
                 let date = df.date(from: file.clientModified) ?? Date()
                 
                 var existingID = UUID()
+                var existingDuration: TimeInterval? = nil
                 if let matched = self.recordings.first(where: { $0.dropboxPath?.lowercased() == lowerPath }) {
                     existingID = matched.id
+                    existingDuration = matched.duration
                 }
                 
                 let fakeURL = URL(fileURLWithPath: "/tmp/\(file.name)")
-                var rec = Recording(id: existingID, fileURL: fakeURL, createdAt: date, duration: file.duration ?? 0, uploadStatus: .uploaded)
+                let finalDuration = file.duration ?? existingDuration ?? 0
+                var rec = Recording(id: existingID, fileURL: fakeURL, createdAt: date, duration: finalDuration, uploadStatus: .uploaded)
                 rec.dropboxPath = file.pathDisplay
                 rec.dropboxSharedURL = sharedUrl
                 rec.fileSize = file.size
