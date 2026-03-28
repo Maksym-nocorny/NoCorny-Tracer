@@ -32,6 +32,10 @@ struct NoCornyTracerApp: App {
                     // Initial check on launch after view builds
                     cameraWindowManager.updateVisibility(isEnabled: appState.isCameraEnabled, appState: appState)
                 }
+                .onOpenURL { url in
+                    // Route Dropbox OAuth callback (db-uypbk3hdc7zz4l7://oauth2callback?code=...)
+                    appState.dropboxAuthManager.handleCallback(url)
+                }
         } label: {
             MenuBarLabelView(
                 appState: appState,

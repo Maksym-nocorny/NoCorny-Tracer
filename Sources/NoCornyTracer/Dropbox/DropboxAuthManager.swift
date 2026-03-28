@@ -1,9 +1,8 @@
 import Foundation
-import AuthenticationServices
 import AppKit
 import CryptoKit
 
-/// Manages Dropbox OAuth2 authentication using PKCE (no SDK dependency)
+/// Manages Dropbox OAuth2 authentication using PKCE + system default browser
 @Observable
 final class DropboxAuthManager: NSObject {
     // MARK: - State
@@ -31,14 +30,16 @@ final class DropboxAuthManager: NSObject {
     private let refreshTokenKey = "DropboxRefreshToken"
     private let expiresAtKey = "DropboxTokenExpiry"
 
-    private var authSession: ASWebAuthenticationSession?
+    /// Stored between signIn() and handleCallback()
+    private var pendingCodeVerifier: String?
 
     override init() {
         super.init()
         restorePreviousSignIn()
     }
 
-    // MARK: - Sign In
+    // MARK: - Sign In (opens default browser)
+
     func signIn() {
         guard isConfigured else {
             errorMessage = "Dropbox App Key not configured."
@@ -50,6 +51,7 @@ final class DropboxAuthManager: NSObject {
 
         let codeVerifier = generateCodeVerifier()
         let codeChallenge = generateCodeChallenge(verifier: codeVerifier)
+        self.pendingCodeVerifier = codeVerifier
 
         var comp = URLComponents(string: "https://www.dropbox.com/oauth2/authorize")!
         comp.queryItems = [
@@ -67,41 +69,30 @@ final class DropboxAuthManager: NSObject {
             return
         }
 
-        let scheme = "db-\(appKey)"
+        // Open in the user's default browser (Chrome, Firefox, Arc, etc.)
+        NSWorkspace.shared.open(authURL)
+    }
 
-        authSession = ASWebAuthenticationSession(url: authURL, callbackURLScheme: scheme) { [weak self] callbackURL, error in
+    // MARK: - Handle OAuth Callback (called by onOpenURL in App)
+
+    /// Call this when the app receives a URL via the registered URL scheme.
+    func handleCallback(_ url: URL) {
+        guard let comp = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let code = comp.queryItems?.first(where: { $0.name == "code" })?.value,
+              let codeVerifier = pendingCodeVerifier else {
             DispatchQueue.main.async {
-                self?.isLoading = false
-                if let error = error {
-                    if let asError = error as? ASWebAuthenticationSessionError, asError.code == .canceledLogin {
-                        // User canceled, no error message needed
-                    } else {
-                        self?.errorMessage = error.localizedDescription
-                    }
-                    return
-                }
-
-                guard let callbackURL = callbackURL,
-                      let comp = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false),
-                      let code = comp.queryItems?.first(where: { $0.name == "code" })?.value else {
-                    self?.errorMessage = "Invalid callback URL"
-                    return
-                }
-
-                self?.exchangeCodeForToken(code: code, codeVerifier: codeVerifier)
+                self.isLoading = false
+                self.errorMessage = "Invalid callback URL or missing code verifier"
             }
+            return
         }
 
-        authSession?.presentationContextProvider = self
-        authSession?.prefersEphemeralWebBrowserSession = false
-
-        if authSession?.start() == false {
-            errorMessage = "Failed to start authentication session."
-            isLoading = false
-        }
+        pendingCodeVerifier = nil
+        exchangeCodeForToken(code: code, codeVerifier: codeVerifier)
     }
 
     // MARK: - Sign Out
+
     func signOut() {
         UserDefaults.standard.removeObject(forKey: tokenKey)
         UserDefaults.standard.removeObject(forKey: refreshTokenKey)
@@ -114,6 +105,7 @@ final class DropboxAuthManager: NSObject {
     }
 
     // MARK: - Restore Session
+
     private func restorePreviousSignIn() {
         guard isConfigured,
               let _ = UserDefaults.standard.string(forKey: refreshTokenKey) else { return }
@@ -127,10 +119,11 @@ final class DropboxAuthManager: NSObject {
     }
 
     // MARK: - Token Refresh
+
     func refreshTokenIfNeeded() async -> String? {
         guard let refreshToken = UserDefaults.standard.string(forKey: refreshTokenKey) else { return nil }
 
-        // Check if token is still valid (add 5 min buffer)
+        // Use current token if still valid (5 min buffer)
         if let expiry = UserDefaults.standard.object(forKey: expiresAtKey) as? Date,
            let currentToken = UserDefaults.standard.string(forKey: tokenKey),
            Date().addingTimeInterval(300) < expiry {
@@ -160,9 +153,7 @@ final class DropboxAuthManager: NSObject {
                 }
                 UserDefaults.standard.set(newAccessToken, forKey: tokenKey)
 
-                DispatchQueue.main.async {
-                    self.accessToken = newAccessToken
-                }
+                DispatchQueue.main.async { self.accessToken = newAccessToken }
                 return newAccessToken
             }
         } catch {
@@ -172,10 +163,9 @@ final class DropboxAuthManager: NSObject {
         return nil
     }
 
-    // MARK: - Private API Calls
-    private func exchangeCodeForToken(code: String, codeVerifier: String) {
-        isLoading = true
+    // MARK: - Token Exchange
 
+    private func exchangeCodeForToken(code: String, codeVerifier: String) {
         let url = URL(string: "https://api.dropboxapi.com/oauth2/token")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -191,7 +181,7 @@ final class DropboxAuthManager: NSObject {
         ]
         request.httpBody = bodyComp.query?.data(using: .utf8)
 
-        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+        URLSession.shared.dataTask(with: request) { [weak self] data, _, error in
             DispatchQueue.main.async {
                 self?.isLoading = false
 
@@ -207,8 +197,8 @@ final class DropboxAuthManager: NSObject {
 
                 do {
                     if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                        if let errorMsg = json["error_description"] as? String ?? json["error"] as? String {
-                            self?.errorMessage = errorMsg
+                        if let errMsg = json["error_description"] as? String ?? json["error"] as? String {
+                            self?.errorMessage = errMsg
                             return
                         }
 
@@ -217,7 +207,6 @@ final class DropboxAuthManager: NSObject {
                             return
                         }
 
-                        // Save tokens
                         UserDefaults.standard.set(token, forKey: self?.tokenKey ?? "")
                         if let refreshToken = json["refresh_token"] as? String {
                             UserDefaults.standard.set(refreshToken, forKey: self?.refreshTokenKey ?? "")
@@ -228,7 +217,6 @@ final class DropboxAuthManager: NSObject {
 
                         self?.accessToken = token
 
-                        // Fetch account info
                         Task { [weak self] in
                             await self?.fetchAccountInfo(token: token)
                         }
@@ -239,6 +227,8 @@ final class DropboxAuthManager: NSObject {
             }
         }.resume()
     }
+
+    // MARK: - Account Info
 
     private func fetchAccountInfo(token: String) async {
         var request = URLRequest(url: URL(string: "https://api.dropboxapi.com/2/users/get_current_account")!)
@@ -262,6 +252,7 @@ final class DropboxAuthManager: NSObject {
     }
 
     // MARK: - PKCE Helpers
+
     private func generateCodeVerifier() -> String {
         var buffer = [UInt8](repeating: 0, count: 32)
         _ = SecRandomCopyBytes(kSecRandomDefault, buffer.count, &buffer)
@@ -269,7 +260,6 @@ final class DropboxAuthManager: NSObject {
             .replacingOccurrences(of: "+", with: "-")
             .replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: "=", with: "")
-            .trimmingCharacters(in: .whitespaces)
     }
 
     private func generateCodeChallenge(verifier: String) -> String {
@@ -279,13 +269,5 @@ final class DropboxAuthManager: NSObject {
             .replacingOccurrences(of: "+", with: "-")
             .replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: "=", with: "")
-            .trimmingCharacters(in: .whitespaces)
-    }
-}
-
-// MARK: - ASWebAuthenticationPresentationContextProviding
-extension DropboxAuthManager: ASWebAuthenticationPresentationContextProviding {
-    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
-        return NSApplication.shared.windows.first ?? ASPresentationAnchor()
     }
 }

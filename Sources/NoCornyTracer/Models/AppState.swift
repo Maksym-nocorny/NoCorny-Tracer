@@ -234,8 +234,13 @@ final class AppState {
 
         // Step 3: AI Naming (using frames + subtitles)
         print("🤖 Starting AI naming...")
-        if let aiName = await aiNamingService.generateName(for: fileURL, subtitles: generatedSubtitles) {
+        if let aiNameBase = await aiNamingService.generateName(for: fileURL, subtitles: generatedSubtitles) {
             if let idx = recordings.firstIndex(where: { $0.id == id }) {
+                let formatter = DateFormatter()
+                formatter.dateFormat = "dd MMMM yyyy - HH.mm"
+                let dateString = formatter.string(from: recordings[idx].createdAt)
+                let aiName = "\(aiNameBase) \(dateString)"
+                
                 recordings[idx].aiGeneratedName = aiName
                 saveRecordings()
                 print("🤖 AI Naming: ✅ Named: \"\(aiName)\"")
@@ -251,6 +256,13 @@ final class AppState {
                         recordings[idx].dropboxPath = newPath
                         saveRecordings()
                         print("📤 Rename: ✅ Renamed on Dropbox to \"\(aiName).mp4\"")
+                        
+                        // Automatically open the Dropbox link in the browser
+                        if let url = recordings[idx].shareURL {
+                            DispatchQueue.main.async {
+                                NSWorkspace.shared.open(url)
+                            }
+                        }
                     } catch {
                         print("📤 Rename: ❌ \(error)")
                     }
