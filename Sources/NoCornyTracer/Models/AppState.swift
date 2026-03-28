@@ -16,6 +16,10 @@ final class AppState {
 
     // MARK: - State
     var recordings: [Recording] = []
+    var dropboxUsedSpace: UInt64 = 0
+    var dropboxAllocatedSpace: UInt64 = 0
+    var isSyncingDropbox: Bool = false
+    
     var showSettings = false
     var selectedMicrophoneID: String?
     var isMicrophoneEnabled: Bool = true
@@ -274,6 +278,73 @@ final class AppState {
         if dropboxPath != nil {
             try? FileManager.default.removeItem(at: fileURL)
             print("🗑️ Local file deleted")
+            
+            // Step 6: Sync Dropbox state to update UI
+            await syncDropboxState()
+        }
+    }
+
+    // MARK: - Dropbox Sync
+
+    @MainActor
+    func syncDropboxState() async {
+        guard dropboxAuthManager.isSignedIn else { return }
+        isSyncingDropbox = true
+        defer { isSyncingDropbox = false }
+        
+        guard let token = await dropboxAuthManager.refreshTokenIfNeeded() ?? dropboxAuthManager.accessToken else { return }
+        
+        do {
+            // 1. Storage
+            let space = try await dropboxUploadManager.getSpaceUsage(accessToken: token)
+            self.dropboxUsedSpace = space.used
+            self.dropboxAllocatedSpace = space.allocated
+            
+            // 2. Fetch list & links
+            async let filesTask = dropboxUploadManager.listFolder(path: "/NoCorny Tracer", accessToken: token)
+            async let linksTask = dropboxUploadManager.listAllSharedLinks(accessToken: token)
+            
+            let files = try await filesTask
+            let links = try await linksTask
+            
+            // 3. Process into Recordings
+            var syncedRecordings: [Recording] = []
+            let df = ISO8601DateFormatter()
+            
+            for file in files {
+                let lowerPath = file.pathDisplay.lowercased()
+                let sharedUrl = links[lowerPath]
+                let date = df.date(from: file.clientModified) ?? Date()
+                
+                var existingID = UUID()
+                if let matched = self.recordings.first(where: { $0.dropboxPath?.lowercased() == lowerPath }) {
+                    existingID = matched.id
+                }
+                
+                let fakeURL = URL(fileURLWithPath: "/tmp/\(file.name)")
+                var rec = Recording(id: existingID, fileURL: fakeURL, createdAt: date, duration: 0, uploadStatus: .uploaded)
+                rec.dropboxPath = file.pathDisplay
+                rec.dropboxSharedURL = sharedUrl
+                
+                let baseName = (file.name as NSString).deletingPathExtension
+                if !baseName.starts(with: "Recording_") {
+                    rec.aiGeneratedName = baseName
+                }
+                
+                syncedRecordings.append(rec)
+            }
+            
+            // Sort synced by date descending
+            syncedRecordings.sort { $0.createdAt > $1.createdAt }
+            
+            // 4. Merge with local active ones (e.g. uploading/failed)
+            let activeLocal = self.recordings.filter { $0.uploadStatus != .uploaded && $0.uploadStatus != .notUploaded }
+            self.recordings = activeLocal + syncedRecordings
+            
+            saveRecordings()
+            
+        } catch {
+            print("❌ Dropbox Sync Failed: \(error)")
         }
     }
 

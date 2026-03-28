@@ -20,6 +20,7 @@ struct MenuBarView: View {
             appState.cameraManager.refreshDevices()
             appState.recordingManager.audioCaptureManager.refreshDevices()
             appState.hotkeyManager.start(appState: appState)
+            Task { await appState.syncDropboxState() }
         }
         .alert("Start at Login?", isPresented: $appState.showLaunchAtLoginPrompt) {
             Button("Yes, start at login") {

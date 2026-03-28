@@ -31,7 +31,7 @@ final class DropboxUploadManager {
         }
 
         let fileData = try Data(contentsOf: fileURL)
-        let dropboxPath = "/\(fileName)"
+        let dropboxPath = "/NoCorny Tracer/\(fileName)"
 
         if fileData.count <= simpleUploadLimit {
             return try await simpleUpload(data: fileData, path: dropboxPath, accessToken: accessToken)
@@ -324,7 +324,115 @@ final class DropboxUploadManager {
             throw DropboxError.noData
         }
 
-        let dropboxPath = "/\(fileName)"
+        let dropboxPath = "/NoCorny Tracer/\(fileName)"
         return try await simpleUpload(data: fileData, path: dropboxPath, accessToken: accessToken)
+    }
+
+    // MARK: - API Structs
+    struct DropboxFile: Codable {
+        let name: String
+        let pathDisplay: String
+        let clientModified: String
+        let size: UInt64
+        
+        enum CodingKeys: String, CodingKey {
+            case name
+            case pathDisplay = "path_display"
+            case clientModified = "client_modified"
+            case size
+        }
+    }
+
+    // MARK: - App State Syncing methods
+
+    /// Gets used and allocated space in bytes
+    func getSpaceUsage(accessToken: String) async throws -> (used: UInt64, allocated: UInt64) {
+        guard !accessToken.isEmpty else { throw DropboxError.invalidToken }
+        let url = URL(string: "https://api.dropboxapi.com/2/users/get_space_usage")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+
+        let (responseData, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200...299).contains(httpResponse.statusCode),
+              let json = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
+              let used = json["used"] as? NSNumber,
+              let allocation = json["allocation"] as? [String: Any],
+              let allocated = allocation["allocated"] as? NSNumber else {
+            throw DropboxError.noData
+        }
+        
+        return (used: used.uint64Value, allocated: allocated.uint64Value)
+    }
+
+    /// List files in the NoCorny Tracer folder
+    func listFolder(path: String = "/NoCorny Tracer", accessToken: String) async throws -> [DropboxFile] {
+        guard !accessToken.isEmpty else { throw DropboxError.invalidToken }
+        let url = URL(string: "https://api.dropboxapi.com/2/files/list_folder")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let body: [String: Any] = [
+            "path": path,
+            "recursive": false,
+            "include_media_info": true
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (responseData, response) = try await URLSession.shared.data(for: request)
+        if let httpResponse = response as? HTTPURLResponse,
+           httpResponse.statusCode == 409 {
+            // Folder likely doesn't exist yet, return empty list
+            return []
+        }
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200...299).contains(httpResponse.statusCode) else {
+            throw DropboxError.noData
+        }
+        
+        struct ListFolderResponse: Codable {
+            let entries: [DropboxFile]?
+        }
+        
+        // Custom decoding to safely ignore folders or malformed entries
+        let decoder = JSONDecoder()
+        if let decodedResponse = try? decoder.decode(ListFolderResponse.self, from: responseData) {
+            // Filter only files with size (folders don't have size / client_modified in same way, and we only want files)
+            return decodedResponse.entries?.filter { $0.pathDisplay.lowercased().hasSuffix(".mp4") } ?? []
+        }
+        
+        return []
+    }
+
+    /// Fetches all shared links dict (path_display -> url)
+    func listAllSharedLinks(accessToken: String) async throws -> [String: String] {
+        guard !accessToken.isEmpty else { throw DropboxError.invalidToken }
+        let url = URL(string: "https://api.dropboxapi.com/2/sharing/list_shared_links")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        // Don't pass path to get ALL links, we can filter locally or let the response contain what we need
+        request.httpBody = try JSONSerialization.data(withJSONObject: [:])
+
+        let (responseData, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200...299).contains(httpResponse.statusCode),
+              let json = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
+              let links = json["links"] as? [[String: Any]] else {
+            throw DropboxError.noData
+        }
+        
+        var map: [String: String] = [:]
+        for link in links {
+            if let pathDisplay = link["path_lower"] as? String, // lowercase is safer for keys
+               let linkUrl = link["url"] as? String {
+                map[pathDisplay] = linkUrl
+            }
+        }
+        return map
     }
 }

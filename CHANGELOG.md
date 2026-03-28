@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.1.0] - 2026-03-28
+### Added
+- **Dropbox Synchronization**: The recordings list now pulls live data directly from your Dropbox `/NoCorny Tracer/` folder.
+- **Dropbox Storage Status Bar**: A new status bar showing available space and approximate remaining recording minutes (at 1080p 30fps).
+- **Manual Sync**: Added a manual sync button to force-refresh recordings from Dropbox.
+### Changed
+- **Folder Structure**: All recordings and subtitles are now stored in a dedicated `/NoCorny Tracer/` folder on Dropbox.
+- **Removed History**: Removed the local recording history and "Clear History" button in favor of live cloud syncing.
+
+## [2.0.1] - 2026-03-28
+### Fixed
+- Internal bug fixes and stability improvements.
+
 ## [1.6.0] - 2026-03-28
 ### Added
 - **Permissions Window**: A new centralized window that checks for required permissions (Screen Recording, Camera, Microphone, Accessibility) on launch and provides easy "Grant" buttons.
@@ -18,6 +31,8 @@
 - **Improved Readability**: Increased footer font size to 11pt and improved the visibility of the empty recordings state.
 - **Settings Alignment**: Corrected the indentation of recording settings rows for better alignment with icons.
 - **Branding**: Shortened the launch-at-login toggle label for a cleaner settings interface.
+
+
 
 
 ## [1.4.8] - 2026-03-26
