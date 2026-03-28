@@ -55,7 +55,14 @@ struct MenuBarView: View {
 
             // Recordings List
             RecordingsListView(appState: appState)
-                .padding(.vertical, 10)
+                .padding(.top, 12)
+                .padding(.bottom, 8)
+
+            if appState.dropboxAuthManager.isSignedIn && appState.dropboxAllocatedSpace > 0 {
+                Divider()
+                storageBarView
+                    .padding(.vertical, 10)
+            }
 
             Divider()
 
@@ -196,5 +203,48 @@ struct MenuBarView: View {
         }
         .padding(.horizontal)
         .padding(.vertical, 8)
+    }
+
+    // MARK: - Storage Bar
+
+    @ViewBuilder
+    private var storageBarView: some View {
+        let used = Double(appState.dropboxUsedSpace)
+        let allocated = Double(appState.dropboxAllocatedSpace)
+        let remaining = max(0, allocated - used)
+        let percentLeft = remaining / allocated
+        
+        // approx 46 MB per minute at 1080p 30fps
+        let approxMinutes = remaining / (46.0 * 1024 * 1024)
+        let isLowSpace = percentLeft < 0.2
+        
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                HStack(spacing: 6) {
+                    Image(systemName: "icloud")
+                        .font(.system(size: 10))
+                    Text("Dropbox Storage")
+                        .font(.system(size: 10, weight: .bold))
+                }
+                
+                Spacer()
+                
+                Text("\(Int(approxMinutes)) min left")
+                    .font(.system(size: 10, weight: .medium))
+            }
+            .foregroundStyle(isLowSpace ? .red : .secondary)
+            
+            // Progress bar
+            ZStack(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(Color.primary.opacity(0.1))
+                    .frame(height: 4)
+                
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(isLowSpace ? Color.red.gradient : Color.blue.gradient)
+                    .frame(width: max(2, min(308, 308 * CGFloat(used / allocated))), height: 4)
+            }
+        }
+        .padding(.horizontal, 16)
     }
 }

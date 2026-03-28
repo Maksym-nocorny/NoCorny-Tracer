@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.1.1] - 2026-03-28
+### Fixed
+- **UI Layout**: Improved the spacing and alignment of the Recordings list and Dropbox Storage bar.
+- **Storage Bar Design**: Added a more consistent design for the storage indicator with a dedicated icon and improved progress bar.
+
 ## [2.1.0] - 2026-03-28
 ### Added
 - **Dropbox Synchronization**: The recordings list now pulls live data directly from your Dropbox `/NoCorny Tracer/` folder.

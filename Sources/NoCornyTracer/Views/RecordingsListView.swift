@@ -57,48 +57,6 @@ struct RecordingsListView: View {
                 }
                 .frame(maxHeight: 200)
             }
-            
-            if appState.dropboxAuthManager.isSignedIn && appState.dropboxAllocatedSpace > 0 {
-                storageBarView
-                    .padding(.horizontal)
-                    .padding(.top, 4)
-            }
-        }
-    }
-    
-    @ViewBuilder
-    private var storageBarView: some View {
-        let used = Double(appState.dropboxUsedSpace)
-        let allocated = Double(appState.dropboxAllocatedSpace)
-        let remaining = max(0, allocated - used)
-        let percentLeft = remaining / allocated
-        
-        // approx 46 MB per minute = 46 * 1024 * 1024 bytes
-        let approxMinutes = remaining / (46.0 * 1024 * 1024)
-        let isLowSpace = percentLeft < 0.2
-        
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text("Dropbox Storage")
-                    .font(.system(size: 10, weight: .semibold))
-                Spacer()
-                Text("~\(Int(approxMinutes)) min left")
-                    .font(.system(size: 10))
-            }
-            .foregroundStyle(isLowSpace ? .red : .secondary)
-            
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 3)
-                        .fill(Color.secondary.opacity(0.2))
-                        .frame(height: 4)
-                    
-                    RoundedRectangle(cornerRadius: 3)
-                        .fill(isLowSpace ? Color.red : Color.blue)
-                        .frame(width: max(0, min(geo.size.width, geo.size.width * CGFloat(used / allocated))), height: 4)
-                }
-            }
-            .frame(height: 4)
         }
     }
 }
