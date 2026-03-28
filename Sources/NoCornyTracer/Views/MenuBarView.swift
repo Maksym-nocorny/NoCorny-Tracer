@@ -14,7 +14,7 @@ struct MenuBarView: View {
                 mainContent
             }
         }
-        .frame(width: 340)
+        .frame(width: 380)
         .onAppear {
             appState.cameraManager.refreshDevices()
             appState.recordingManager.audioCaptureManager.refreshDevices()

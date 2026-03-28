@@ -119,13 +119,6 @@ struct RecordingRowView: View {
                     .lineLimit(1)
 
                 HStack(spacing: 6) {
-                    Text(recording.formattedDuration)
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-
-                    Text("·")
-                        .foregroundStyle(.quaternary)
-                    
                     if !recording.formattedFileSize.isEmpty {
                         Text(recording.formattedFileSize)
                             .font(.system(size: 10))
@@ -152,6 +145,7 @@ struct RecordingRowView: View {
                             await appState.deleteRecording(recording)
                         }
                     }
+                    .fixedSize()
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.white)
                     .padding(.horizontal, 8)
@@ -163,6 +157,7 @@ struct RecordingRowView: View {
                     Button("Cancel") {
                         showingDeleteAlert = false
                     }
+                    .fixedSize()
                     .font(.system(size: 11))
                     .foregroundStyle(.primary)
                     .padding(.horizontal, 8)

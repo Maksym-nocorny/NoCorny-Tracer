@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.2.6] - 2026-03-28
+### Changed
+- **UI Tweaks**: Removed the confusing video length metadata entirely from the recordings list.
+- **Window Width**: Increased the main app window width from 340pt to 380pt to give UI elements more breathing room.
+- **Button Layout**: Locked the "Delete" and "Cancel" inline buttons to a fixed size so text no longer splits across multiple lines (e.g. "Delet e").
+
 ## [2.2.5] - 2026-03-28
 ### Fixed
 - **Settings View Height**: Removed fixed scrollable constraints, allowing the settings menu to size itself correctly to its content.
