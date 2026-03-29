@@ -34,7 +34,7 @@ final class DropboxUploadManager {
 
         let attributes = try FileManager.default.attributesOfItem(atPath: fileURL.path)
         let fileSize = attributes[.size] as? UInt64 ?? 0
-        let dropboxPath = "/NoCorny Tracer/\(fileName)"
+        let dropboxPath = "/\(fileName)"
 
         if fileSize <= UInt64(simpleUploadLimit) {
             let fileData = try Data(contentsOf: fileURL)
@@ -363,7 +363,7 @@ final class DropboxUploadManager {
             throw DropboxError.noData
         }
 
-        let dropboxPath = "/NoCorny Tracer/\(fileName)"
+        let dropboxPath = "/\(fileName)"
         return try await simpleUpload(data: fileData, path: dropboxPath, accessToken: accessToken)
     }
 
@@ -403,7 +403,7 @@ final class DropboxUploadManager {
     }
 
     /// List files in the NoCorny Tracer folder
-    func listFolder(path: String = "/NoCorny Tracer", accessToken: String) async throws -> [DropboxFileSimple] {
+    func listFolder(path: String = "", accessToken: String) async throws -> [DropboxFileSimple] {
         guard !accessToken.isEmpty else { throw DropboxError.invalidToken }
         let url = URL(string: "https://api.dropboxapi.com/2/files/list_folder")!
         var request = URLRequest(url: url)

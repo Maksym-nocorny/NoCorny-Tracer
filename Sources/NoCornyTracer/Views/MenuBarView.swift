@@ -159,7 +159,7 @@ struct MenuBarView: View {
         HStack {
             if appState.dropboxAuthManager.isSignedIn {
                 HStack(spacing: 4) {
-                    Image(systemName: "checkmark.icloud.fill")
+                    Image(systemName: "cloud.badge.checkmark.fill")
                         .font(.system(size: 11))
                         .foregroundStyle(.green)
                     Text("Dropbox connected")
@@ -171,7 +171,7 @@ struct MenuBarView: View {
                     appState.dropboxAuthManager.signIn()
                 } label: {
                     HStack(spacing: 4) {
-                        Image(systemName: "icloud.slash")
+                        Image(systemName: "cloud.slash")
                             .font(.system(size: 11))
                         Text("Connect Dropbox")
                             .font(.system(size: 11))
@@ -225,7 +225,7 @@ struct MenuBarView: View {
         return VStack(alignment: .leading, spacing: 6) {
             HStack {
                 HStack(spacing: 6) {
-                    Image(systemName: "icloud")
+                    Image(systemName: "cloud")
                         .font(.system(size: 10))
                     Text("Dropbox Storage")
                         .font(.system(size: 10, weight: .bold))

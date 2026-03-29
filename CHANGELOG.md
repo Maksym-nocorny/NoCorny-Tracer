@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.3.0] - 2026-03-29
+### Added
+- **Legal Compliance**: Added mandatory Privacy Policy and Terms of Service links to the Settings view for Dropbox production approval.
+- **Dropbox Disclaimer**: Added a user-facing notice clarifying that the application is not endorsed by Dropbox, Inc.
+### Fixed
+- **Dropbox Storage**: Switched to using the Dropbox App Folder root path as the default storage location, ensuring reliable file sync in production App Folder mode.
+- **Branding**: Updated status bar and connection icons to use standard `cloud` iconography for consistent Dropbox branding.
+
 ## [2.2.9] - 2026-03-29
 ### Fixed
 - **Permissions Window**: Fixed an issue where the permission window would flash or appear incorrectly on every app launch even if all required permissions were already granted.

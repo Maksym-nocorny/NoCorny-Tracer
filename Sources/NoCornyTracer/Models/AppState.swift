@@ -302,7 +302,7 @@ final class AppState {
             self.dropboxAllocatedSpace = space.allocated
             
             // 2. Fetch list & links
-            async let filesTask = dropboxUploadManager.listFolder(path: "/NoCorny Tracer", accessToken: token)
+            async let filesTask = dropboxUploadManager.listFolder(path: "", accessToken: token)
             async let linksTask = dropboxUploadManager.listAllSharedLinks(accessToken: token)
             
             let files = try await filesTask

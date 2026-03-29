@@ -232,9 +232,28 @@ struct SettingsView: View {
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
 
-            Text("A screen recording app with Dropbox integration")
-                .font(.system(size: 11))
-                .foregroundStyle(.tertiary)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("A screen recording app with Dropbox integration.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+                
+                Text("This application uses the Dropbox API but is not endorsed or certified by Dropbox, Inc.")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+                    .italic()
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.bottom, 4)
+
+            HStack(spacing: 12) {
+                Link("Privacy Policy", destination: URL(string: "https://maksym-nocorny.github.io/NoCorny-Tracer/privacy-policy")!)
+                    .font(.system(size: 11))
+                
+                Link("Terms of Service", destination: URL(string: "https://maksym-nocorny.github.io/NoCorny-Tracer/terms-of-service")!)
+                    .font(.system(size: 11))
+            }
+            .foregroundStyle(.blue)
 
             Button {
                 updaterController.checkForUpdates(nil)
