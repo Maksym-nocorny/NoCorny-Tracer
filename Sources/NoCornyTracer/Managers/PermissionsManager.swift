@@ -22,7 +22,12 @@ final class PermissionsManager {
 
     init(updaterController: SPUStandardUpdaterController? = nil) {
         self.updaterController = updaterController
-        checkAllPermissions()
+        self.isScreenRecordingGranted = CGPreflightScreenCaptureAccess()
+        self.isCameraGranted = AVCaptureDevice.authorizationStatus(for: .video) == .authorized
+        self.isMicrophoneGranted = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+        self.isAccessibilityGranted = AXIsProcessTrusted()
+        self.isAutoUpdateEnabled = UserDefaults.standard.bool(forKey: "SUEnableAutomaticChecks")
+        self.isLaunchAtLoginEnabled = SMAppService.mainApp.status == .enabled
     }
     
     // Start real-time monitoring of statuses (useful when Permissions Window is open)

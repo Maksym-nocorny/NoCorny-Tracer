@@ -1,5 +1,9 @@
 # Changelog
 
+## [2.2.9] - 2026-03-29
+### Fixed
+- **Permissions Window**: Fixed an issue where the permission window would flash or appear incorrectly on every app launch even if all required permissions were already granted.
+
 ## [2.2.8] - 2026-03-29
 ### Fixed
 - **Dropbox Login**: Implemented a global App Delegate to guarantee the Dropbox login process completes successfully regardless of the menu bar state.

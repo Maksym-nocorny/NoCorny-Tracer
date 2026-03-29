@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Privacy Policy | NoCorny Tracer</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+</head>
+<body>
+    <div class="background-globes">
+        <div class="globe globe-1"></div>
+        <div class="globe globe-2"></div>
+        <div class="globe globe-3"></div>
+    </div>
+
+    <main class="container">
+        <nav class="navbar glass-panel">
+            <div class="logo">NoCorny Tracer</div>
+            <div class="nav-links">
+                <a href="index.html">Home</a>
+                <a href="privacy-policy.html" class="active">Privacy Policy</a>
+                <a href="terms-of-service.html">Terms of Service</a>
+            </div>
+        </nav>
+
+        <section class="content-section glass-panel fade-in-up">
+            <div id="markdown-content">Loading...</div>
+        </section>
+
+        <footer class="footer">
+            <p>&copy; 2026 NoCorny Tracer. All rights reserved.</p>
+            <p class="disclaimer">This application uses the Dropbox API but is not endorsed or certified by Dropbox, Inc.</p>
+        </footer>
+    </main>
+
+    <script>
+        fetch('PRIVACY_POLICY.md')
+            .then(response => response.text())
+            .then(text => {
+                document.getElementById('markdown-content').innerHTML = marked.parse(text);
+            })
+            .catch(err => {
+                document.getElementById('markdown-content').innerHTML = '<p>Error loading content.</p>';
+            });
+    </script>
+</body>
+</html>
