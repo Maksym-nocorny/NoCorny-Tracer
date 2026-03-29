@@ -1,5 +1,9 @@
 # Changelog
 
+## [2.2.8] - 2026-03-29
+### Fixed
+- **Dropbox Login**: Implemented a global App Delegate to guarantee the Dropbox login process completes successfully regardless of the menu bar state.
+
 ## [2.2.7] - 2026-03-29
 ### Fixed
 - **Dropbox Login**: Fixed an issue where the app would open but not complete the Dropbox login process if the permissions menu was closed during the browser redirect (SwiftUI `onOpenURL` bug).

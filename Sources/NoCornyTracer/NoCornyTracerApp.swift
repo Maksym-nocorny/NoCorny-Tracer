@@ -4,6 +4,8 @@ import Sparkle
 /// NoCorny Tracer — A macOS menu bar screen recording app
 @main
 struct NoCornyTracerApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+    
     @State private var appState = AppState()
     @State private var cameraWindowManager = CameraWindowManager()
     @Environment(\.colorScheme) var colorScheme
@@ -38,9 +40,11 @@ struct NoCornyTracerApp: App {
                 permissionsManager: permissionsManager,
                 currentMenuBarIcon: currentMenuBarIcon
             )
-            .onOpenURL { url in
-                // Route Dropbox OAuth callback (db-uypbk3hdc7zz4l7://oauth2callback?code=...)
-                appState.dropboxAuthManager.handleCallback(url)
+            .onReceive(NotificationCenter.default.publisher(for: .didReceiveURL)) { notification in
+                if let url = notification.object as? URL {
+                    // Route Dropbox OAuth callback
+                    appState.dropboxAuthManager.handleCallback(url)
+                }
             }
         }
         .menuBarExtraStyle(.window)
@@ -101,5 +105,29 @@ private struct MenuBarLabelView: View {
                     NSApp.activate(ignoringOtherApps: true)
                 }
             }
+    }
+}
+
+// MARK: - App Delegate for URL Handling
+
+extension Notification.Name {
+    static let didReceiveURL = Notification.Name("didReceiveURL")
+}
+
+class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSAppleEventManager.shared().setEventHandler(
+            self,
+            andSelector: #selector(handleProcessURLEvent(_:withReplyEvent:)),
+            forEventClass: AEEventClass(kInternetEventClass),
+            andEventID: AEEventID(kAEGetURL)
+        )
+    }
+
+    @objc func handleProcessURLEvent(_ event: NSAppleEventDescriptor, withReplyEvent replyEvent: NSAppleEventDescriptor) {
+        guard let urlString = event.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?.stringValue,
+              let url = URL(string: urlString) else { return }
+        
+        NotificationCenter.default.post(name: .didReceiveURL, object: url)
     }
 }
