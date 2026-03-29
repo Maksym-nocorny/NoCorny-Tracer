@@ -110,6 +110,7 @@ body {
     font-size: 1.25rem;
     background: linear-gradient(90deg, #58a6ff, #a371f7);
     -webkit-background-clip: text;
+    background-clip: text;
     -webkit-text-fill-color: transparent;
 }
 
@@ -138,6 +139,7 @@ body {
     margin-bottom: 1.5rem;
     background: linear-gradient(90deg, #ffffff, #8a2be2);
     -webkit-background-clip: text;
+    background-clip: text;
     -webkit-text-fill-color: transparent;
 }
 
@@ -243,6 +245,76 @@ body {
     opacity: 0.7;
 }
 
+/* Contact Section */
+.contact-section {
+    margin: 4rem 0;
+    padding: 3rem 2rem;
+    text-align: center;
+}
+
+.contact-section h2 {
+    font-size: 2.5rem;
+    margin-bottom: 1.5rem;
+    background: linear-gradient(90deg, #ffffff, #58a6ff);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+
+.contact-card > p {
+    color: var(--text-muted);
+    font-size: 1.1rem;
+    margin-bottom: 2rem;
+}
+
+.contact-methods {
+    display: flex;
+    justify-content: center;
+    gap: 1.5rem;
+    margin-bottom: 2rem;
+}
+
+.contact-item {
+    font-size: 1.15rem;
+    color: var(--text-color);
+    text-decoration: none;
+    transition: transform 0.2s ease, background 0.2s ease, color 0.2s ease;
+    padding: 1rem 2rem;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    display: flex;
+    align-items: center;
+}
+
+.contact-item:hover {
+    transform: translateY(-3px);
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--accent);
+    border-color: var(--accent);
+}
+
+.contact-icon {
+    margin-right: 0.75rem;
+    font-size: 1.25rem;
+}
+
+.agency-credit {
+    margin-top: 2rem;
+    font-size: 0.95rem;
+    color: var(--text-muted);
+}
+
+.agency-credit a {
+    color: var(--accent);
+    text-decoration: none;
+    font-weight: 500;
+}
+
+.agency-credit a:hover {
+    text-decoration: underline;
+}
+
 /* Animations */
 .bounce-in {
     animation: bounceIn 1s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
@@ -273,7 +345,9 @@ body {
     }
     .nav-links {
         display: flex;
-        gap: 1rem;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 0.5rem 1rem;
     }
     .nav-links a {
         margin-left: 0;
@@ -283,5 +357,9 @@ body {
     }
     .content-section {
         padding: 1.5rem;
+    }
+    .contact-item {
+        padding: 0.75rem 1.5rem;
+        font-size: 1rem;
     }
 }
