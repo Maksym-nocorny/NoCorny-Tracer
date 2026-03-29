@@ -1,5 +1,9 @@
 # Changelog
 
+## [2.2.7] - 2026-03-29
+### Fixed
+- **Dropbox Login**: Fixed an issue where the app would open but not complete the Dropbox login process if the permissions menu was closed during the browser redirect (SwiftUI `onOpenURL` bug).
+
 ## [2.2.6] - 2026-03-28
 ### Changed
 - **UI Tweaks**: Removed the confusing video length metadata entirely from the recordings list.
