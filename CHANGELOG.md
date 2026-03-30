@@ -1,5 +1,10 @@
 # Changelog
 
+## [3.0.5] - 2026-03-30
+### Fixed
+- **Timer & Duration**: Fixed inaccurate timer logic and large duration gaps in video files when using pause/resume.
+- **PTS Re-stamping**: Implemented re-stamping for video and audio buffers to ensure the output file timeline perfectly matches the active recording time.
+
 ## [3.0.4] - 2026-03-30
 ### Fixed
 - **Recording Sounds**: Fixed an issue where startup and resume sounds were captured in the recording. The app now plays the sound first, waits 1.0s for it to finish and the UI to hide, and only then starts the recording engine.

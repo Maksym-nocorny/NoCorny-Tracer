@@ -22,6 +22,12 @@ final class VideoWriter {
     private var isFirstFrame = true
     private var sessionStartTime: CMTime = .zero
     private var isWriting = false
+    
+    private var ptsOffset: CMTime = .zero
+    private var lastSourcePTS: CMTime = .zero
+    private var isPaused = false
+    private var needsResumeAdjustment = false
+
 
     // MARK: - Thread Safety
     private let writingQueue = DispatchQueue(label: "com.nocornytracer.videowriter", qos: .userInitiated)
@@ -105,6 +111,20 @@ final class VideoWriter {
 
         writer.startWriting()
     }
+    
+    func pause() {
+        writingQueue.async {
+            self.isPaused = true
+        }
+    }
+    
+    func resume() {
+        writingQueue.async {
+            self.needsResumeAdjustment = true
+            self.isPaused = false
+        }
+    }
+
 
     // MARK: - Appending Buffers
 
@@ -116,17 +136,34 @@ final class VideoWriter {
                   let videoInput = videoInput,
                   videoInput.isReadyForMoreMediaData else { return }
 
-            let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+            let originalPTS = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
 
             if isFirstFrame {
-                sessionStartTime = timestamp
-                writer.startSession(atSourceTime: timestamp)
+                sessionStartTime = originalPTS
+                writer.startSession(atSourceTime: originalPTS)
                 isFirstFrame = false
+                lastSourcePTS = originalPTS
             }
-
-            videoInput.append(sampleBuffer)
+            
+            if needsResumeAdjustment {
+                let gap = originalPTS - lastSourcePTS
+                // We want the next segment to start immediately after the last segment
+                // A tiny gap of 1 frame interval (based on fps) is standard
+                let adjustment = gap - CMTime(value: 1, timescale: CMTimeScale(fps))
+                if adjustment.seconds > 0 {
+                    ptsOffset = ptsOffset + adjustment
+                }
+                needsResumeAdjustment = false
+            }
+            
+            lastSourcePTS = originalPTS
+            
+            if let reStamped = reStamp(sampleBuffer, offset: ptsOffset) {
+                videoInput.append(reStamped)
+            }
         }
     }
+
 
     func appendAudioBuffer(_ sampleBuffer: CMSampleBuffer) {
         writingQueue.sync {
@@ -137,9 +174,54 @@ final class VideoWriter {
                   audioInput.isReadyForMoreMediaData,
                   !isFirstFrame else { return } // Don't append audio before session starts
 
-            audioInput.append(sampleBuffer)
+            let originalPTS = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+            
+            if needsResumeAdjustment {
+                let gap = originalPTS - lastSourcePTS
+                // Audio has 1024 samples per buffer usually, or smaller. 
+                // We use 1/fps of video as a safe "resume gap" for both streams.
+                let adjustment = gap - CMTime(value: 1, timescale: CMTimeScale(fps))
+                if adjustment.seconds > 0 {
+                    ptsOffset = ptsOffset + adjustment
+                }
+                needsResumeAdjustment = false
+            }
+            
+            lastSourcePTS = originalPTS
+
+            if let reStamped = reStamp(sampleBuffer, offset: ptsOffset) {
+                audioInput.append(reStamped)
+            }
         }
     }
+    
+    private func reStamp(_ sampleBuffer: CMSampleBuffer, offset: CMTime) -> CMSampleBuffer? {
+        guard offset.value != 0 else { return sampleBuffer }
+        
+        var count: CMItemCount = 0
+        CMSampleBufferGetSampleTimingInfoArray(sampleBuffer, entryCount: 0, arrayToFill: nil, entriesNeededOut: &count)
+        var timingInfo = [CMSampleTimingInfo](repeating: CMSampleTimingInfo(), count: count)
+        CMSampleBufferGetSampleTimingInfoArray(sampleBuffer, entryCount: count, arrayToFill: &timingInfo, entriesNeededOut: &count)
+        
+        for i in 0..<count {
+            timingInfo[i].presentationTimeStamp = timingInfo[i].presentationTimeStamp - offset
+            if timingInfo[i].decodeTimeStamp != .invalid {
+                timingInfo[i].decodeTimeStamp = timingInfo[i].decodeTimeStamp - offset
+            }
+        }
+        
+        var outBuffer: CMSampleBuffer?
+        let status = CMSampleBufferCreateCopyWithNewTiming(
+            allocator: kCFAllocatorDefault,
+            sampleBuffer: sampleBuffer,
+            sampleTimingEntryCount: count,
+            sampleTimingArray: &timingInfo,
+            sampleBufferOut: &outBuffer
+        )
+        return status == noErr ? outBuffer : nil
+    }
+
+
 
     // MARK: - Finish
 

@@ -10,6 +10,11 @@ final class RecordingManager {
     var isPaused = false
     var recordingDuration: TimeInterval = 0
     var currentFileURL: URL?
+    
+    // MARK: - Internal Timing
+    private var accumulatedDuration: TimeInterval = 0
+    private var lastStartTime: Date?
+
 
     // MARK: - Sub-managers
     let screenRecorder = ScreenRecorder()
@@ -81,9 +86,12 @@ final class RecordingManager {
         isRecording = true
         isPaused = false
         recordingDuration = 0
-        recordingStartTime = Date()
+        accumulatedDuration = 0
+        lastStartTime = Date()
+        recordingStartTime = lastStartTime
         startTimer()
     }
+
 
     // MARK: - Stop Recording
 
@@ -104,16 +112,23 @@ final class RecordingManager {
             return nil
         }
 
+        let finalDuration = lastStartTime != nil ? accumulatedDuration + Date().timeIntervalSince(lastStartTime!) : accumulatedDuration
+        
         let recording = Recording(
             fileURL: outputURL,
             createdAt: recordingStartTime ?? Date(),
-            duration: recordingDuration
+            duration: finalDuration
         )
+
 
         isRecording = false
         isPaused = false
+        recordingDuration = 0
+        accumulatedDuration = 0
+        lastStartTime = nil
         videoWriter = nil
         currentFileURL = nil
+
 
         // Play stop sound
         if playSound {
@@ -138,22 +153,34 @@ final class RecordingManager {
         isPaused.toggle()
         
         if isPaused {
+            // Pausing: save current segment duration
+            if let start = lastStartTime {
+                accumulatedDuration += Date().timeIntervalSince(start)
+            }
+            lastStartTime = nil
+            videoWriter?.pause()
             stopTimer()
         } else {
+            // Resuming: start new segment
+            lastStartTime = Date()
+            videoWriter?.resume()
             startTimer()
         }
     }
 
+
     // MARK: - Timer
 
     private func startTimer() {
-        let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
-            guard let self = self, !self.isPaused else { return }
-            self.recordingDuration += 1.0
+        // Fire more frequently (0.1s) for a smooth UI, but use Date() for value
+        let timer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
+            guard let self = self, self.isRecording, !self.isPaused, let start = self.lastStartTime else { return }
+            self.recordingDuration = self.accumulatedDuration + Date().timeIntervalSince(start)
         }
         RunLoop.main.add(timer, forMode: .common)
         durationTimer = timer
     }
+
 
     private func stopTimer() {
         durationTimer?.invalidate()
