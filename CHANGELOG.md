@@ -1,5 +1,9 @@
 # Changelog
 
+## [3.0.2] - 2026-03-30
+### Added
+- **Sound Notifications**: Added curated macOS system sounds to provide audible feedback when a recording starts, stops, pauses, or is aborted. This helps confirm app actions and bridges the delay before capture begins.
+
 ## [3.0.0] - 2026-03-30
 ### Important
 - **BREAKING CHANGE**: The application's bundle identifier has changed to `com.nocornytracer.mac.v3` to fix a local testing macOS conflict workflow. Previous versions will no longer autoupdate to this version. You MUST download a fresh copy. Old releases have been marked as OUTDATED.

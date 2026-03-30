@@ -147,7 +147,11 @@ final class AppState {
 
     /// Abort recording: stops and discards the file without saving or uploading
     func abortRecording() async {
-        guard let recording = await recordingManager.stopRecording() else { return }
+        guard let recording = await recordingManager.stopRecording(playSound: false) else { return }
+        
+        // Play abort sound
+        SoundManager.shared.play(.abort)
+        
         // Delete the local file immediately
         try? FileManager.default.removeItem(at: recording.fileURL)
         print("🗑️ Recording aborted and file deleted")

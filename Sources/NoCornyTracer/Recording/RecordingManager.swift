@@ -83,12 +83,15 @@ final class RecordingManager {
         recordingDuration = 0
         recordingStartTime = Date()
         startTimer()
+        
+        // Play start sound
+        SoundManager.shared.play(.start)
     }
 
     // MARK: - Stop Recording
 
     @MainActor
-    func stopRecording() async -> Recording? {
+    func stopRecording(playSound: Bool = true) async -> Recording? {
         guard isRecording else { return nil }
 
         // Stop timer
@@ -115,6 +118,11 @@ final class RecordingManager {
         videoWriter = nil
         currentFileURL = nil
 
+        // Play stop sound
+        if playSound {
+            SoundManager.shared.play(.stop)
+        }
+
         return recording
     }
 
@@ -122,6 +130,10 @@ final class RecordingManager {
 
     func togglePause() {
         isPaused.toggle()
+        
+        // Play pause/resume sound
+        SoundManager.shared.play(.pause)
+        
         if isPaused {
             stopTimer()
         } else {
