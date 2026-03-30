@@ -129,10 +129,10 @@ final class RecordingManager {
     // MARK: - Pause / Resume
 
     func togglePause() {
-        isPaused.toggle()
-        
-        // Play pause/resume sound
+        // Play pause/resume sound first
         SoundManager.shared.play(.pause)
+        
+        isPaused.toggle()
         
         if isPaused {
             stopTimer()

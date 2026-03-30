@@ -1,5 +1,9 @@
 # Changelog
 
+## [3.0.3] - 2026-03-30
+### Fixed
+- **Sound Notifications**: Fixed an issue where the resume sound was occasionally missing. Toggling pause/resume now uses the `Tink` sound for more reliable and immediate feedback.
+
 ## [3.0.2] - 2026-03-30
 ### Added
 - **Sound Notifications**: Added curated macOS system sounds to provide audible feedback when a recording starts, stops, pauses, or is aborted. This helps confirm app actions and bridges the delay before capture begins.

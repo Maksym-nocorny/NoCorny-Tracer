@@ -8,7 +8,7 @@ final class SoundManager {
         case start = "Hero"
         case stop = "Submarine"
         case abort = "Basso"
-        case pause = "Funk"
+        case pause = "Tink"
     }
 
     private init() {}

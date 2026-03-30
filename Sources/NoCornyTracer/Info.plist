@@ -9,9 +9,9 @@
     <key>CFBundleIdentifier</key>
     <string>com.nocornytracer.mac.v3</string>
     <key>CFBundleVersion</key>
-    <string>3.0.2</string>
+    <string>3.0.3</string>
     <key>CFBundleShortVersionString</key>
-    <string>3.0.2</string>
+    <string>3.0.3</string>
     <key>NSCameraUsageDescription</key>
     <string>NoCorny Tracer needs access to your camera to show a floating face cam while recording.</string>
     <key>NSMicrophoneUsageDescription</key>
