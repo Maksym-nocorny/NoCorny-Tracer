@@ -1,5 +1,8 @@
 # Changelog
 
+## [2.4.1] - 2026-03-30
+### Changed
+- **App Name**: Returned the app name back to "NoCorny Tracer" (with a space) while preserving the new `com.nocornytracer.mac` bundle identifier.
 ## [2.4.0] - 2026-03-30
 ### Important
 - **BREAKING CHANGE**: The application's bundle identifier has changed to fix a macOS menu bar bug. **You MUST delete the old `NoCorny Tracer.app` from your Applications folder before installing this update.** Your previous settings and Dropbox login will also be reset and you will need to log in again.

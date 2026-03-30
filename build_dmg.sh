@@ -2,7 +2,7 @@
 set -e
 
 # === Configuration ===
-APP_NAME="NoCornyTracer"
+APP_NAME="NoCorny Tracer"
 BINARY_NAME="NoCornyTracer"
 BUNDLE_ID="com.nocornytracer.mac"
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
