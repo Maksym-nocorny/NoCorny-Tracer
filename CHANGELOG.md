@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.4.0] - 2026-03-30
+### Important
+- **BREAKING CHANGE**: The application's bundle identifier has changed to fix a macOS menu bar bug. **You MUST delete the old `NoCorny Tracer.app` from your Applications folder before installing this update.** Your previous settings and Dropbox login will also be reset and you will need to log in again.
+### Fixed
+- **Menu Bar Icon**: Fixed a system-level bug where macOS would permanently hide the menu bar icon after multiple reinstalls.
+- **Silent Exit**: Fixed an issue where the application would silently exit if macOS removed the icon due to a full menu bar. The app will now remain running in the background.
+
 ## [2.3.0] - 2026-03-29
 ### Added
 - **Legal Compliance**: Added mandatory Privacy Policy and Terms of Service links to the Settings view for Dropbox production approval.
