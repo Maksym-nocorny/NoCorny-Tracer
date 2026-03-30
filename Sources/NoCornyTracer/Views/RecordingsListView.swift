@@ -128,6 +128,15 @@ struct RecordingRowView: View {
                             .foregroundStyle(.quaternary)
                     }
 
+                    if recording.duration > 0 {
+                        Text(recording.formattedDuration)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+
+                        Text("·")
+                            .foregroundStyle(.quaternary)
+                    }
+
                     Text(recording.formattedDate)
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
@@ -249,9 +258,15 @@ struct RecordingRowView: View {
                     .foregroundStyle(.green)
             }
         case .failed:
-            Image(systemName: "exclamationmark.icloud.fill")
-                .font(.system(size: 12))
-                .foregroundStyle(.red)
+            Button {
+                Task { await appState.retryUpload(recording) }
+            } label: {
+                Image(systemName: "exclamationmark.icloud.fill")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.red)
+            }
+            .buttonStyle(.plain)
+            .help("Upload failed — click to retry")
         }
     }
 }

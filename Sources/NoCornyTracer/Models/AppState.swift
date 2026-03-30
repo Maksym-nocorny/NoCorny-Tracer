@@ -401,6 +401,31 @@ final class AppState {
         await syncDropboxState()
     }
 
+    // MARK: - Retry Upload
+
+    /// Retries a failed upload for a recording that still has its local file
+    func retryUpload(_ recording: Recording) async {
+        guard recording.uploadStatus == .failed else { return }
+        guard FileManager.default.fileExists(atPath: recording.fileURL.path) else {
+            print("📤 Retry: Local file no longer exists for \(recording.displayName)")
+            return
+        }
+        guard let index = recordings.firstIndex(where: { $0.id == recording.id }) else { return }
+
+        print("📤 Retry: Retrying upload for \(recording.displayName)")
+        recordings[index].uploadStatus = .uploading
+        saveRecordings()
+
+        let recordingID = recording.id
+        Task { await self.processRecording(id: recordingID) }
+    }
+
+    // MARK: - Open Recordings Folder
+
+    func openRecordingsFolder() {
+        NSWorkspace.shared.open(Self.recordingsDirectory)
+    }
+
     // MARK: - Recordings Directory
 
     static var recordingsDirectory: URL {

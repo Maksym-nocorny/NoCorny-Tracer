@@ -4,7 +4,7 @@ set -e
 # === Configuration ===
 APP_NAME="NoCorny Tracer"
 BINARY_NAME="NoCornyTracer"
-BUNDLE_ID="com.nocornytracer.mac"
+BUNDLE_ID="com.nocornytracer.mac.v3"
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$PROJECT_DIR/Sources/NoCornyTracer/Info.plist")
 BUILD_DIR="$PROJECT_DIR/.build/release"

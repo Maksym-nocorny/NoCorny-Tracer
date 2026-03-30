@@ -115,6 +115,8 @@ extension Notification.Name {
 }
 
 class AppDelegate: NSObject, NSApplicationDelegate {
+    private var rightClickMonitor: Any?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSAppleEventManager.shared().setEventHandler(
             self,
@@ -122,7 +124,69 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             forEventClass: AEEventClass(kInternetEventClass),
             andEventID: AEEventID(kAEGetURL)
         )
+
+        setupRightClickContextMenu()
     }
+
+    // MARK: - Right-click context menu on menu bar icon
+
+    private func setupRightClickContextMenu() {
+        // Use a local monitor so we catch right-clicks that fall inside the
+        // app's own event stream (e.g. when the popover is open).
+        rightClickMonitor = NSEvent.addLocalMonitorForEvents(matching: .rightMouseDown) { [weak self] event in
+            // If the click is on a status bar button, intercept it and show
+            // our context menu instead of forwarding the event.
+            if self?.isClickOnStatusBarButton(event) == true {
+                self?.showQuitContextMenu(at: NSEvent.mouseLocation)
+                return nil // swallow the event
+            }
+            return event
+        }
+    }
+
+    /// Returns true when the right-click event landed on one of this app's
+    /// NSStatusBarButton instances.
+    private func isClickOnStatusBarButton(_ event: NSEvent) -> Bool {
+        guard let clickedView = event.window?.contentView?.hitTest(event.locationInWindow) else {
+            // No content view / hit-test failed — check class name of window
+            if let w = event.window {
+                let cls = String(describing: type(of: w))
+                return cls.contains("StatusBar")
+            }
+            return false
+        }
+        // Walk the view hierarchy upward looking for NSStatusBarButton
+        var view: NSView? = clickedView
+        while let v = view {
+            if v is NSStatusBarButton { return true }
+            view = v.superview
+        }
+        return false
+    }
+
+    /// Shows the right-click context menu at the given screen-coordinate position.
+    private func showQuitContextMenu(at screenLocation: NSPoint) {
+        let menu = NSMenu(title: "NoCorny Tracer")
+
+        let quitItem = NSMenuItem(
+            title: "Quit NoCorny Tracer",
+            action: #selector(forceQuit),
+            keyEquivalent: "q"
+        )
+        quitItem.keyEquivalentModifierMask = [.command]
+        quitItem.target = self
+        menu.addItem(quitItem)
+
+        // popUp(positioning:at:in:) uses screen coordinates when `in` is nil
+        menu.popUp(positioning: nil, at: screenLocation, in: nil)
+    }
+
+    /// Hard-kills the process immediately — no cleanup, no graceful shutdown.
+    @objc private func forceQuit() {
+        exit(0)
+    }
+
+    // MARK: - URL handling
 
     @objc func handleProcessURLEvent(_ event: NSAppleEventDescriptor, withReplyEvent replyEvent: NSAppleEventDescriptor) {
         guard let urlString = event.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?.stringValue,

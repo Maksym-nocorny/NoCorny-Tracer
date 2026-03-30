@@ -1,5 +1,9 @@
 # Changelog
 
+## [3.0.0] - 2026-03-30
+### Important
+- **BREAKING CHANGE**: The application's bundle identifier has changed to `com.nocornytracer.mac.v3` to fix a local testing macOS conflict workflow. Previous versions will no longer autoupdate to this version. You MUST download a fresh copy. Old releases have been marked as OUTDATED.
+
 ## [2.4.1] - 2026-03-30
 ### Changed
 - **App Name**: Returned the app name back to "NoCorny Tracer" (with a space) while preserving the new `com.nocornytracer.mac` bundle identifier.
