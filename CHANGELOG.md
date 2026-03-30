@@ -1,5 +1,9 @@
 # Changelog
 
+## [3.0.4] - 2026-03-30
+### Fixed
+- **Recording Sounds**: Fixed an issue where startup and resume sounds were captured in the recording. The app now plays the sound first, waits 1.0s for it to finish and the UI to hide, and only then starts the recording engine.
+
 ## [3.0.3] - 2026-03-30
 ### Fixed
 - **Sound Notifications**: Fixed an issue where the resume sound was occasionally missing. Toggling pause/resume now uses the `Tink` sound for more reliable and immediate feedback.

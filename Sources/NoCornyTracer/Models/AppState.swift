@@ -133,8 +133,11 @@ final class AppState {
     // MARK: - Recording Lifecycle
 
     func startRecording() async throws {
-        // Wait 0.5 seconds to allow UI/popovers to completely hide before recording starts
-        try? await Task.sleep(nanoseconds: 500_000_000)
+        // Play start sound immediately on button click
+        SoundManager.shared.play(.start)
+
+        // Wait 1.0 second to allow UI/popovers to hide AND sound to finish before recording starts
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
         
         try await recordingManager.startRecording(
             microphoneEnabled: isMicrophoneEnabled,

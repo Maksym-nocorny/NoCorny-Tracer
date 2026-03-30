@@ -85,7 +85,7 @@ final class HotkeyManager {
                 print("⌨️ Hotkeys: ⌥⇧P pressed")
                 Task { @MainActor in
                     if appState.recordingManager.isRecording {
-                        appState.recordingManager.togglePause()
+                        await appState.recordingManager.togglePause()
                     }
                 }
                 return true

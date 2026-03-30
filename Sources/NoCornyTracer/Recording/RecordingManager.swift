@@ -83,9 +83,6 @@ final class RecordingManager {
         recordingDuration = 0
         recordingStartTime = Date()
         startTimer()
-        
-        // Play start sound
-        SoundManager.shared.play(.start)
     }
 
     // MARK: - Stop Recording
@@ -128,9 +125,15 @@ final class RecordingManager {
 
     // MARK: - Pause / Resume
 
-    func togglePause() {
+    func togglePause() async {
         // Play pause/resume sound first
         SoundManager.shared.play(.pause)
+        
+        // If we are currently paused, we are about to resume.
+        // Wait 1.0 second so the sound doesn't get recorded.
+        if isPaused {
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+        }
         
         isPaused.toggle()
         

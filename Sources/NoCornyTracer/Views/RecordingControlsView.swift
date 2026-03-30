@@ -44,7 +44,9 @@ struct RecordingControlsView: View {
 
                 // Pause button
                 Button {
-                    appState.recordingManager.togglePause()
+                    Task {
+                        await appState.recordingManager.togglePause()
+                    }
                 } label: {
                     Image(systemName: appState.recordingManager.isPaused ? "play.fill" : "pause.fill")
                         .font(.system(size: 16))
