@@ -420,6 +420,14 @@ final class AppState {
         Task { await self.processRecording(id: recordingID) }
     }
 
+    // MARK: - Open Dropbox Folder
+
+    func openDropboxWebFolder() {
+        if let url = URL(string: "https://www.dropbox.com/home/Apps/NoCorny%20Tracer") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
     // MARK: - Open Recordings Folder
 
     func openRecordingsFolder() {

@@ -191,17 +191,6 @@ struct MenuBarView: View {
 
             Spacer()
 
-            // Open local recordings folder in Finder
-            Button {
-                appState.openRecordingsFolder()
-            } label: {
-                Image(systemName: "folder")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .help("Open recordings folder")
-
             Button {
                 NSApplication.shared.terminate(nil)
             } label: {

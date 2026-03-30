@@ -6,6 +6,11 @@ APP_NAME="NoCorny Tracer"
 BINARY_NAME="NoCornyTracer"
 BUNDLE_ID="com.nocornytracer.mac.v3"
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Clean up old dist artifacts to prevent cache issues
+echo "🧹 Cleaning dist directory..."
+mkdir -p "$PROJECT_DIR/dist"
+rm -rf "$PROJECT_DIR/dist/"*
+
 VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$PROJECT_DIR/Sources/NoCornyTracer/Info.plist")
 BUILD_DIR="$PROJECT_DIR/.build/release"
 APP_BUNDLE="$PROJECT_DIR/dist/$APP_NAME.app"
@@ -126,14 +131,27 @@ STAGING="$DMG_DIR/dmg_staging"
 mkdir -p "$STAGING"
 cp -R "$APP_BUNDLE" "$STAGING/"
 
-# Create Applications symlink
-ln -s /Applications "$STAGING/Applications"
-
 # Create the DMG
-hdiutil create -volname "$APP_NAME" \
-    -srcfolder "$STAGING" \
-    -ov -format UDZO \
-    "$DMG_PATH"
+if ! command -v create-dmg &> /dev/null; then
+    echo "⬇️ Downloading create-dmg..."
+    mkdir -p "$PROJECT_DIR/.build/create-dmg-src"
+    curl -sL https://github.com/create-dmg/create-dmg/archive/refs/tags/v1.1.0.tar.gz | tar -xz -C "$PROJECT_DIR/.build/create-dmg-src" --strip-components=1
+    CREATE_DMG="$PROJECT_DIR/.build/create-dmg-src/create-dmg"
+else
+    CREATE_DMG="create-dmg"
+fi
+
+"$CREATE_DMG" \
+  --volname "$APP_NAME" \
+  --background "$PROJECT_DIR/background.tiff" \
+  --window-pos 200 120 \
+  --window-size 512 319 \
+  --icon-size 96 \
+  --icon "$APP_NAME.app" 128 150 \
+  --hide-extension "$APP_NAME.app" \
+  --app-drop-link 384 150 \
+  "$DMG_PATH" \
+  "$STAGING/"
 
 # Clean up staging
 rm -rf "$STAGING"

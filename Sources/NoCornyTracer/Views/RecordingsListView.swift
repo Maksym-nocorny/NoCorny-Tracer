@@ -15,20 +15,32 @@ struct RecordingsListView: View {
                 Spacer()
 
                 if appState.dropboxAuthManager.isSignedIn {
-                    Button {
-                        Task { await appState.syncDropboxState() }
-                    } label: {
-                        if appState.isSyncingDropbox {
-                            ProgressView()
-                                .controlSize(.mini)
-                        } else {
-                            Image(systemName: "arrow.triangle.2.circlepath")
+                    HStack(spacing: 12) {
+                        Button {
+                            appState.openDropboxWebFolder()
+                        } label: {
+                            Image(systemName: "folder")
                         }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .help("Open Dropbox folder")
+
+                        Button {
+                            Task { await appState.syncDropboxState() }
+                        } label: {
+                            if appState.isSyncingDropbox {
+                                ProgressView()
+                                    .controlSize(.mini)
+                            } else {
+                                Image(systemName: "arrow.triangle.2.circlepath")
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .disabled(appState.isSyncingDropbox)
                     }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .disabled(appState.isSyncingDropbox)
                 }
             }
             .padding(.horizontal)
@@ -128,14 +140,12 @@ struct RecordingRowView: View {
                             .foregroundStyle(.quaternary)
                     }
 
-                    if recording.duration > 0 {
-                        Text(recording.formattedDuration)
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
+                    Text(recording.formattedDuration)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
 
-                        Text("·")
-                            .foregroundStyle(.quaternary)
-                    }
+                    Text("·")
+                        .foregroundStyle(.quaternary)
 
                     Text(recording.formattedDate)
                         .font(.system(size: 10))
