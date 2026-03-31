@@ -235,7 +235,7 @@ final class DropboxUploadManager {
                 return try await operation()
             } catch {
                 lastError = error
-                LogManager.shared.log("⚠️ Upload Attempt \(attempt) failed: \(error.localizedDescription)", type: .debug)
+                LogManager.shared.log(error: error, message: "⚠️ Upload Attempt \(attempt) failed")
                 if attempt < attempts {
                     try await Task.sleep(nanoseconds: delay)
                 }

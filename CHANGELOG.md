@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.1.2] - 2026-03-31
+### Added
+- **Recording Start Log**: Added a specific "🔴 Recording Actually Started" log entry to clearly mark the beginning of video capture in the timeline.
+### Improved
+- **Modernized LogManager**: Implemented thread-safe background logging, size-based log rotation (2MB limit), and a diagnostic system header (OS version, hardware model).
+- **Privacy Filtering**: Automated masking of local home directory paths in log files for safer sharing.
+- **Retry Clarification**: Updated the retry log message to "🔄 Retry: Retrying previous upload" to distinguish it from the failure of current actions.
+
 ## [3.1.1] - 2026-03-31
 ### Added
 - **Diagnostic Logging**: Persistent application logs are now saved to `~/Library/Application Support/NoCornyTracer/Logs/app.log` for background troubleshooting.

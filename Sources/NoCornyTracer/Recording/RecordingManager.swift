@@ -90,6 +90,8 @@ final class RecordingManager {
         lastStartTime = Date()
         recordingStartTime = lastStartTime
         startTimer()
+        
+        LogManager.shared.log("🔴 Recording Actually Started", type: .info)
     }
 
 

@@ -238,11 +238,10 @@ final class AppState {
                 LogManager.shared.log("🔗 Shared link: ✅ \(sharedURL)")
                 
             } catch {
-                let errorMsg = error.localizedDescription
-                LogManager.shared.log("📤 Upload: ❌ Failed: \(errorMsg)", type: .error)
+                LogManager.shared.log(error: error, message: "📤 Upload: ❌ Failed")
                 updateRecording(id: id) {
                     $0.uploadStatus = .failed
-                    $0.uploadError = errorMsg
+                    $0.uploadError = error.localizedDescription
                 }
                 // Stop processing if upload failed
                 return
@@ -270,7 +269,7 @@ final class AppState {
                     )
                     LogManager.shared.log("📤 Subtitles: ✅ Uploaded as \"\(srtFileName)\"")
                 } catch {
-                    LogManager.shared.log("📤 Subtitles: ❌ Upload failed: \(error.localizedDescription)", type: .error)
+                    LogManager.shared.log(error: error, message: "📤 Subtitles: ❌ Upload failed")
                 }
             }
         }
@@ -313,7 +312,7 @@ final class AppState {
                         }
                     }
                 } catch {
-                    LogManager.shared.log("📤 Rename: ❌ \(error.localizedDescription)", type: .error)
+                    LogManager.shared.log(error: error, message: "📤 Rename: ❌ Failed")
                 }
             }
         }
@@ -455,7 +454,7 @@ final class AppState {
         }
         guard let index = recordings.firstIndex(where: { $0.id == recording.id }) else { return }
 
-        print("📤 Retry: Retrying upload for \(recording.displayName)")
+        LogManager.shared.log("🔄 Retry: Retrying previous upload for \(recording.displayName)", type: .info)
         recordings[index].uploadStatus = .uploading
         saveRecordings()
 
