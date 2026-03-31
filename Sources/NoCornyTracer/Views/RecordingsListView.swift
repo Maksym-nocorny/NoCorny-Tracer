@@ -276,7 +276,7 @@ struct RecordingRowView: View {
                     .foregroundStyle(.red)
             }
             .buttonStyle(.plain)
-            .help("Upload failed — click to retry")
+            .help(recording.uploadError ?? "Upload failed — click to retry")
         }
     }
 }

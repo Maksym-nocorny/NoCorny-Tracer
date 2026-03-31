@@ -14,6 +14,7 @@ struct Recording: Identifiable, Codable {
     var thumbnailData: Data?
     var fileSize: UInt64?
     var uploadCompletedAt: Date?
+    var uploadError: String?
 
     init(
         id: UUID = UUID(),

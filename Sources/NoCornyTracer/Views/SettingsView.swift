@@ -216,6 +216,13 @@ struct SettingsView: View {
             .controlSize(.small)
             .font(.system(size: 12))
             .padding(.top, 4)
+
+            Button("Show Logs") {
+                NSWorkspace.shared.selectFile(LogManager.shared.getLogFileURL().path, inFileViewerRootedAtPath: "")
+            }
+            .controlSize(.small)
+            .font(.system(size: 12))
+            .foregroundStyle(.secondary)
         }
     }
 

@@ -157,7 +157,7 @@ final class AppState {
         
         // Delete the local file immediately
         try? FileManager.default.removeItem(at: recording.fileURL)
-        print("🗑️ Recording aborted and file deleted")
+        LogManager.shared.log("🗑️ Recording aborted and file deleted", type: .info)
     }
 
     func stopRecording() async {
@@ -173,111 +173,147 @@ final class AppState {
     }
 
     /// Background processing: upload → shared link → subtitles → AI name → rename → cleanup
+    /// Background processing: upload → shared link → subtitles → AI name → rename → cleanup
     private func processRecording(id: UUID) async {
-        guard let index = recordings.firstIndex(where: { $0.id == id }) else { return }
-        let fileURL = recordings[index].fileURL
+        LogManager.shared.log("🎬 Starting background processing for recording \(id)")
+        
+        // Use a local helper to update recording state safely
+        func updateRecording(id: UUID, block: @escaping (inout Recording) -> Void) {
+            DispatchQueue.main.async {
+                if let index = self.recordings.firstIndex(where: { $0.id == id }) {
+                    block(&self.recordings[index])
+                    self.saveRecordings()
+                }
+            }
+        }
+
+        guard let recording = recordings.first(where: { $0.id == id }) else {
+            LogManager.shared.log("⚠️ Processing: Recording \(id) not found in state", type: .info)
+            return
+        }
+        let fileURL = recording.fileURL
 
         // Step 1: Upload to Dropbox immediately with default timestamp name
         var dropboxPath: String?
         var token = ""
 
         if autoUploadEnabled && dropboxAuthManager.isSignedIn {
-            recordings[index].uploadStatus = .uploading
-            saveRecordings()
+            updateRecording(id: id) {
+                $0.uploadStatus = .uploading
+                $0.uploadError = nil
+            }
 
             do {
                 token = await dropboxAuthManager.refreshTokenIfNeeded() ?? dropboxAuthManager.accessToken ?? ""
+                
+                if token.isEmpty {
+                    throw DropboxUploadManager.DropboxError.invalidToken
+                }
 
+                let currentName = recording.displayName
+                LogManager.shared.log("📤 Upload: Starting upload for \"\(currentName)\"")
+                
                 let uploadedPath = try await dropboxUploadManager.upload(
                     fileURL: fileURL,
-                    fileName: recordings[index].displayName + ".mp4",
+                    fileName: currentName + ".mp4",
                     accessToken: token
                 )
 
-                if let idx = recordings.firstIndex(where: { $0.id == id }) {
-                    recordings[idx].dropboxPath = uploadedPath
-                    recordings[idx].uploadStatus = .uploaded
-                    recordings[idx].uploadCompletedAt = Date()
-                    dropboxPath = uploadedPath
-                    saveRecordings()
-                    print("📤 Upload: ✅ Uploaded to Dropbox: \(uploadedPath)")
+                dropboxPath = uploadedPath
+                updateRecording(id: id) {
+                    $0.dropboxPath = uploadedPath
+                    $0.uploadStatus = .uploaded
+                    $0.uploadCompletedAt = Date()
                 }
+                LogManager.shared.log("📤 Upload: ✅ Uploaded to Dropbox: \(uploadedPath)")
 
                 // Create shared link immediately after upload
                 let sharedURL = try await dropboxUploadManager.createSharedLink(
                     path: uploadedPath,
                     accessToken: token
                 )
-                if let idx = recordings.firstIndex(where: { $0.id == id }) {
-                    recordings[idx].dropboxSharedURL = sharedURL
-                    saveRecordings()
-                    print("🔗 Shared link: ✅ \(sharedURL)")
+                updateRecording(id: id) {
+                    $0.dropboxSharedURL = sharedURL
                 }
+                LogManager.shared.log("🔗 Shared link: ✅ \(sharedURL)")
+                
             } catch {
-                if let idx = recordings.firstIndex(where: { $0.id == id }) {
-                    recordings[idx].uploadStatus = .failed
-                    print("📤 Upload: ❌ \(error)")
-                    saveRecordings()
+                let errorMsg = error.localizedDescription
+                LogManager.shared.log("📤 Upload: ❌ Failed: \(errorMsg)", type: .error)
+                updateRecording(id: id) {
+                    $0.uploadStatus = .failed
+                    $0.uploadError = errorMsg
                 }
+                // Stop processing if upload failed
+                return
             }
         }
 
         // Step 2: Generate and upload subtitles
-        print("🤖 Starting subtitle generation...")
+        LogManager.shared.log("🤖 Starting subtitle generation...")
         var generatedSubtitles: String? = nil
         
         if let subtitles = await aiNamingService.generateSubtitles(for: fileURL) {
             generatedSubtitles = subtitles
-            if let idx = recordings.firstIndex(where: { $0.id == id }),
-               !token.isEmpty {
-                let srtFileName = recordings[idx].displayName + ".srt"
+            LogManager.shared.log("🤖 Subtitles: ✅ Generated content length: \(subtitles.count)")
+            
+            if !token.isEmpty {
+                // Fetch fresh display name
+                let currentRecording = recordings.first(where: { $0.id == id })
+                let srtFileName = (currentRecording?.displayName ?? "Recording") + ".srt"
+                
                 do {
-                    let srtPath = try await dropboxUploadManager.uploadTextFile(
+                    _ = try await dropboxUploadManager.uploadTextFile(
                         content: subtitles,
                         fileName: srtFileName,
                         accessToken: token
                     )
-                    print("📤 Subtitles: ✅ Uploaded as \"\(srtFileName)\" (path: \(srtPath))")
+                    LogManager.shared.log("📤 Subtitles: ✅ Uploaded as \"\(srtFileName)\"")
                 } catch {
-                    print("📤 Subtitles: ❌ Upload failed: \(error)")
+                    LogManager.shared.log("📤 Subtitles: ❌ Upload failed: \(error.localizedDescription)", type: .error)
                 }
             }
         }
 
         // Step 3: AI Naming (using frames + subtitles)
-        print("🤖 Starting AI naming...")
+        LogManager.shared.log("🤖 Starting AI naming...")
         if let aiNameBase = await aiNamingService.generateName(for: fileURL, subtitles: generatedSubtitles) {
-            if let idx = recordings.firstIndex(where: { $0.id == id }) {
-                let formatter = DateFormatter()
-                formatter.dateFormat = "dd MMMM yyyy - HH.mm"
-                let dateString = formatter.string(from: recordings[idx].createdAt)
-                let aiName = "\(aiNameBase) \(dateString)"
-                
-                recordings[idx].aiGeneratedName = aiName
-                saveRecordings()
-                print("🤖 AI Naming: ✅ Named: \"\(aiName)\"")
+            let formatter = DateFormatter()
+            formatter.dateFormat = "dd MMMM yyyy - HH.mm"
+            
+            // Get creation date from state
+            let creationDate = (recordings.first(where: { $0.id == id })?.createdAt) ?? Date()
+            let dateString = formatter.string(from: creationDate)
+            let aiName = "\(aiNameBase) \(dateString)"
+            
+            updateRecording(id: id) {
+                $0.aiGeneratedName = aiName
+            }
+            LogManager.shared.log("🤖 AI Naming: ✅ Named: \"\(aiName)\"")
 
-                // Step 4: Rename on Dropbox if uploaded
-                if let currentPath = dropboxPath, !token.isEmpty {
-                    do {
-                        let newPath = try await dropboxUploadManager.renameFile(
-                            fromPath: currentPath,
-                            toNewName: aiName + ".mp4",
-                            accessToken: token
-                        )
-                        recordings[idx].dropboxPath = newPath
-                        saveRecordings()
-                        print("📤 Rename: ✅ Renamed on Dropbox to \"\(aiName).mp4\"")
-                        
-                        // Automatically open the Dropbox link in the browser
-                        if let url = recordings[idx].shareURL {
-                            DispatchQueue.main.async {
-                                NSWorkspace.shared.open(url)
-                            }
-                        }
-                    } catch {
-                        print("📤 Rename: ❌ \(error)")
+            // Step 4: Rename on Dropbox if uploaded
+            if let currentPath = dropboxPath, !token.isEmpty {
+                do {
+                    LogManager.shared.log("📤 Rename: Renaming \"\(currentPath)\" to \"\(aiName).mp4\"")
+                    let newPath = try await dropboxUploadManager.renameFile(
+                        fromPath: currentPath,
+                        toNewName: aiName + ".mp4",
+                        accessToken: token
+                    )
+                    updateRecording(id: id) {
+                        $0.dropboxPath = newPath
                     }
+                    LogManager.shared.log("📤 Rename: ✅ Renamed on Dropbox")
+                    
+                    // Automatically open the Dropbox link in the browser
+                    if let currentRecording = recordings.first(where: { $0.id == id }),
+                       let url = currentRecording.shareURL {
+                        DispatchQueue.main.async {
+                            NSWorkspace.shared.open(url)
+                        }
+                    }
+                } catch {
+                    LogManager.shared.log("📤 Rename: ❌ \(error.localizedDescription)", type: .error)
                 }
             }
         }
@@ -285,7 +321,7 @@ final class AppState {
         // Step 5: Delete local file after everything is done
         if dropboxPath != nil {
             try? FileManager.default.removeItem(at: fileURL)
-            print("🗑️ Local file deleted")
+            LogManager.shared.log("🗑️ Local file deleted: \(fileURL.lastPathComponent)")
             
             // Step 6: Sync Dropbox state to update UI
             await syncDropboxState()

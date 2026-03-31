@@ -72,6 +72,7 @@ final class DropboxUploadManager {
               (200...299).contains(httpResponse.statusCode) else {
             let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
             let body = String(data: responseData, encoding: .utf8) ?? ""
+            LogManager.shared.log("Dropbox simpleUpload Error: HTTP \(statusCode) - \(body)", type: .error)
             throw DropboxError.uploadFailed("HTTP \(statusCode): \(body)")
         }
 
@@ -234,7 +235,7 @@ final class DropboxUploadManager {
                 return try await operation()
             } catch {
                 lastError = error
-                print("⚠️ Upload Attempt \(attempt) failed: \(error.localizedDescription). Retrying in \(Double(delay)/1_000_000_000)s...")
+                LogManager.shared.log("⚠️ Upload Attempt \(attempt) failed: \(error.localizedDescription)", type: .debug)
                 if attempt < attempts {
                     try await Task.sleep(nanoseconds: delay)
                 }

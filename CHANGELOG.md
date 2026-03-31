@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.1.1] - 2026-03-31
+### Added
+- **Diagnostic Logging**: Persistent application logs are now saved to `~/Library/Application Support/NoCornyTracer/Logs/app.log` for background troubleshooting.
+- **Show Logs Button**: Added a dedicated button in Settings > General to quickly access the app logs folder.
+### Improved
+- **Error Visibility**: Failed uploads now display the specific error message from Dropbox (e.g., "Insufficient space") in the recording row tooltip.
+- **Task Robustness**: Refactored the background processing pipeline to reliably capture and persist upload errors and avoid race conditions.
+
 ## [3.1.0] - 2026-03-31
 ### Added
 - **Gemini 2.5 Flash-Lite**: Migrated to the latest stable model for significantly faster and more efficient AI-powered video naming and transcription.
