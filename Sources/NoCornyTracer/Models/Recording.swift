@@ -37,6 +37,7 @@ struct Recording: Identifiable, Codable {
             return aiName
         }
         let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
         return "Recording_\(formatter.string(from: createdAt))"
     }

@@ -278,6 +278,7 @@ final class AppState {
         LogManager.shared.log("🤖 Starting AI naming...")
         if let aiNameBase = await aiNamingService.generateName(for: fileURL, subtitles: generatedSubtitles) {
             let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
             formatter.dateFormat = "dd MMMM yyyy - HH.mm"
             
             // Get creation date from state

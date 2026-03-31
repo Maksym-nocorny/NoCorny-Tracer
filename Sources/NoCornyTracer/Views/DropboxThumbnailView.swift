@@ -51,6 +51,11 @@ struct DropboxThumbnailView: View {
         isLoading = true
         
         Task {
+            // Add a small staggered delay (0-500ms) to prevent "network storm" at startup
+            // if many thumbnails try to load at the exact same millisecond.
+            let delayMs = UInt64.random(in: 0...500)
+            try? await Task.sleep(nanoseconds: delayMs * 1_000_000)
+
             do {
                 let token = await appState.dropboxAuthManager.refreshTokenIfNeeded() ?? appState.dropboxAuthManager.accessToken ?? ""
                 let data = try await appState.dropboxUploadManager.getThumbnail(path: path, accessToken: token)
@@ -61,6 +66,7 @@ struct DropboxThumbnailView: View {
                     }
                 }
             } catch {
+                // Silently fail for thumbnails to avoid cluttering logs with minor issues
                 print("❌ Thumbnail Error: \(error)")
             }
             await MainActor.run {

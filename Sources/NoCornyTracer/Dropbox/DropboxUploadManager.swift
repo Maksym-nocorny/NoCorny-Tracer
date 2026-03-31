@@ -38,7 +38,7 @@ final class DropboxUploadManager {
 
         if fileSize <= UInt64(simpleUploadLimit) {
             let fileData = try Data(contentsOf: fileURL)
-            return try await withRetry {
+            return try await withRetry(taskName: "Upload") {
                 try await self.simpleUpload(data: fileData, path: dropboxPath, accessToken: accessToken)
             }
         } else {
@@ -62,8 +62,7 @@ final class DropboxUploadManager {
             "autorename": true,
             "mute": false
         ]
-        let apiArgData = try JSONSerialization.data(withJSONObject: apiArg)
-        request.setValue(String(data: apiArgData, encoding: .utf8)!, forHTTPHeaderField: "Dropbox-API-Arg")
+        try setDropboxAPIArg(request: &request, arguments: apiArg)
         request.httpBody = data
 
         let (responseData, response) = try await URLSession.shared.data(for: request)
@@ -92,7 +91,7 @@ final class DropboxUploadManager {
 
         // Start session with first chunk
         let firstChunkData = try fileHandle.read(upToCount: chunkSize) ?? Data()
-        let sessionID = try await withRetry {
+        let sessionID = try await withRetry(taskName: "Session Start") {
             try await self.startUploadSession(data: firstChunkData, accessToken: accessToken)
         }
 
@@ -109,7 +108,7 @@ final class DropboxUploadManager {
 
             if isLast {
                 // Finish with last chunk
-                return try await withRetry {
+                return try await withRetry(taskName: "Session Finish") {
                     try await self.finishUploadSession(
                         sessionID: sessionID,
                         offset: Int(offset),
@@ -119,7 +118,7 @@ final class DropboxUploadManager {
                     )
                 }
             } else {
-                try await withRetry {
+                try await withRetry(taskName: "Session Append") {
                     try await self.appendUploadSession(sessionID: sessionID, offset: Int(offset), data: chunkData, accessToken: accessToken)
                 }
                 offset += UInt64(chunkData.count)
@@ -127,7 +126,7 @@ final class DropboxUploadManager {
         }
 
         // If we somehow didn't finish (shouldn't happen with total flow above)
-        return try await withRetry {
+        return try await withRetry(taskName: "Session Finish Fallback") {
             try await self.finishUploadSession(
                 sessionID: sessionID,
                 offset: Int(offset),
@@ -147,8 +146,7 @@ final class DropboxUploadManager {
         request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
 
         let apiArg: [String: Any] = ["close": false]
-        let apiArgData = try JSONSerialization.data(withJSONObject: apiArg)
-        request.setValue(String(data: apiArgData, encoding: .utf8)!, forHTTPHeaderField: "Dropbox-API-Arg")
+        try setDropboxAPIArg(request: &request, arguments: apiArg)
         request.httpBody = data
 
         let (responseData, response) = try await URLSession.shared.data(for: request)
@@ -178,8 +176,7 @@ final class DropboxUploadManager {
             ],
             "close": false
         ]
-        let apiArgData = try JSONSerialization.data(withJSONObject: apiArg)
-        request.setValue(String(data: apiArgData, encoding: .utf8)!, forHTTPHeaderField: "Dropbox-API-Arg")
+        try setDropboxAPIArg(request: &request, arguments: apiArg)
         request.httpBody = data
 
         let (_, response) = try await URLSession.shared.data(for: request)
@@ -210,8 +207,7 @@ final class DropboxUploadManager {
                 "mute": false
             ]
         ]
-        let apiArgData = try JSONSerialization.data(withJSONObject: apiArg)
-        request.setValue(String(data: apiArgData, encoding: .utf8)!, forHTTPHeaderField: "Dropbox-API-Arg")
+        try setDropboxAPIArg(request: &request, arguments: apiArg)
         request.httpBody = data
 
         let (responseData, response) = try await URLSession.shared.data(for: request)
@@ -228,20 +224,20 @@ final class DropboxUploadManager {
 
     // MARK: - Retry Logic
 
-    private func withRetry<T>(attempts: Int = 3, delay: UInt64 = 1_000_000_000, operation: @escaping () async throws -> T) async throws -> T {
+    private func withRetry<T>(taskName: String = "Operation", attempts: Int = 3, delay: UInt64 = 1_000_000_000, operation: @escaping () async throws -> T) async throws -> T {
         var lastError: Error?
         for attempt in 1...attempts {
             do {
                 return try await operation()
             } catch {
                 lastError = error
-                LogManager.shared.log(error: error, message: "⚠️ Upload Attempt \(attempt) failed")
+                LogManager.shared.log(error: error, message: "⚠️ \(taskName) Attempt \(attempt) failed")
                 if attempt < attempts {
                     try await Task.sleep(nanoseconds: delay)
                 }
             }
         }
-        throw lastError ?? DropboxError.uploadFailed("Unknown retry error")
+        throw lastError ?? DropboxError.uploadFailed("\(taskName) failed after \(attempts) attempts")
     }
 
     // MARK: - Shared Links
@@ -265,7 +261,7 @@ final class DropboxUploadManager {
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        return try await withRetry {
+        return try await withRetry(taskName: "Shared Link") {
             let (responseData, response) = try await URLSession.shared.data(for: request)
 
             if let httpResponse = response as? HTTPURLResponse,
@@ -499,7 +495,7 @@ final class DropboxUploadManager {
         let body: [String: Any] = ["path": path]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        try await withRetry {
+        try await withRetry(taskName: "Delete") {
             let (_, response) = try await URLSession.shared.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse,
                   (200...299).contains(httpResponse.statusCode) else {
@@ -522,13 +518,9 @@ final class DropboxUploadManager {
             "size": "w128h128",
             "mode": "bestfit"
         ]
-        let argData = try JSONSerialization.data(withJSONObject: arg)
+        try setDropboxAPIArg(request: &request, arguments: arg)
         
-        if let jsonString = String(data: argData, encoding: .utf8) {
-            request.setValue(jsonString, forHTTPHeaderField: "Dropbox-API-Arg")
-        }
-        
-        return try await withRetry {
+        return try await withRetry(taskName: "Thumbnail") {
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse,
                   (200...299).contains(httpResponse.statusCode) else {
@@ -536,5 +528,22 @@ final class DropboxUploadManager {
             }
             return data
         }
+    }
+
+    private func setDropboxAPIArg(request: inout URLRequest, arguments: [String: Any]) throws {
+        let argData = try JSONSerialization.data(withJSONObject: arguments)
+        guard let argString = String(data: argData, encoding: .utf8) else {
+            throw DropboxError.uploadFailed("Failed to encode arguments")
+        }
+        
+        // Escape non-ASCII characters to ensure ASCII-safe headers.
+        // Dropbox-API-Arg must be either pure ASCII or URL-encoded.
+        // Unicode escaping (\uXXXX) is valid JSON and effectively makes it ASCII.
+        let escaped = argString.unicodeScalars.map {
+            if $0.isASCII { return String($0) }
+            return String(format: "\\u%04x", $0.value)
+        }.joined()
+        
+        request.setValue(escaped, forHTTPHeaderField: "Dropbox-API-Arg")
     }
 }

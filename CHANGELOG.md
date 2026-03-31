@@ -1,5 +1,10 @@
 # Changelog
 
+## [3.1.3] - 2026-03-31
+### Improved
+- **Network Reliability**: Implemented staggered loading for thumbnails to prevent "network storm" connection drops at application launch.
+- **Log Clarity**: Updated retry logic to use specific task names (e.g., "Thumbnail", "Shared Link") instead of generic "Upload" messages for better troubleshooting.
+
 ## [3.1.2] - 2026-03-31
 ### Added
 - **Recording Start Log**: Added a specific "🔴 Recording Actually Started" log entry to clearly mark the beginning of video capture in the timeline.

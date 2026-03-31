@@ -45,6 +45,7 @@ final class RecordingManager {
 
         // Generate output file path
         let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
         let fileName = "NoCornyTracer_\(formatter.string(from: Date())).mp4"
         let outputURL = AppState.recordingsDirectory.appendingPathComponent(fileName)
