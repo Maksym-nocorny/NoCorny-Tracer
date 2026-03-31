@@ -43,7 +43,7 @@ export default {
     }
 
     const model = pathMatch[1];
-    const allowedModels = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash"];
+    const allowedModels = ["gemini-2.5-flash-lite", "gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash"];
     if (!allowedModels.includes(model)) {
       return jsonResponse({ error: `Model not allowed: ${model}` }, 403);
     }

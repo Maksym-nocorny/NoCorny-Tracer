@@ -1,5 +1,10 @@
 # Changelog
 
+## [3.1.0] - 2026-03-31
+### Added
+- **Gemini 2.5 Flash-Lite**: Migrated to the latest stable model for significantly faster and more efficient AI-powered video naming and transcription.
+- **Privacy Focus**: Configured the Gemini API to bypass Google's "product improvement" data collection, ensuring that recordings and transcripts remain private (requires Paid tier).
+
 ## [3.0.5] - 2026-03-30
 ### Fixed
 - **Timer & Duration**: Fixed inaccurate timer logic and large duration gaps in video files when using pause/resume.

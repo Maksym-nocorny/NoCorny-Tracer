@@ -18,7 +18,7 @@ final class GeminiProxyClient {
     ///   - model: Gemini model name (e.g. "gemini-2.0-flash")
     ///   - contents: Array of content objects matching Gemini API format
     /// - Returns: The generated text response
-    func generateContent(model: String = "gemini-2.0-flash", contents: [[String: Any]]) async throws -> String {
+    func generateContent(model: String = "gemini-2.5-flash-lite", contents: [[String: Any]]) async throws -> String {
         let url = URL(string: "\(baseURL)/v1/models/\(model):generateContent")!
 
         var request = URLRequest(url: url)
