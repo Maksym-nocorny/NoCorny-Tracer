@@ -9,16 +9,17 @@ mkdir -p "$APP_ICON_DIR"
 mkdir -p "$MENU_ICON_DIR"
 
 # Ensure we have the logos
-LOGO="NoCorny Tracer Ico.png"
+LOGO="assets/NoCorny Tracer Ico.png"
 if [ ! -f "$LOGO" ]; then
     echo "Logo not found!"
     exit 1
 fi
 
-TRAY_LOGO="NoCorny Tracer Tray Ico.png"
+TRAY_LOGO="assets/NoCorny Tracer Tray Ico.png"
 if [ ! -f "$TRAY_LOGO" ]; then
     echo "Tray Logo not found!"
-    exit 1
+    # Continue without the tray logo instead of exiting
+    # exit 1
 fi
 
 # Resize App Icons using sips

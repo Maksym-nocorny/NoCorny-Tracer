@@ -10,7 +10,7 @@ set -e
 #   - Sparkle generate_keys has been run (private key in Keychain)
 #   - sign_update tool available at .build/artifacts/sparkle/Sparkle/bin/sign_update
 
-PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SIGN_UPDATE="$PROJECT_DIR/.build/artifacts/sparkle/Sparkle/bin/sign_update"
 APPCAST="$PROJECT_DIR/appcast.xml"
 
@@ -25,7 +25,7 @@ echo ""
 
 # === Step 1: Build DMG ===
 echo "📦 Building DMG..."
-bash "$PROJECT_DIR/build_dmg.sh"
+bash "$PROJECT_DIR/scripts/build_dmg.sh"
 
 if [ ! -f "$DMG_PATH" ]; then
     echo "❌ DMG not found at $DMG_PATH"

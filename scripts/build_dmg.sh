@@ -5,7 +5,7 @@ set -e
 APP_NAME="NoCorny Tracer"
 BINARY_NAME="NoCornyTracer"
 BUNDLE_ID="com.nocornytracer.mac.v3"
-PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 # Clean up old dist artifacts to prevent cache issues
 echo "🧹 Cleaning dist directory..."
 mkdir -p "$PROJECT_DIR/dist"
@@ -69,20 +69,20 @@ fi
 /usr/libexec/PlistBuddy -c "Set :CFBundlePackageType APPL" "$APP_BUNDLE/Contents/Info.plist"
 
 # Create .icns from the app logo if it exists
-if [ -f "$PROJECT_DIR/NoCorny Tracer Ico.png" ]; then
+if [ -f "$PROJECT_DIR/assets/NoCorny Tracer Ico.png" ]; then
     echo "🎨 Creating app icon..."
     ICONSET_DIR="$PROJECT_DIR/dist/AppIcon.iconset"
     mkdir -p "$ICONSET_DIR"
-    sips -z 16 16     "$PROJECT_DIR/NoCorny Tracer Ico.png" --out "$ICONSET_DIR/icon_16x16.png"      > /dev/null
-    sips -z 32 32     "$PROJECT_DIR/NoCorny Tracer Ico.png" --out "$ICONSET_DIR/icon_16x16@2x.png"   > /dev/null
-    sips -z 32 32     "$PROJECT_DIR/NoCorny Tracer Ico.png" --out "$ICONSET_DIR/icon_32x32.png"      > /dev/null
-    sips -z 64 64     "$PROJECT_DIR/NoCorny Tracer Ico.png" --out "$ICONSET_DIR/icon_32x32@2x.png"   > /dev/null
-    sips -z 128 128   "$PROJECT_DIR/NoCorny Tracer Ico.png" --out "$ICONSET_DIR/icon_128x128.png"    > /dev/null
-    sips -z 256 256   "$PROJECT_DIR/NoCorny Tracer Ico.png" --out "$ICONSET_DIR/icon_128x128@2x.png" > /dev/null
-    sips -z 256 256   "$PROJECT_DIR/NoCorny Tracer Ico.png" --out "$ICONSET_DIR/icon_256x256.png"    > /dev/null
-    sips -z 512 512   "$PROJECT_DIR/NoCorny Tracer Ico.png" --out "$ICONSET_DIR/icon_256x256@2x.png" > /dev/null
-    sips -z 512 512   "$PROJECT_DIR/NoCorny Tracer Ico.png" --out "$ICONSET_DIR/icon_512x512.png"    > /dev/null
-    sips -z 1024 1024 "$PROJECT_DIR/NoCorny Tracer Ico.png" --out "$ICONSET_DIR/icon_512x512@2x.png" > /dev/null
+    sips -z 16 16     "$PROJECT_DIR/assets/NoCorny Tracer Ico.png" --out "$ICONSET_DIR/icon_16x16.png"      > /dev/null
+    sips -z 32 32     "$PROJECT_DIR/assets/NoCorny Tracer Ico.png" --out "$ICONSET_DIR/icon_16x16@2x.png"   > /dev/null
+    sips -z 32 32     "$PROJECT_DIR/assets/NoCorny Tracer Ico.png" --out "$ICONSET_DIR/icon_32x32.png"      > /dev/null
+    sips -z 64 64     "$PROJECT_DIR/assets/NoCorny Tracer Ico.png" --out "$ICONSET_DIR/icon_32x32@2x.png"   > /dev/null
+    sips -z 128 128   "$PROJECT_DIR/assets/NoCorny Tracer Ico.png" --out "$ICONSET_DIR/icon_128x128.png"    > /dev/null
+    sips -z 256 256   "$PROJECT_DIR/assets/NoCorny Tracer Ico.png" --out "$ICONSET_DIR/icon_128x128@2x.png" > /dev/null
+    sips -z 256 256   "$PROJECT_DIR/assets/NoCorny Tracer Ico.png" --out "$ICONSET_DIR/icon_256x256.png"    > /dev/null
+    sips -z 512 512   "$PROJECT_DIR/assets/NoCorny Tracer Ico.png" --out "$ICONSET_DIR/icon_256x256@2x.png" > /dev/null
+    sips -z 512 512   "$PROJECT_DIR/assets/NoCorny Tracer Ico.png" --out "$ICONSET_DIR/icon_512x512.png"    > /dev/null
+    sips -z 1024 1024 "$PROJECT_DIR/assets/NoCorny Tracer Ico.png" --out "$ICONSET_DIR/icon_512x512@2x.png" > /dev/null
     iconutil -c icns "$ICONSET_DIR" -o "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
     rm -rf "$ICONSET_DIR"
     echo "✅ App icon created"
@@ -143,7 +143,7 @@ fi
 
 "$CREATE_DMG" \
   --volname "$APP_NAME" \
-  --background "$PROJECT_DIR/background.tiff" \
+  --background "$PROJECT_DIR/assets/background.tiff" \
   --window-pos 200 120 \
   --window-size 512 319 \
   --icon-size 96 \
