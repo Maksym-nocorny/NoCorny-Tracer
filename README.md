@@ -1,7 +1,7 @@
 # NoCorny Tracer 🚀
 
 <div align="center">
-  <img src="https://raw.githubusercontent.com/Maksym-nocorny/NoCorny-Tracer/main/NoCorny%20Tracer%20Ico.png" 
+  <img src="https://raw.githubusercontent.com/Maksym-nocorny/NoCorny-Tracer/main/assets/NoCorny%20Tracer%20Ico.png" 
        alt="NoCorny Tracer Icon" 
        width="128" 
        height="128">
