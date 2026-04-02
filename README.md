@@ -1,49 +1,54 @@
 # NoCorny Tracer 🚀
 
-**NoCorny Tracer** is a modern macOS menu bar application designed for seamless screen and face-cam recording, integrated with AI-powered video naming (Gemini) and automated cloud sync (Dropbox).
+<div align="center">
+  <img src="https://raw.githubusercontent.com/Maksym-nocorny/NoCorny-Tracer/main/NoCorny%20Tracer%20Ico.png" 
+       alt="NoCorny Tracer Icon" 
+       width="128" 
+       height="128">
+  <br/>
+  <i>A modern macOS menu bar application designed for seamless screen and face-cam recording.</i>
+  <br/>
+  <br/>
+</div>
+
+**NoCorny Tracer** integrates AI-powered video naming (via Gemini) and automated cloud synchronization (via Dropbox) directly into a lightweight macOS menu bar utility, supercharging your workflow with minimal overhead.
+
+## ✨ Features
+
+- **Menu Bar recording**: Start, pause, and stop recordings instantly from your menu bar.
+- **Floating Face-Cam**: Optionally record your camera output right alongside your screen.
+- **Automated Cloud Sync**: Recordings securely sync directly to your personal Dropbox folder.
+- **AI-Powered Management**: Automatically generates smart, context-aware filenames for your recordings using Google's Gemini Pro Vision.
+- **Always Up to Date**: Frictionless auto-updates via the Sparkle framework so you're always running the latest version.
 
 ---
 
-## 🗺️ Documentation Map
+## 📥 Download & Installation
 
-This project uses a systematized documentation structure. Please refer to the guides below:
+You can get the latest version of NoCorny Tracer from the Releases page.
 
-| Category | File | Description |
-| :--- | :--- | :--- |
-| **Getting Started** | [README.md](./README.md) | This master document. |
-| **Releasing** | [PUBLISHING.md](./docs/PUBLISHING.md) | How to build, sign, and release new versions. |
-| **Legal** | [PRIVACY_POLICY.md](./docs/PRIVACY_POLICY.md) | Privacy policy for users. |
-| **Legal** | [TERMS_OF_SERVICE.md](./docs/TERMS_OF_SERVICE.md) | Terms of service for users. |
-| **History** | [CHANGELOG.md](./CHANGELOG.md) | Log of all versions and changes. |
+1. Navigate to the [Releases Tab](https://github.com/Maksym-nocorny/NoCorny-Tracer/releases).
+2. Download the `.dmg` file for the latest release (e.g., `NoCornyTracer-3.1.3.dmg`).
+3. Open the `.dmg` file and drag **NoCorny Tracer** into your `Applications` folder.
+
+> **Note:** Upon first launch, the app will request necessary macOS permissions (Screen Recording, Camera, Microphone) to function properly.
 
 ---
 
-## 🛡️ Security & Secrets
+## 📚 Documentation & Legal
 
-To prevent exposing sensitive API keys and secrets (Dropbox, Gemini, etc.), we follow these rules:
+Explore the following documentation if you'd like to learn more about the app or to review our policies:
 
-1.  **Never commit `Secrets.swift`**: This file is explicitly ignored in `.gitignore`.
-2.  **Use Templates**: New developers should copy `Sources/NoCornyTracer/Secrets.swift.template` to `Sources/NoCornyTracer/Secrets.swift` and fill in their own keys.
-3.  **No Hardcoded Tokens**: Never put GitHub Tokens or API keys directly in script files or markdown documentation.
-4.  **Local Testing**: Use a temporary Bundle Identifier for local testing to avoid conflicts with production installs.
-
----
-
-## 🤖 For AI Agents (Mandatory Reading)
-
-Before starting any task in this repository, you **MUST** read the following workflows to understand the established patterns:
-
-1.  **Versioning**: [.agents/workflows/versioning.md](./.agents/workflows/versioning.md) - How to increment version numbers.
-2.  **Releasing**: [.agents/workflows/github-release.md](./.agents/workflows/github-release.md) - How to deploy to GitHub.
-3.  **Testing**: [.agents/workflows/testing.md](./.agents/workflows/testing.md) - How to run test builds with a custom Bundle ID.
-
-> [!IMPORTANT]
-> Always verify `.gitignore` before recommending any file creations to ensure secrets are not accidentally tracked.
+- [Privacy Policy](./docs/PRIVACY_POLICY.md)
+- [Terms of Service](./docs/TERMS_OF_SERVICE.md)
+- [Changelog](./CHANGELOG.md)
 
 ---
 
-## 🛠️ Tech Stack
-- **Language**: Swift (SwiftUI)
-- **Frameworks**: Sparkle (Auto-updates), SwiftyDropbox
-- **AI**: Gemini Pro Vision (via Proxy)
-- **Deployment**: Custom bash scripts (`release.sh`, `build_dmg.sh`)
+## 🛠️ For Developers
+
+If you are a developer or an AI assistant working on this repository, please review the internal contribution and technical guidelines.
+
+- **Deploying/Building**: Read the [Publishing Guide](./docs/PUBLISHING.md).
+- **Project History**: Check the [Changelog](./CHANGELOG.md).
+- **AI Agents**: You **MUST** begin by reading the instructions located at `[.agents/MASTER.md](./.agents/MASTER.md)`.
