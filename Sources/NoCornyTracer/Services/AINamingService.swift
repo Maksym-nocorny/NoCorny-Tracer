@@ -187,7 +187,13 @@ final class AINamingService {
     /// Extracts up to `maxFrames` evenly spaced thumbnails from the video
     private func extractFrames(from videoURL: URL, maxFrames: Int) async -> [Data] {
         let asset = AVAsset(url: videoURL)
-        let durationSeconds = CMTimeGetSeconds(asset.duration)
+        let duration: CMTime
+        do {
+            duration = try await asset.load(.duration)
+        } catch {
+            return []
+        }
+        let durationSeconds = CMTimeGetSeconds(duration)
 
         guard durationSeconds > 0 else { return [] }
 

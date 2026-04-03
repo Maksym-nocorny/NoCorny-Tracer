@@ -4,7 +4,7 @@ import CoreMedia
 import VideoToolbox
 
 /// Writes video and audio sample buffers to a compressed MP4 file using AVAssetWriter
-final class VideoWriter {
+final class VideoWriter: @unchecked Sendable {
     // MARK: - Configuration
     private let outputURL: URL
     private let videoWidth: Int

@@ -5,7 +5,7 @@ import ServiceManagement
 
 /// Central app state managing all sub-managers and user preferences
 @Observable
-final class AppState {
+final class AppState: @unchecked Sendable {
     // MARK: - Managers
     let recordingManager = RecordingManager()
     let dropboxAuthManager = DropboxAuthManager()

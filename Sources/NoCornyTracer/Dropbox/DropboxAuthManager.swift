@@ -4,7 +4,7 @@ import CryptoKit
 
 /// Manages Dropbox OAuth2 authentication using PKCE + system default browser
 @Observable
-final class DropboxAuthManager: NSObject {
+final class DropboxAuthManager: NSObject, @unchecked Sendable {
     // MARK: - State
     var isSignedIn = false
     var userName: String?
