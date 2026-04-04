@@ -21,6 +21,10 @@ Read these files in order:
 - Follow the existing changelog format: `## [X.X.X] - YYYY-MM-DD` with `### Added / Fixed / Changed / Important` sections.
 - A bundle identifier change is a **BREAKING CHANGE** — bump the minor version (e.g. 3.1.x → 3.2.0) and document it under `### Important`.
 
+### GitHub CLI
+- `gh` is not in the default PATH. Always use the full path: `/opt/homebrew/bin/gh`
+- Example: `/opt/homebrew/bin/gh pr create ...`, `/opt/homebrew/bin/gh pr merge ...`
+
 ### Building
 - To build a DMG only: `bash scripts/build_dmg.sh`
 - To do a full release (DMG + Sparkle signing + appcast update): `bash scripts/release.sh`
