@@ -30,6 +30,13 @@ Read these files in order:
 - To do a full release (DMG + Sparkle signing + appcast update): `bash scripts/release.sh`
 - `Secrets.swift` is gitignored. If missing in a worktree, copy it from the main repo at `Sources/NoCornyTracer/Secrets.swift`.
 
+### Every PR must include a GitHub Release
+Every merged PR that changes app code **must** be followed by a GitHub release so Sparkle auto-updates work. Steps after merging:
+1. Run `bash scripts/release.sh` — builds DMG, signs it, updates `appcast.xml`
+2. Commit and push `appcast.xml`: `git add appcast.xml && git commit -m "Release vX.X.X" && git push`
+3. Create GitHub release: `/opt/homebrew/bin/gh release create vX.X.X "dist/NoCornyTracer-X.X.X.dmg" --title "vX.X.X" --notes "See CHANGELOG.md"`
+4. Users with the **same bundle ID** will auto-update via Sparkle. Breaking bundle ID changes require a fresh install.
+
 ### Bundle identifier
 - Current bundle ID: `com.nocorny.tracer`
 - It must be consistent across: `Info.plist`, `scripts/build_dmg.sh`, `LogManager.swift`, `KeychainHelper.swift`, `AudioCaptureManager.swift`, `VideoWriter.swift`, and `docs/PUBLISHING.md`.
