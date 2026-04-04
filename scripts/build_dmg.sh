@@ -4,7 +4,7 @@ set -e
 # === Configuration ===
 APP_NAME="NoCorny Tracer"
 BINARY_NAME="NoCornyTracer"
-BUNDLE_ID="com.nocornytracer.mac.v3"
+BUNDLE_ID="com.nocorny.tracer"
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 # Clean up old dist artifacts to prevent cache issues
 echo "🧹 Cleaning dist directory..."
