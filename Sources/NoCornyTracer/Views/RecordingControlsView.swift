@@ -1,12 +1,12 @@
 import SwiftUI
 import AVFoundation
 
-/// Main recording controls displayed in the menu bar popover
+/// Main recording controls
 struct RecordingControlsView: View {
     @Bindable var appState: AppState
 
     var body: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: Theme.Spacing.xl) {
             // Recording status / timer
             recordingStatusView
 
@@ -15,29 +15,25 @@ struct RecordingControlsView: View {
 
             // Microphone controls
             microphoneSection
-            
+
             // Camera controls
             cameraSection
         }
-        .padding(.horizontal, 16)
     }
 
-    @Environment(\.dismiss) var dismiss
-    
     // MARK: - Recording Status
 
     @ViewBuilder
     private var recordingStatusView: some View {
         if appState.recordingManager.isRecording {
-            HStack(spacing: 8) {
-                // ... (rest of recordingStatusView)
+            HStack(spacing: Theme.Spacing.md) {
                 Circle()
-                    .fill(.red)
+                    .fill(Theme.Colors.red)
                     .frame(width: 10, height: 10)
                     .modifier(PulsingModifier(isActive: !appState.recordingManager.isPaused))
 
                 Text(appState.recordingManager.formattedDuration)
-                    .font(.system(size: 24, weight: .medium, design: .monospaced))
+                    .font(Theme.Typography.mono(24, weight: .medium))
                     .foregroundStyle(.primary)
 
                 Spacer()
@@ -64,63 +60,71 @@ struct RecordingControlsView: View {
     @ViewBuilder
     private var mainActionButton: some View {
         if appState.recordingManager.isRecording {
-            HStack(spacing: 8) {
+            HStack(spacing: Theme.Spacing.md) {
                 // Abort button
                 Button {
                     Task { await appState.abortRecording() }
                 } label: {
-                    HStack(spacing: 6) {
+                    HStack(spacing: Theme.Spacing.sm) {
                         Image(systemName: "trash.fill")
                             .font(.system(size: 14))
                         Text("Abort")
-                            .font(.system(size: 13, weight: .semibold))
+                            .font(Theme.Typography.body(13, weight: .semibold))
                     }
                     .frame(maxWidth: .infinity)
                     .frame(height: 44)
-                    .background(.gray.gradient)
+                    .background(Theme.Colors.neutralGradient)
                     .foregroundStyle(.white)
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.md))
                 }
                 .buttonStyle(.plain)
+                .onHover { inside in
+                    if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+                }
 
                 // Stop button
                 Button {
                     Task { await appState.stopRecording() }
                 } label: {
-                    HStack(spacing: 6) {
+                    HStack(spacing: Theme.Spacing.sm) {
                         Image(systemName: "stop.fill")
                             .font(.system(size: 14))
                         Text("Stop")
-                            .font(.system(size: 13, weight: .semibold))
+                            .font(Theme.Typography.body(13, weight: .semibold))
                     }
                     .frame(maxWidth: .infinity)
                     .frame(height: 44)
-                    .background(.red.gradient)
+                    .background(Theme.Colors.dangerGradient)
                     .foregroundStyle(.white)
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.md))
                 }
                 .buttonStyle(.plain)
+                .onHover { inside in
+                    if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+                }
             }
         } else {
             Button {
-                dismiss()
                 Task {
                     try? await appState.startRecording()
                 }
             } label: {
-                HStack(spacing: 10) {
+                HStack(spacing: Theme.Spacing.lg) {
                     Image(systemName: "record.circle")
                         .font(.system(size: 18))
                     Text("Start Recording")
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(Theme.Typography.body(14, weight: .semibold))
                 }
                 .frame(maxWidth: .infinity)
                 .frame(height: 44)
-                .background(.blue.gradient)
+                .background(Theme.Colors.primaryGradient)
                 .foregroundStyle(.white)
-                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.md))
             }
             .buttonStyle(.plain)
+            .onHover { inside in
+                if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+            }
         }
     }
 
@@ -128,14 +132,14 @@ struct RecordingControlsView: View {
 
     @ViewBuilder
     private var microphoneSection: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: Theme.Spacing.md) {
             HStack {
                 Image(systemName: appState.isMicrophoneEnabled ? "mic.fill" : "mic.slash.fill")
-                    .foregroundStyle(appState.isMicrophoneEnabled ? .green : .secondary)
+                    .foregroundStyle(appState.isMicrophoneEnabled ? Theme.Colors.green : .secondary)
                     .font(.system(size: 14))
 
                 Text("Microphone")
-                    .font(.system(size: 13))
+                    .font(Theme.Typography.body(13))
 
                 Spacer()
 
@@ -144,62 +148,33 @@ struct RecordingControlsView: View {
                     .controlSize(.small)
             }
 
-            if appState.isMicrophoneEnabled {
-                Picker("Input Device", selection: Binding(
-                    get: { appState.selectedMicrophoneID ?? "" },
-                    set: { appState.selectedMicrophoneID = $0.isEmpty ? nil : $0 }
-                )) {
-                    Text("Default Input")
-                        .tag("")
-                    ForEach(appState.recordingManager.audioCaptureManager.availableDevices, id: \.uniqueID) { device in
-                        Text(device.localizedName)
-                            .tag(device.uniqueID)
-                    }
-                }
-                .pickerStyle(.menu)
-                .controlSize(.small)
-
-                // Audio level meter
-                if appState.recordingManager.isRecording {
-                    AudioLevelView(level: appState.recordingManager.audioCaptureManager.audioLevel)
-                        .frame(height: 4)
-                }
+            // Audio level meter (shown during recording)
+            if appState.isMicrophoneEnabled && appState.recordingManager.isRecording {
+                AudioLevelView(level: appState.recordingManager.audioCaptureManager.audioLevel)
+                    .frame(height: 4)
             }
         }
-        }
-    
+    }
+
     // MARK: - Camera Section
 
     @ViewBuilder
     private var cameraSection: some View {
-        VStack(spacing: 8) {
-            HStack {
-                Image(systemName: appState.isCameraEnabled ? "camera.fill" : "camera.slash.fill")
-                    .foregroundStyle(appState.isCameraEnabled ? .green : .secondary)
-                    .font(.system(size: 14))
+        HStack {
+            Image(systemName: appState.isCameraEnabled ? "camera.fill" : "camera.slash.fill")
+                .foregroundStyle(appState.isCameraEnabled ? Theme.Colors.green : .secondary)
+                .font(.system(size: 14))
 
-                Text("Camera")
-                    .font(.system(size: 13))
+            Text("Camera")
+                .font(Theme.Typography.body(13))
 
-                Spacer()
+            Spacer()
 
-                Toggle("", isOn: $appState.isCameraEnabled)
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-            }
-
-            if appState.isCameraEnabled {
-                Picker("Capture Device", selection: $appState.selectedCameraDeviceID) {
-                    ForEach(appState.cameraManager.availableDevices, id: \.uniqueID) { device in
-                        Text(device.localizedName)
-                            .tag(device.uniqueID as String?)
-                    }
-                }
-                .pickerStyle(.menu)
+            Toggle("", isOn: $appState.isCameraEnabled)
+                .toggleStyle(.switch)
                 .controlSize(.small)
-            }
         }
-        }
+    }
 }
 
 // MARK: - Audio Level View
@@ -222,9 +197,9 @@ struct AudioLevelView: View {
     }
 
     private var levelColor: Color {
-        if level > 0.8 { return .red }
-        if level > 0.5 { return .yellow }
-        return .green
+        if level > 0.8 { return Theme.Colors.red }
+        if level > 0.5 { return Theme.Colors.yellow }
+        return Theme.Colors.green
     }
 }
 

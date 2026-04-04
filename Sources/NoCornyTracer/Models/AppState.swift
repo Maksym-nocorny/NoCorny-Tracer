@@ -14,13 +14,23 @@ final class AppState {
     let hotkeyManager = HotkeyManager()
     let cameraManager = CameraManager()
 
+    // MARK: - Singleton for AppDelegate access
+    static weak var shared: AppState?
+
+    // MARK: - Tabs
+    enum MainTab: String, CaseIterable {
+        case recorder = "Recorder"
+        case recordings = "Recordings"
+        case settings = "Settings"
+    }
+    var selectedTab: MainTab = .recorder
+
     // MARK: - State
     var recordings: [Recording] = []
     var dropboxUsedSpace: UInt64 = 0
     var dropboxAllocatedSpace: UInt64 = 0
     var isSyncingDropbox: Bool = false
-    
-    var showSettings = false
+
     var selectedMicrophoneID: String?
     var isMicrophoneEnabled: Bool = true
     var autoUploadEnabled: Bool = true
@@ -91,6 +101,9 @@ final class AppState {
             self.selectedCameraDeviceID = cameraManager.selectedDeviceID
         }
         updateCameraState()
+
+        // Set shared reference for AppDelegate access
+        AppState.shared = self
     }
 
     private func checkFirstLaunch() {

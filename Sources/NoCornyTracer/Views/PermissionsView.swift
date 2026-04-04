@@ -3,30 +3,29 @@ import SwiftUI
 /// A dedicated window view that lists all required permissions and states.
 struct PermissionsView: View {
     @Bindable var permissionsManager: PermissionsManager
-    
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 24) {
-            
+        VStack(alignment: .leading, spacing: Theme.Spacing.xxxl) {
+
             // Header
-            HStack(spacing: 16) {
+            HStack(spacing: Theme.Spacing.xl) {
                 Image(nsImage: NSImage(named: "AppIcon") ?? NSImage())
                     .resizable()
                     .frame(width: 64, height: 64)
-                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                    .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.lg))
                     .shadow(radius: 4)
-                
-                VStack(alignment: .leading, spacing: 4) {
+
+                VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
                     Text("Permissions")
-                        .font(.title)
-                        .fontWeight(.bold)
+                        .font(Theme.Typography.heading(24))
                     Text("Please grant the required permissions to ensure NoCorny Tracer works correctly.")
-                        .font(.subheadline)
+                        .font(Theme.Typography.body(13))
                         .foregroundStyle(.secondary)
                 }
             }
-            .padding(.bottom, 8)
-            
-            VStack(alignment: .leading, spacing: 20) {
+            .padding(.bottom, Theme.Spacing.md)
+
+            VStack(alignment: .leading, spacing: Theme.Spacing.xxl) {
                 // Screen Recording
                 PermissionRowView(
                     icon: "display",
@@ -35,7 +34,7 @@ struct PermissionsView: View {
                     isGranted: permissionsManager.isScreenRecordingGranted,
                     action: { permissionsManager.requestScreenRecording() }
                 )
-                
+
                 // Camera
                 PermissionRowView(
                     icon: "camera.fill",
@@ -44,7 +43,7 @@ struct PermissionsView: View {
                     isGranted: permissionsManager.isCameraGranted,
                     action: { permissionsManager.requestCamera() }
                 )
-                
+
                 // Microphone
                 PermissionRowView(
                     icon: "mic.fill",
@@ -53,7 +52,7 @@ struct PermissionsView: View {
                     isGranted: permissionsManager.isMicrophoneGranted,
                     action: { permissionsManager.requestMicrophone() }
                 )
-                
+
                 // Accessibility
                 PermissionRowView(
                     icon: "keyboard",
@@ -63,11 +62,11 @@ struct PermissionsView: View {
                     action: { permissionsManager.requestAccessibility() }
                 )
             }
-            .padding(.vertical, 8)
-            
+            .padding(.vertical, Theme.Spacing.md)
+
             Divider()
-            
-            VStack(alignment: .leading, spacing: 20) {
+
+            VStack(alignment: .leading, spacing: Theme.Spacing.xxl) {
                 // Auto-Update
                 AppSettingRowView(
                     icon: "arrow.triangle.2.circlepath",
@@ -78,7 +77,7 @@ struct PermissionsView: View {
                         set: { _ in permissionsManager.toggleAutoUpdate() }
                     )
                 )
-                
+
                 // Launch at Login
                 AppSettingRowView(
                     icon: "play.rectangle.fill",
@@ -90,9 +89,9 @@ struct PermissionsView: View {
                     )
                 )
             }
-            
+
             Spacer()
-            
+
             HStack {
                 Spacer()
                 Button("Done") {
@@ -105,8 +104,9 @@ struct PermissionsView: View {
             }
             .padding(.top, 10)
         }
-        .padding(32)
+        .padding(Theme.Spacing.section)
         .frame(width: 520)
+        .background(Theme.Colors.backgroundPrimary)
         .onAppear {
             permissionsManager.startMonitoring()
         }
@@ -122,28 +122,28 @@ private struct PermissionRowView: View {
     let description: String
     let isGranted: Bool
     let action: () -> Void
-    
+
     var body: some View {
-        HStack(spacing: 16) {
+        HStack(spacing: Theme.Spacing.xl) {
             Image(systemName: icon)
                 .font(.system(size: 24))
                 .frame(width: 32)
                 .foregroundStyle(.secondary)
-            
+
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.headline)
+                    .font(Theme.Typography.body(15, weight: .semibold))
                 Text(description)
-                    .font(.subheadline)
+                    .font(Theme.Typography.body(13))
                     .foregroundStyle(.secondary)
             }
-            
+
             Spacer()
-            
+
             if isGranted {
                 Image(systemName: "checkmark.circle.fill")
                     .font(.system(size: 22))
-                    .foregroundStyle(.green)
+                    .foregroundStyle(Theme.Colors.green)
             } else {
                 Button("Grant") {
                     action()
@@ -159,24 +159,24 @@ private struct AppSettingRowView: View {
     let title: String
     let description: String
     @Binding var isOn: Bool
-    
+
     var body: some View {
-        HStack(spacing: 16) {
+        HStack(spacing: Theme.Spacing.xl) {
             Image(systemName: icon)
                 .font(.system(size: 24))
                 .frame(width: 32)
                 .foregroundStyle(.secondary)
-            
+
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.headline)
+                    .font(Theme.Typography.body(15, weight: .semibold))
                 Text(description)
-                    .font(.subheadline)
+                    .font(Theme.Typography.body(13))
                     .foregroundStyle(.secondary)
             }
-            
+
             Spacer()
-            
+
             Toggle("", isOn: $isOn)
                 .toggleStyle(.switch)
                 .labelsHidden()

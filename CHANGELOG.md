@@ -1,5 +1,49 @@
 # Changelog
 
+## [3.3.5] - 2026-04-04
+### Changed
+- **Pointer Cursor**: All interactive buttons, links, and tabs now show pointing hand cursor on hover.
+- **Input Device Pickers**: Mic and camera dropdowns now have consistent width (`minWidth: 160`).
+- **Card Alignment**: Dropbox, General, and About cards now use left-aligned indented layout matching Recording and Input Devices cards.
+- **Menu Bar Icons**: Swapped light/dark theme icon assignment to match correct appearance.
+- **Recordings Card**: Recordings tab now wrapped in card design with consistent styling.
+- **App Width**: Reduced window width from 420px to 340px (compact layout).
+- **Recordings List**: Shows all recordings (removed 10-item limit), added bottom fade gradient to indicate scrollable content.
+
+## [3.3.4] - 2026-04-04
+### Changed
+- **Settings Tab**: Settings is now a tab (Recorder / Recordings / Settings) instead of a toolbar gear button.
+- **Typography**: Increased font sizes (+1pt globally) and default body weight to medium for better readability.
+- **Menu Bar Icon**: Restored original 4-state icon behavior (light/dark theme × normal/recording state) using PNG resources.
+- **Camera Default**: Added "Default Camera" option in Input Devices picker.
+
+## [3.3.3] - 2026-04-04
+### Changed
+- **Tabs**: Added "Recorder" and "Recordings" tabs in header for cleaner navigation.
+- **Input Devices**: Moved microphone and camera device pickers to Settings; main screen shows only toggles.
+- **Card Contrast**: Darkened card background and added subtle border for better visual distinction.
+- **Menu Bar Icon**: Restored status bar icon that shows recording state (red tint) and activates app window on click.
+
+### Fixed
+- **About Text**: Improved text contrast in Settings About section.
+- **General Section**: Fixed General settings card not spanning full width.
+
+## [3.3.2] - 2026-04-04
+### Fixed
+- **Font Loading**: Fixed custom font registration (Mulish, PT Sans) by searching multiple bundle paths and subdirectories, with diagnostic logging for troubleshooting.
+
+## [3.3.1] - 2026-04-04
+### Fixed
+- **Window Layout**: Removed redundant in-content header (title bar already shows app name). Settings gear moved to native macOS toolbar.
+
+## [3.3.0] - 2026-04-04
+### Changed
+- **Windowed App**: Converted from menu bar app to standalone windowed app with dock icon
+- **Card-Based Layout**: Sections are now presented as cards with rounded corners and shadows on a white background
+- **Design System**: Applied NoCorny Agency brand design — purple gradient primary buttons, Mulish body font, PT Sans headings, brand colors throughout (red #f9423a, green #00c040, purple #3e0693)
+### Removed
+- Menu bar icon and popover — the app now opens as a regular window
+
 ## [3.2.0] - 2026-04-04
 ### Important
 - **BREAKING CHANGE**: The application's bundle identifier has changed to `com.nocorny.tracer`. Previous versions will no longer auto-update to this version. You MUST download a fresh copy.

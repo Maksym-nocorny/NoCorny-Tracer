@@ -7,7 +7,7 @@
 	<key>CFBundleName</key>
 	<string>NoCorny Tracer</string>
 	<key>CFBundleShortVersionString</key>
-	<string>3.2.0</string>
+	<string>3.3.8</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
@@ -20,9 +20,9 @@
 		</dict>
 	</array>
 	<key>CFBundleVersion</key>
-	<string>3.2.0</string>
+	<string>3.3.8</string>
 	<key>LSUIElement</key>
-	<true/>
+	<false/>
 	<key>NSCameraUsageDescription</key>
 	<string>NoCorny Tracer needs access to your camera to show a floating face cam while recording.</string>
 	<key>NSMicrophoneUsageDescription</key>
