@@ -86,7 +86,7 @@ The application uses the **Sparkle Framework** to check for updates.
 4.  **Installation**: Sparkle mounts the DMG, extracts the `.app`, and replaces the old version automatically.
 
 ### Key Requirements for Success:
-- **Bundle ID Link**: The app's Bundle ID (`com.nocornytracer.mac.v3`) must match exactly between the running app and the update.
+- **Bundle ID Link**: The app's Bundle ID (`com.nocorny.tracer`) must match exactly between the running app and the update.
 - **Public Key**: The `SUPublicEDKey` in `Info.plist` must match the public counterpart of the private key used by `release.sh`.
 - **App Name**: The app name must remain `"NoCorny Tracer"` as defined in the build scripts.
 

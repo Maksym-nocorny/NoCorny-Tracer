@@ -19,7 +19,7 @@ enum KeychainHelper {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrAccount as String: key,
-            kSecAttrService as String: "com.nocornytracer.app",
+            kSecAttrService as String: "com.nocorny.tracer",
             kSecValueData as String: data,
         ]
 
@@ -36,7 +36,7 @@ enum KeychainHelper {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrAccount as String: key,
-            kSecAttrService as String: "com.nocornytracer.app",
+            kSecAttrService as String: "com.nocorny.tracer",
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
@@ -54,7 +54,7 @@ enum KeychainHelper {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrAccount as String: key,
-            kSecAttrService as String: "com.nocornytracer.app",
+            kSecAttrService as String: "com.nocorny.tracer",
         ]
         SecItemDelete(query as CFDictionary)
     }

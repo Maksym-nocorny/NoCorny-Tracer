@@ -30,7 +30,7 @@ final class VideoWriter {
 
 
     // MARK: - Thread Safety
-    private let writingQueue = DispatchQueue(label: "com.nocornytracer.videowriter", qos: .userInitiated)
+    private let writingQueue = DispatchQueue(label: "com.nocorny.tracer.videowriter", qos: .userInitiated)
 
     init(
         outputURL: URL,

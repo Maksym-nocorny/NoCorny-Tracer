@@ -14,7 +14,7 @@ final class AudioCaptureManager: NSObject {
     // MARK: - Private
     private var captureSession: AVCaptureSession?
     private var audioOutput: AVCaptureAudioDataOutput?
-    private let captureQueue = DispatchQueue(label: "com.nocornytracer.audiocapture", qos: .userInitiated)
+    private let captureQueue = DispatchQueue(label: "com.nocorny.tracer.audiocapture", qos: .userInitiated)
 
     // Callback for audio buffers
     var onAudioSampleBuffer: ((CMSampleBuffer) -> Void)?

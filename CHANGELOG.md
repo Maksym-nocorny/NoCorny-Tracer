@@ -1,5 +1,9 @@
 # Changelog
 
+## [3.2.0] - 2026-04-04
+### Important
+- **BREAKING CHANGE**: The application's bundle identifier has changed to `com.nocorny.tracer`. Previous versions will no longer auto-update to this version. You MUST download a fresh copy.
+
 ## [3.1.3] - 2026-03-31
 ### Improved
 - **Network Reliability**: Implemented staggered loading for thumbnails to prevent "network storm" connection drops at application launch.

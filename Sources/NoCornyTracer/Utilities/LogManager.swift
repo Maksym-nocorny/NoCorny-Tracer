@@ -6,10 +6,10 @@ import OSLog
 final class LogManager {
     static let shared = LogManager()
     
-    private let logger = Logger(subsystem: "com.nocornytracer.mac.v3", category: "App")
+    private let logger = Logger(subsystem: "com.nocorny.tracer", category: "App")
     private let logFileURL: URL
     private let maxLogSize: Int64 = 2 * 1024 * 1024 // 2MB
-    private let logQueue = DispatchQueue(label: "com.nocornytracer.mac.v3.logging", qos: .background)
+    private let logQueue = DispatchQueue(label: "com.nocorny.tracer.logging", qos: .background)
     
     var lastLogs: [String] = []
     

@@ -12,4 +12,3 @@ Sources/NoCornyTracer/Secrets.swift
 ## macOS
 .DS_Store
 *.xcuserdata
-.agents/

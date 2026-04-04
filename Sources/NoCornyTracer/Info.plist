@@ -3,11 +3,11 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleIdentifier</key>
-	<string>com.nocornytracer.mac.v3</string>
+	<string>com.nocorny.tracer</string>
 	<key>CFBundleName</key>
 	<string>NoCorny Tracer</string>
 	<key>CFBundleShortVersionString</key>
-	<string>3.1.3</string>
+	<string>3.2.0</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
@@ -20,7 +20,7 @@
 		</dict>
 	</array>
 	<key>CFBundleVersion</key>
-	<string>3.1.3</string>
+	<string>3.2.0</string>
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSCameraUsageDescription</key>
