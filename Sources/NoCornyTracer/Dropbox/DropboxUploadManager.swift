@@ -399,11 +399,13 @@ final class DropboxUploadManager {
         return (used: used.uint64Value, allocated: allocated.uint64Value)
     }
 
-    /// List files in the NoCorny Tracer folder
+    /// List files in the NoCorny Tracer folder, handling pagination
     func listFolder(path: String = "", accessToken: String) async throws -> [DropboxFileSimple] {
         guard !accessToken.isEmpty else { throw DropboxError.invalidToken }
-        let url = URL(string: "https://api.dropboxapi.com/2/files/list_folder")!
-        var request = URLRequest(url: url)
+
+        // Initial request
+        let listUrl = URL(string: "https://api.dropboxapi.com/2/files/list_folder")!
+        var request = URLRequest(url: listUrl)
         request.httpMethod = "POST"
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -418,68 +420,113 @@ final class DropboxUploadManager {
         let (responseData, response) = try await URLSession.shared.data(for: request)
         if let httpResponse = response as? HTTPURLResponse,
            httpResponse.statusCode == 409 {
-            // Folder likely doesn't exist yet, return empty list
             return []
         }
         guard let httpResponse = response as? HTTPURLResponse,
               (200...299).contains(httpResponse.statusCode) else {
             throw DropboxError.noData
         }
-        
+
         guard let json = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
               let entries = json["entries"] as? [[String: Any]] else {
             return []
         }
-        
+
+        var allEntries = entries
+        var hasMore = (json["has_more"] as? Bool) ?? false
+        var cursor = json["cursor"] as? String
+
+        // Paginate with list_folder/continue
+        while hasMore, let cur = cursor {
+            let continueUrl = URL(string: "https://api.dropboxapi.com/2/files/list_folder/continue")!
+            var contRequest = URLRequest(url: continueUrl)
+            contRequest.httpMethod = "POST"
+            contRequest.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+            contRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            contRequest.httpBody = try JSONSerialization.data(withJSONObject: ["cursor": cur])
+
+            let (contData, contResponse) = try await URLSession.shared.data(for: contRequest)
+            guard let contHttp = contResponse as? HTTPURLResponse,
+                  (200...299).contains(contHttp.statusCode),
+                  let contJson = try? JSONSerialization.jsonObject(with: contData) as? [String: Any],
+                  let moreEntries = contJson["entries"] as? [[String: Any]] else {
+                break
+            }
+
+            allEntries.append(contentsOf: moreEntries)
+            hasMore = (contJson["has_more"] as? Bool) ?? false
+            cursor = contJson["cursor"] as? String
+        }
+
+        // Parse entries into files
         var files: [DropboxFileSimple] = []
-        for entry in entries {
+        for entry in allEntries {
             guard let name = entry["name"] as? String,
-                  let path = entry["path_display"] as? String,
-                  let modified = entry["client_modified"] as? String,
-                  let size = entry["size"] as? UInt64 else { continue }
-            
-            if !path.lowercased().hasSuffix(".mp4") { continue }
-            
+                  let entryPath = entry["path_display"] as? String,
+                  let modified = entry["client_modified"] as? String else { continue }
+
+            if !entryPath.lowercased().hasSuffix(".mp4") { continue }
+
+            let size = (entry["size"] as? NSNumber)?.uint64Value ?? 0
+
             var duration: TimeInterval?
             if let mediaInfo = entry["media_info"] as? [String: Any],
+               let tag = mediaInfo[".tag"] as? String,
+               tag == "metadata",
                let metadata = mediaInfo["metadata"] as? [String: Any],
                let durRaw = metadata["duration"] {
-                // Dropbox returns duration in milliseconds — convert to seconds
-                let durationMs = (durRaw as? NSNumber)?.doubleValue ?? (durRaw as? Double) ?? 0
+                let durationMs = (durRaw as? NSNumber)?.doubleValue ?? 0
                 duration = durationMs / 1000.0
             }
-            
-            files.append(DropboxFileSimple(name: name, pathDisplay: path, clientModified: modified, size: size, duration: duration))
+
+            files.append(DropboxFileSimple(name: name, pathDisplay: entryPath, clientModified: modified, size: size, duration: duration))
         }
         return files
     }
 
-    /// Fetches all shared links dict (path_display -> url)
+    /// Fetches all shared links dict (path_lower -> url), handling pagination
     func listAllSharedLinks(accessToken: String) async throws -> [String: String] {
         guard !accessToken.isEmpty else { throw DropboxError.invalidToken }
         let url = URL(string: "https://api.dropboxapi.com/2/sharing/list_shared_links")!
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        // Don't pass path to get ALL links, we can filter locally or let the response contain what we need
-        request.httpBody = try JSONSerialization.data(withJSONObject: [:])
 
-        let (responseData, response) = try await URLSession.shared.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse,
-              (200...299).contains(httpResponse.statusCode),
-              let json = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
-              let links = json["links"] as? [[String: Any]] else {
-            throw DropboxError.noData
-        }
-        
         var map: [String: String] = [:]
-        for link in links {
-            if let path = link["path_lower"] as? String,
-               let url = link["url"] as? String {
-                map[path] = url
+        var cursor: String? = nil
+        var hasMore = true
+
+        while hasMore {
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+            var body: [String: Any] = [:]
+            if let cursor = cursor {
+                body["cursor"] = cursor
+            }
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+            let (responseData, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  (200...299).contains(httpResponse.statusCode),
+                  let json = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
+                  let links = json["links"] as? [[String: Any]] else {
+                throw DropboxError.noData
+            }
+
+            for link in links {
+                if let path = link["path_lower"] as? String,
+                   let linkUrl = link["url"] as? String {
+                    map[path] = linkUrl
+                }
+            }
+
+            hasMore = (json["has_more"] as? Bool) ?? false
+            if hasMore {
+                cursor = json["cursor"] as? String
+                if cursor == nil { hasMore = false }
             }
         }
+
         return map
     }
 
