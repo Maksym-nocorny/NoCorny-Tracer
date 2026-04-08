@@ -7,7 +7,7 @@
 	<key>CFBundleName</key>
 	<string>NoCorny Tracer</string>
 	<key>CFBundleShortVersionString</key>
-	<string>3.4.3</string>
+	<string>3.4.4</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
@@ -20,7 +20,7 @@
 		</dict>
 	</array>
 	<key>CFBundleVersion</key>
-	<string>3.4.3</string>
+	<string>3.4.4</string>
 	<key>LSUIElement</key>
 	<false/>
 	<key>NSCameraUsageDescription</key>

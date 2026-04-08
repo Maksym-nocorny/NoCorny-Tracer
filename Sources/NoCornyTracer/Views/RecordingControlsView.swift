@@ -117,7 +117,7 @@ struct RecordingControlsView: View {
                 }
                 .frame(maxWidth: .infinity)
                 .frame(height: 44)
-                .background(Theme.Colors.primaryGradient)
+                .background(Color.adaptive(light: Color(hex: 0x3E0693), dark: Color(hex: 0xA855F7)))
                 .foregroundStyle(.white)
                 .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.md))
             }

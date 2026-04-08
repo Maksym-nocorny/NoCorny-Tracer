@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.4.4] - 2026-04-09
+### Changed
+- **Dropbox Storage Bar**: Moved Dropbox storage indicator from Recorder tab to Recordings tab, pinned at the bottom so recordings scroll freely above it while storage status remains visible.
+### Fixed
+- **Theme Toggle Icon**: Sun icon in light mode now properly visible with darker color and increased size (14→16px) for better visibility.
+- **Dark Mode Text Contrast**: Improved contrast for links and text in dark mode by lightening purple colors (`brandPurple` and `lightPurple`), making nocorny.agency link, email, and Settings buttons clearly readable.
+- **Start Recording Button**: Changed from gradient to solid color to ensure white text remains contrastful on dark background.
+
 ## [3.4.3] - 2026-04-08
 ### Fixed
 - **0-duration Recordings**: Added fallback metadata fetch via Dropbox API for recordings where duration is missing. Calls `/2/files/get_metadata` with `include_media_info: true` to recover accurate durations.

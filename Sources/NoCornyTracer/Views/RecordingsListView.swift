@@ -5,95 +5,150 @@ struct RecordingsListView: View {
     @Bindable var appState: AppState
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+        VStack(spacing: Theme.Spacing.md) {
+            VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+                HStack {
+                    HStack(spacing: Theme.Spacing.sm) {
+                        Text("Your Recordings")
+                            .font(Theme.Typography.body(13, weight: .semibold))
+                            .textCase(.uppercase)
+
+                        Text("\(appState.recordings.count)")
+                            .font(Theme.Typography.body(11, weight: .medium))
+                            .padding(.horizontal, Theme.Spacing.sm)
+                            .padding(.vertical, 2)
+                            .background(Color.primary.opacity(0.08))
+                            .clipShape(Capsule())
+                    }
+
+                    Spacer()
+
+                    if appState.dropboxAuthManager.isSignedIn {
+                        HStack(spacing: Theme.Spacing.lg) {
+                            Button {
+                                appState.openDropboxWebFolder()
+                            } label: {
+                                Image(systemName: "folder")
+                            }
+                            .buttonStyle(.plain)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .help("Open Dropbox folder")
+                            .onHover { inside in
+                                if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+                            }
+
+                            Button {
+                                Task { await appState.syncDropboxState() }
+                            } label: {
+                                if appState.isSyncingDropbox {
+                                    ProgressView()
+                                        .controlSize(.mini)
+                                } else {
+                                    Image(systemName: "arrow.triangle.2.circlepath")
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .disabled(appState.isSyncingDropbox)
+                            .onHover { inside in
+                                if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+                            }
+                        }
+                    }
+                }
+
+                if appState.recordings.isEmpty {
+                    VStack(spacing: Theme.Spacing.sm) {
+                        Image(systemName: "video.slash")
+                            .font(.system(size: 24))
+                            .foregroundStyle(.tertiary)
+                        Text("No recordings yet")
+                            .font(Theme.Typography.body(12, weight: .light))
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, Theme.Spacing.xxxl)
+                } else {
+                    ZStack(alignment: .bottom) {
+                        ScrollView(.vertical, showsIndicators: false) {
+                            LazyVStack(spacing: Theme.Spacing.xs) {
+                                ForEach(appState.recordings) { recording in
+                                    RecordingRowView(appState: appState, recording: recording)
+                                }
+                            }
+                            .padding(.bottom, Theme.Spacing.xxl)
+                        }
+
+                        // Bottom fade to indicate more content
+                        LinearGradient(
+                            colors: [
+                                Theme.Colors.cardBackground.opacity(0),
+                                Theme.Colors.cardBackground
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                        .frame(height: 32)
+                        .allowsHitTesting(false)
+                    }
+                }
+            }
+            .cardStyle()
+
+            if appState.dropboxAuthManager.isSignedIn && appState.dropboxAllocatedSpace > 0 {
+                storageBarView
+                    .cardStyle()
+            }
+        }
+    }
+
+    // MARK: - Storage Bar
+
+    private var storageBarView: some View {
+        let used = Double(appState.dropboxUsedSpace)
+        let allocated = Double(appState.dropboxAllocatedSpace)
+        let remaining = max(0, allocated - used)
+        let percentLeft = remaining / allocated
+
+        let approxMinutes = remaining / (19.5 * 1024 * 1024)
+        let isLowSpace = percentLeft < 0.2
+
+        let formatter = ByteCountFormatter()
+        formatter.allowedUnits = [.useGB, .useMB]
+        formatter.countStyle = .file
+        let usedStr = formatter.string(fromByteCount: Int64(used))
+        let allocatedStr = formatter.string(fromByteCount: Int64(allocated))
+
+        return VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
             HStack {
                 HStack(spacing: Theme.Spacing.sm) {
-                    Text("Your Recordings")
-                        .font(Theme.Typography.body(13, weight: .semibold))
-                        .textCase(.uppercase)
-
-                    Text("\(appState.recordings.count)")
-                        .font(Theme.Typography.body(11, weight: .medium))
-                        .padding(.horizontal, Theme.Spacing.sm)
-                        .padding(.vertical, 2)
-                        .background(Color.primary.opacity(0.08))
-                        .clipShape(Capsule())
+                    Image(systemName: "cloud")
+                        .font(.system(size: 10))
+                    Text("Dropbox Storage")
+                        .font(Theme.Typography.body(10, weight: .bold))
                 }
 
                 Spacer()
 
-                if appState.dropboxAuthManager.isSignedIn {
-                    HStack(spacing: Theme.Spacing.lg) {
-                        Button {
-                            appState.openDropboxWebFolder()
-                        } label: {
-                            Image(systemName: "folder")
-                        }
-                        .buttonStyle(.plain)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .help("Open Dropbox folder")
-                        .onHover { inside in
-                            if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
-                        }
+                Text("\(usedStr) / \(allocatedStr) • \(Int(approxMinutes)) min left")
+                    .font(Theme.Typography.body(10, weight: .medium))
+            }
+            .foregroundStyle(isLowSpace ? Theme.Colors.red : .secondary)
 
-                        Button {
-                            Task { await appState.syncDropboxState() }
-                        } label: {
-                            if appState.isSyncingDropbox {
-                                ProgressView()
-                                    .controlSize(.mini)
-                            } else {
-                                Image(systemName: "arrow.triangle.2.circlepath")
-                            }
-                        }
-                        .buttonStyle(.plain)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .disabled(appState.isSyncingDropbox)
-                        .onHover { inside in
-                            if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
-                        }
-                    }
+            GeometryReader { geometry in
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(Color.primary.opacity(0.1))
+                        .frame(height: 4)
+
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(isLowSpace ? AnyShapeStyle(Theme.Colors.dangerGradient) : AnyShapeStyle(Theme.Colors.primaryGradient))
+                        .frame(width: max(2, geometry.size.width * CGFloat(used / allocated)), height: 4)
                 }
             }
-
-            if appState.recordings.isEmpty {
-                VStack(spacing: Theme.Spacing.sm) {
-                    Image(systemName: "video.slash")
-                        .font(.system(size: 24))
-                        .foregroundStyle(.tertiary)
-                    Text("No recordings yet")
-                        .font(Theme.Typography.body(12, weight: .light))
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, Theme.Spacing.xxxl)
-            } else {
-                ZStack(alignment: .bottom) {
-                    ScrollView(.vertical, showsIndicators: false) {
-                        LazyVStack(spacing: Theme.Spacing.xs) {
-                            ForEach(appState.recordings) { recording in
-                                RecordingRowView(appState: appState, recording: recording)
-                            }
-                        }
-                        .padding(.bottom, Theme.Spacing.xxl)
-                    }
-
-                    // Bottom fade to indicate more content
-                    LinearGradient(
-                        colors: [
-                            Theme.Colors.cardBackground.opacity(0),
-                            Theme.Colors.cardBackground
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                    .frame(height: 32)
-                    .allowsHitTesting(false)
-                }
-            }
+            .frame(height: 4)
         }
-        .cardStyle()
     }
 }
 

@@ -1,30 +1,28 @@
 import SwiftUI
 import Sparkle
 
-// MARK: - Theme Picker Button
+// MARK: - Theme Toggle Button
 
-private struct ThemePickerButton: View {
+private struct ThemeToggleButton: View {
     @Bindable var appState: AppState
 
     var body: some View {
-        Menu {
-            ForEach(AppState.AppTheme.allCases, id: \.self) { theme in
-                Button {
-                    appState.appTheme = theme
-                } label: {
-                    Label(theme.displayName, systemImage: theme.iconName)
-                }
+        Button {
+            withAnimation(Theme.Anim.standard) {
+                appState.appTheme = appState.appTheme == .light ? .dark : .light
             }
         } label: {
-            Image(systemName: appState.appTheme.iconName)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(.secondary)
-                .frame(width: 28, height: 28)
-                .contentShape(Rectangle())
+            Image(systemName: appState.appTheme == .light ? "sun.max.fill" : "moon.fill")
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(.primary)
+                .frame(width: 32, height: 32)
+                .background(Theme.Colors.backgroundSecondary.opacity(0.7))
+                .clipShape(Circle())
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
+        .buttonStyle(.plain)
+        .onHover { inside in
+            if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+        }
     }
 }
 
@@ -39,13 +37,14 @@ struct MainView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Tab bar at the top with theme picker
-            HStack {
-                Spacer()
+            // Tab bar at the top with theme toggle
+            ZStack {
                 tabBar
-                Spacer()
-                ThemePickerButton(appState: appState)
-                    .padding(.trailing, Theme.Spacing.lg)
+                HStack {
+                    Spacer()
+                    ThemeToggleButton(appState: appState)
+                        .padding(.trailing, Theme.Spacing.lg)
+                }
             }
             .padding(.top, Theme.Spacing.md)
             .padding(.bottom, Theme.Spacing.sm)
@@ -139,11 +138,6 @@ struct MainView: View {
 
                 shortcutHintsView
                     .cardStyle()
-
-                if appState.dropboxAuthManager.isSignedIn && appState.dropboxAllocatedSpace > 0 {
-                    storageBarView
-                        .cardStyle()
-                }
 
                 contactMeCard
                     .cardStyle()
@@ -300,51 +294,4 @@ struct MainView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    // MARK: - Storage Bar
-
-    private var storageBarView: some View {
-        let used = Double(appState.dropboxUsedSpace)
-        let allocated = Double(appState.dropboxAllocatedSpace)
-        let remaining = max(0, allocated - used)
-        let percentLeft = remaining / allocated
-
-        let approxMinutes = remaining / (19.5 * 1024 * 1024)
-        let isLowSpace = percentLeft < 0.2
-
-        let formatter = ByteCountFormatter()
-        formatter.allowedUnits = [.useGB, .useMB]
-        formatter.countStyle = .file
-        let usedStr = formatter.string(fromByteCount: Int64(used))
-        let allocatedStr = formatter.string(fromByteCount: Int64(allocated))
-
-        return VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-            HStack {
-                HStack(spacing: Theme.Spacing.sm) {
-                    Image(systemName: "cloud")
-                        .font(.system(size: 10))
-                    Text("Dropbox Storage")
-                        .font(Theme.Typography.body(10, weight: .bold))
-                }
-
-                Spacer()
-
-                Text("\(usedStr) / \(allocatedStr) • \(Int(approxMinutes)) min left")
-                    .font(Theme.Typography.body(10, weight: .medium))
-            }
-            .foregroundStyle(isLowSpace ? Theme.Colors.red : .secondary)
-
-            GeometryReader { geometry in
-                ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 2)
-                        .fill(Color.primary.opacity(0.1))
-                        .frame(height: 4)
-
-                    RoundedRectangle(cornerRadius: 2)
-                        .fill(isLowSpace ? AnyShapeStyle(Theme.Colors.dangerGradient) : AnyShapeStyle(Theme.Colors.primaryGradient))
-                        .frame(width: max(2, geometry.size.width * CGFloat(used / allocated)), height: 4)
-                }
-            }
-            .frame(height: 4)
-        }
-    }
 }

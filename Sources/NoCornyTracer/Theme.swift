@@ -12,11 +12,11 @@ enum Theme {
         // Brand
         static let brandPurple = Color.adaptive(
             light: Color(hex: 0x3E0693),
-            dark: Color(hex: 0xA855F7)
+            dark: Color(hex: 0xC084FC)
         )
         static let lightPurple = Color.adaptive(
             light: Color(hex: 0x6B00DE),
-            dark: Color(hex: 0xC084FC)
+            dark: Color(hex: 0xD8B4FE)
         )
         static let pink = Color(hex: 0xFF08DE)
         static let orange = Color(hex: 0xFF6900)
@@ -57,7 +57,10 @@ enum Theme {
 
         // Gradients
         static let primaryGradient = LinearGradient(
-            colors: [brandPurple, lightPurple],
+            colors: [
+                Color.adaptive(light: Color(hex: 0x3E0693), dark: Color(hex: 0xA855F7)),
+                Color.adaptive(light: Color(hex: 0x6B00DE), dark: Color(hex: 0xC084FC))
+            ],
             startPoint: .leading,
             endPoint: .trailing
         )
