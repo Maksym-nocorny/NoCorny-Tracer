@@ -1,20 +1,54 @@
 import SwiftUI
 import Sparkle
 
+// MARK: - Theme Picker Button
+
+private struct ThemePickerButton: View {
+    @Bindable var appState: AppState
+
+    var body: some View {
+        Menu {
+            ForEach(AppState.AppTheme.allCases, id: \.self) { theme in
+                Button {
+                    appState.appTheme = theme
+                } label: {
+                    Label(theme.displayName, systemImage: theme.iconName)
+                }
+            }
+        } label: {
+            Image(systemName: appState.appTheme.iconName)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+    }
+}
+
 /// Main app window content
 struct MainView: View {
     @Bindable var appState: AppState
     let updaterController: SPUStandardUpdaterController
     var permissionsManager: PermissionsManager
     @Environment(\.openWindow) var openWindow
+    @Environment(\.colorScheme) var colorScheme
     @State private var showEmailCopied = false
 
     var body: some View {
         VStack(spacing: 0) {
-            // Tab bar at the top
-            tabBar
-                .padding(.top, Theme.Spacing.md)
-                .padding(.bottom, Theme.Spacing.sm)
+            // Tab bar at the top with theme picker
+            HStack {
+                Spacer()
+                tabBar
+                Spacer()
+                ThemePickerButton(appState: appState)
+                    .padding(.trailing, Theme.Spacing.lg)
+            }
+            .padding(.top, Theme.Spacing.md)
+            .padding(.bottom, Theme.Spacing.sm)
 
             // Tab content
             switch appState.selectedTab {
@@ -71,13 +105,15 @@ struct MainView: View {
                         .padding(.vertical, Theme.Spacing.sm)
                         .background(
                             appState.selectedTab == tab
-                                ? Color.white
+                                ? Theme.Colors.tabActiveBackground
                                 : Color.clear
                         )
                         .clipShape(Capsule())
                         .contentShape(Capsule())
                         .shadow(
-                            color: appState.selectedTab == tab ? .black.opacity(0.08) : .clear,
+                            color: appState.selectedTab == tab
+                                ? (colorScheme == .dark ? .black.opacity(0.3) : .black.opacity(0.08))
+                                : .clear,
                             radius: 2, x: 0, y: 1
                         )
                 }
@@ -237,14 +273,7 @@ struct MainView: View {
                     if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
                 }
 
-                Button {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString("maksym@nocorny.agency", forType: .string)
-                    showEmailCopied = true
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                        showEmailCopied = false
-                    }
-                } label: {
+                Link(destination: URL(string: "mailto:maksym@nocorny.agency")!) {
                     HStack(spacing: Theme.Spacing.xs) {
                         Image(systemName: showEmailCopied ? "checkmark" : "envelope")
                             .font(.system(size: 11))
@@ -252,8 +281,17 @@ struct MainView: View {
                             .font(Theme.Typography.body(12, weight: .medium))
                     }
                     .foregroundStyle(showEmailCopied ? Theme.Colors.green : Theme.Colors.brandPurple)
+                    .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .environment(\.openURL, OpenURLAction { _ in
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString("maksym@nocorny.agency", forType: .string)
+                    showEmailCopied = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                        showEmailCopied = false
+                    }
+                    return .discarded
+                })
                 .onHover { inside in
                     if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
                 }

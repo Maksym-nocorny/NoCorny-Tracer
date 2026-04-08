@@ -1,5 +1,14 @@
 # Changelog
 
+## [3.4.1] - 2026-04-08
+### Fixed
+- **Email Button**: Fixed email button in "Made with love" card that was opening blank browser tabs. Button now reliably copies email to clipboard and displays "Copied!" feedback without triggering system mailto handler.
+
+## [3.4.0] - 2026-04-08
+### Added
+- **Dark Theme**: Added theme toggle dropdown in top-right corner (Light / System / Dark modes) with sun/half-circle/moon SF Symbol icons. System mode automatically follows macOS appearance.
+- **Adaptive Colors**: All UI colors now intelligently adapt to light and dark modes — backgrounds, text, cards, buttons, and brand purple for optimal readability in both themes.
+
 ## [3.3.5] - 2026-04-04
 ### Changed
 - **Pointer Cursor**: All interactive buttons, links, and tabs now show pointing hand cursor on hover.
