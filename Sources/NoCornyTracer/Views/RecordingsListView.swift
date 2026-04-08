@@ -16,7 +16,7 @@ struct RecordingsListView: View {
                         .font(Theme.Typography.body(11, weight: .medium))
                         .padding(.horizontal, Theme.Spacing.sm)
                         .padding(.vertical, 2)
-                        .background(Color.black.opacity(0.06))
+                        .background(Color.primary.opacity(0.08))
                         .clipShape(Capsule())
                 }
 

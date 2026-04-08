@@ -33,7 +33,7 @@ struct NoCornyTracerApp: App {
         // Main Window
         Window("NoCorny Tracer", id: "main") {
             MainView(appState: appState, updaterController: updaterController, permissionsManager: permissionsManager)
-                .preferredColorScheme(.light)
+                .preferredColorScheme(appState.appTheme.colorScheme)
                 .tint(Theme.Colors.brandPurple)
                 .onAppear {
                     cameraWindowManager.updateVisibility(isEnabled: appState.isCameraEnabled, appState: appState)
@@ -52,7 +52,7 @@ struct NoCornyTracerApp: App {
         // Permissions Window
         Window("Permissions", id: "permissions") {
             PermissionsView(permissionsManager: permissionsManager)
-                .preferredColorScheme(.light)
+                .preferredColorScheme(appState.appTheme.colorScheme)
                 .tint(Theme.Colors.brandPurple)
         }
         .windowResizability(.contentSize)
@@ -72,8 +72,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var lastIsDark: Bool?
 
     // Preloaded menu bar images
-    private var normalLightImage: NSImage?
-    private var normalDarkImage: NSImage?
+    private var normalImage: NSImage?  // Template image — macOS auto-tints for menubar
     private var recordingLightImage: NSImage?
     private var recordingDarkImage: NSImage?
 
@@ -97,7 +96,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let bundle = Bundle.appResources
         let names = [
             "menubar_normal_light",
-            "menubar_normal_dark",
             "menubar_recording_light",
             "menubar_recording_dark"
         ]
@@ -106,14 +104,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if let url = bundle.url(forResource: name, withExtension: "png", subdirectory: "Resources")
                 ?? bundle.url(forResource: name, withExtension: "png"),
                let image = NSImage(contentsOf: url) {
-                image.isTemplate = false
                 image.size = NSSize(width: 18, height: 18)
-                switch name {
-                case "menubar_normal_light": normalLightImage = image
-                case "menubar_normal_dark": normalDarkImage = image
-                case "menubar_recording_light": recordingLightImage = image
-                case "menubar_recording_dark": recordingDarkImage = image
-                default: break
+                if name == "menubar_normal_light" {
+                    image.isTemplate = true  // macOS auto-tints for menubar appearance
+                    normalImage = image
+                } else {
+                    image.isTemplate = false
+                    switch name {
+                    case "menubar_recording_light": recordingLightImage = image
+                    case "menubar_recording_dark": recordingDarkImage = image
+                    default: break
+                    }
                 }
             }
         }
@@ -158,7 +159,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateStatusIcon() {
         guard let button = statusItem?.button else { return }
         let isRecording = AppState.shared?.recordingManager.isRecording ?? false
-        let isDark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        // Use system appearance (not NSApp.effectiveAppearance which follows the app's theme)
+        let isDark = UserDefaults.standard.string(forKey: "AppleInterfaceStyle") == "Dark"
 
         // Only update if state changed
         guard isRecording != lastIsRecording || isDark != lastIsDark else { return }
@@ -169,7 +171,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if isRecording {
             image = isDark ? recordingDarkImage : recordingLightImage
         } else {
-            image = isDark ? normalDarkImage : normalLightImage
+            image = normalImage
         }
 
         if let image = image {

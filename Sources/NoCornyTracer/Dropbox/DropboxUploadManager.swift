@@ -348,23 +348,38 @@ final class DropboxUploadManager {
         return newPath
     }
 
-    // MARK: - Upload Text File
+    // MARK: - File Metadata
 
-    /// Upload a text file (e.g. subtitles SRT) to Dropbox. Returns the Dropbox path.
-    func uploadTextFile(content: String, fileName: String, accessToken: String) async throws -> String {
-        guard !accessToken.isEmpty else {
-            throw DropboxError.invalidToken
+    /// Fetch duration for a single file via get_metadata (fallback when list_folder doesn't include media_info)
+    func getFileDuration(path: String, accessToken: String) async -> TimeInterval? {
+        guard !accessToken.isEmpty else { return nil }
+
+        let url = URL(string: "https://api.dropboxapi.com/2/files/get_metadata")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let body: [String: Any] = [
+            "path": path,
+            "include_media_info": true
+        ]
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              let http = response as? HTTPURLResponse,
+              (200...299).contains(http.statusCode),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let mediaInfo = json["media_info"] as? [String: Any],
+              let tag = mediaInfo[".tag"] as? String, tag == "metadata",
+              let metadata = mediaInfo["metadata"] as? [String: Any],
+              let durRaw = metadata["duration"] else {
+            return nil
         }
-
-        guard let fileData = content.data(using: .utf8) else {
-            throw DropboxError.noData
-        }
-
-        let dropboxPath = "/\(fileName)"
-        return try await simpleUpload(data: fileData, path: dropboxPath, accessToken: accessToken)
+        let durationMs = (durRaw as? NSNumber)?.doubleValue ?? 0
+        return durationMs / 1000.0
     }
 
-    // MARK: - API Structs
     // MARK: - API Structs
     
     // Simple struct for recordings list

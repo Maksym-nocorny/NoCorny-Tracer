@@ -1,5 +1,14 @@
 # Changelog
 
+## [3.4.3] - 2026-04-08
+### Fixed
+- **0-duration Recordings**: Added fallback metadata fetch via Dropbox API for recordings where duration is missing. Calls `/2/files/get_metadata` with `include_media_info: true` to recover accurate durations.
+- **Subtitle Uploads**: Removed SRT file uploads to Dropbox (subtitles are still generated internally for AI naming).
+
+## [3.4.2] - 2026-04-08
+### Fixed
+- **Menu Bar Icon**: Menubar icon now only changes color with system theme, not app theme. Uses template image for normal state and system appearance detection for recording state, ensuring it always matches the menubar's actual appearance.
+
 ## [3.4.1] - 2026-04-08
 ### Fixed
 - **Email Button**: Fixed email button in "Made with love" card that was opening blank browser tabs. Button now reliably copies email to clipboard and displays "Copied!" feedback without triggering system mailto handler.

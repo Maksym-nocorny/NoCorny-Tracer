@@ -17,6 +17,27 @@ final class AppState {
     // MARK: - Singleton for AppDelegate access
     static weak var shared: AppState?
 
+    // MARK: - Theme
+    enum AppTheme: String, CaseIterable {
+        case light, dark
+
+        var colorScheme: ColorScheme {
+            switch self {
+            case .light: return .light
+            case .dark: return .dark
+            }
+        }
+
+        var iconName: String {
+            switch self {
+            case .light: return "sun.max"
+            case .dark: return "moon"
+            }
+        }
+
+        var displayName: String { rawValue.capitalized }
+    }
+
     // MARK: - Tabs
     enum MainTab: String, CaseIterable {
         case recorder = "Recorder"
@@ -33,6 +54,12 @@ final class AppState {
 
     var selectedMicrophoneID: String?
     var isMicrophoneEnabled: Bool = true
+    var appTheme: AppTheme = .light {
+        didSet {
+            UserDefaults.standard.set(appTheme.rawValue, forKey: "appTheme")
+            updateAppAppearance()
+        }
+    }
     var autoUploadEnabled: Bool = true
     var launchAtLogin: Bool = false {
         didSet {
@@ -72,6 +99,10 @@ final class AppState {
     var showLaunchAtLoginPrompt = false
 
     init() {
+        if let themeRaw = UserDefaults.standard.string(forKey: "appTheme"),
+           let theme = AppTheme(rawValue: themeRaw) {
+            self.appTheme = theme
+        }
         self.launchAtLogin = UserDefaults.standard.bool(forKey: "launchAtLogin")
         self.isCameraEnabled = UserDefaults.standard.bool(forKey: "isCameraEnabled")
         self.selectedCameraDeviceID = UserDefaults.standard.string(forKey: "selectedCameraDeviceID")
@@ -104,6 +135,23 @@ final class AppState {
 
         // Set shared reference for AppDelegate access
         AppState.shared = self
+
+        // Apply theme appearance after app finishes launching (NSApp is nil during init)
+        DispatchQueue.main.async { [weak self] in
+            self?.updateAppAppearance()
+        }
+    }
+
+    // MARK: - Theme Appearance
+
+    func updateAppAppearance() {
+        guard let app = NSApp else { return }
+        switch appTheme {
+        case .light:
+            app.appearance = NSAppearance(named: .aqua)
+        case .dark:
+            app.appearance = NSAppearance(named: .darkAqua)
+        }
     }
 
     private func checkFirstLaunch() {
@@ -261,30 +309,13 @@ final class AppState {
             }
         }
 
-        // Step 2: Generate and upload subtitles
+        // Step 2: Generate subtitles (used for AI naming, not uploaded)
         LogManager.shared.log("🤖 Starting subtitle generation...")
         var generatedSubtitles: String? = nil
         
         if let subtitles = await aiNamingService.generateSubtitles(for: fileURL) {
             generatedSubtitles = subtitles
             LogManager.shared.log("🤖 Subtitles: ✅ Generated content length: \(subtitles.count)")
-            
-            if !token.isEmpty {
-                // Fetch fresh display name
-                let currentRecording = recordings.first(where: { $0.id == id })
-                let srtFileName = (currentRecording?.displayName ?? "Recording") + ".srt"
-                
-                do {
-                    _ = try await dropboxUploadManager.uploadTextFile(
-                        content: subtitles,
-                        fileName: srtFileName,
-                        accessToken: token
-                    )
-                    LogManager.shared.log("📤 Subtitles: ✅ Uploaded as \"\(srtFileName)\"")
-                } catch {
-                    LogManager.shared.log(error: error, message: "📤 Subtitles: ❌ Upload failed")
-                }
-            }
         }
 
         // Step 3: AI Naming (using frames + subtitles)
@@ -395,6 +426,15 @@ final class AppState {
                 syncedRecordings.append(rec)
             }
             
+            // Fetch duration for files where Dropbox didn't return media_info
+            for i in syncedRecordings.indices where syncedRecordings[i].duration == 0 {
+                if let path = syncedRecordings[i].dropboxPath,
+                   let dur = await dropboxUploadManager.getFileDuration(path: path, accessToken: token),
+                   dur > 0 {
+                    syncedRecordings[i].duration = dur
+                }
+            }
+
             // Sort synced by date descending
             syncedRecordings.sort { $0.createdAt > $1.createdAt }
             

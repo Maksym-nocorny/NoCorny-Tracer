@@ -10,23 +10,50 @@ enum Theme {
 
     enum Colors {
         // Brand
-        static let brandPurple = Color(hex: 0x3E0693)
-        static let lightPurple = Color(hex: 0x6B00DE)
+        static let brandPurple = Color.adaptive(
+            light: Color(hex: 0x3E0693),
+            dark: Color(hex: 0xA855F7)
+        )
+        static let lightPurple = Color.adaptive(
+            light: Color(hex: 0x6B00DE),
+            dark: Color(hex: 0xC084FC)
+        )
         static let pink = Color(hex: 0xFF08DE)
         static let orange = Color(hex: 0xFF6900)
         static let yellow = Color(hex: 0xFFC72C)
         static let red = Color(hex: 0xF9423A)
         static let green = Color(hex: 0x00C040)
 
-        // Backgrounds (Design System semantic)
-        static let backgroundPrimary = Color.white               // #ffffff
-        static let backgroundSecondary = Color(hex: 0xEEEEEE)    // --neutral-lightest
-        static let cardBackground = Color(hex: 0xF5F3F7)         // --neutral-purple (contrast-enhanced)
+        // Backgrounds (Design System semantic) — adaptive for dark mode
+        static let backgroundPrimary = Color.adaptive(
+            light: .white,
+            dark: Color(hex: 0x1C1C1E)
+        )
+        static let backgroundSecondary = Color.adaptive(
+            light: Color(hex: 0xEEEEEE),
+            dark: Color(hex: 0x2C2C2E)
+        )
+        static let cardBackground = Color.adaptive(
+            light: Color(hex: 0xF5F3F7),
+            dark: Color(hex: 0x2A2830)
+        )
 
-        // Neutrals
-        static let neutralBackground = Color(hex: 0xF5F3F7)
-        static let textPrimary = Color(hex: 0x212121)
+        // Neutrals — adaptive
+        static let neutralBackground = Color.adaptive(
+            light: Color(hex: 0xF5F3F7),
+            dark: Color(hex: 0x2A2830)
+        )
+        static let textPrimary = Color.adaptive(
+            light: Color(hex: 0x212121),
+            dark: Color(hex: 0xF0F0F0)
+        )
         static let textAlternate = Color.white
+
+        // Tab bar
+        static let tabActiveBackground = Color.adaptive(
+            light: .white,
+            dark: Color(hex: 0x3A3A3C)
+        )
 
         // Gradients
         static let primaryGradient = LinearGradient(
@@ -178,6 +205,8 @@ enum Theme {
 // MARK: - Card ViewModifier
 
 struct CardModifier: ViewModifier {
+    @Environment(\.colorScheme) var colorScheme
+
     func body(content: Content) -> some View {
         content
             .padding(Theme.Spacing.xl)
@@ -185,9 +214,15 @@ struct CardModifier: ViewModifier {
             .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.md))
             .overlay(
                 RoundedRectangle(cornerRadius: Theme.Radius.md)
-                    .strokeBorder(Color.black.opacity(0.06), lineWidth: 1)
+                    .strokeBorder(
+                        colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.06),
+                        lineWidth: 1
+                    )
             )
-            .shadow(color: .black.opacity(0.08), radius: 8, x: 0, y: 2)
+            .shadow(
+                color: colorScheme == .dark ? .black.opacity(0.3) : .black.opacity(0.08),
+                radius: 8, x: 0, y: 2
+            )
     }
 }
 
@@ -197,7 +232,7 @@ extension View {
     }
 }
 
-// MARK: - Color Hex Initializer
+// MARK: - Color Helpers
 
 extension Color {
     init(hex: UInt, opacity: Double = 1.0) {
@@ -208,5 +243,13 @@ extension Color {
             blue: Double(hex & 0xFF) / 255.0,
             opacity: opacity
         )
+    }
+
+    /// Creates a color that adapts to the current appearance (light/dark mode).
+    static func adaptive(light: Color, dark: Color) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            return isDark ? NSColor(dark) : NSColor(light)
+        })
     }
 }
