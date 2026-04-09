@@ -57,13 +57,14 @@ struct MainView: View {
                 recordingsTab
             case .settings:
                 SettingsView(appState: appState, updaterController: updaterController)
+                    .id(appState.appTheme)
             }
 
             // Footer
             Divider()
             footerView
         }
-        .frame(width: 380)
+        .frame(width: 380, minHeight: 350)
         .background(Theme.Colors.backgroundPrimary)
         .onAppear {
             appState.cameraManager.refreshDevices()
