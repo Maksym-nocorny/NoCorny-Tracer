@@ -147,8 +147,7 @@ struct MainView: View {
                         .font(Theme.Typography.mono(28, weight: .medium))
                         .foregroundStyle(appState.recordingManager.isRecording ? .primary : .tertiary)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, Theme.Spacing.xs)
+                .frame(maxWidth: .infinity, alignment: .center)
 
                 RecordingControlsView(appState: appState)
                     .cardStyle()

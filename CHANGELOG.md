@@ -1,5 +1,10 @@
 # Changelog
 
+## [3.4.9] - 2026-04-10
+### Changed
+- **Timer**: Recording timer centered horizontally between the tab bar and top card.
+- **Microphone Row**: Audio sensitivity bar constrained to a compact width (80pt) with equal left/right gaps, instead of stretching across the full card.
+
 ## [3.4.8] - 2026-04-10
 ### Changed
 - **Recorder UI**: Recording timer moved between the tab bar and top card, always visible (shows `00:00` when idle, live time when recording).

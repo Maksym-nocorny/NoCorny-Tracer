@@ -127,8 +127,10 @@ struct RecordingControlsView: View {
 
             // Audio level meter inline between label and toggle
             if appState.isMicrophoneEnabled && appState.recordingManager.isRecording {
+                Spacer()
                 AudioLevelView(level: appState.recordingManager.audioCaptureManager.audioLevel)
-                    .frame(height: 4)
+                    .frame(width: 80, height: 4)
+                Spacer()
             } else {
                 Spacer()
             }
