@@ -36,6 +36,7 @@ struct NoCornyTracerApp: App {
                 .preferredColorScheme(appState.appTheme.colorScheme)
                 .tint(Theme.Colors.brandPurple)
                 .onAppear {
+                    appDelegate.updaterController = updaterController
                     cameraWindowManager.updateVisibility(isEnabled: appState.isCameraEnabled, appState: appState)
                 }
                 .onReceive(NotificationCenter.default.publisher(for: .didReceiveURL)) { notification in
@@ -70,6 +71,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var recordingStateTimer: Timer?
     private var lastIsRecording = false
     private var lastIsDark: Bool?
+
+    // Sparkle updater (set from NoCornyTracerApp)
+    var updaterController: SPUStandardUpdaterController?
 
     // Preloaded menu bar images
     private var normalImage: NSImage?  // Template image — macOS auto-tints for menubar
@@ -123,18 +127,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Status Bar Icon
 
     private func setupStatusItem() {
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
         guard let button = statusItem?.button else { return }
 
         button.action = #selector(statusItemClicked)
         button.target = self
+        button.sendAction(on: [.leftMouseUp, .rightMouseUp])
 
         // Set initial icon
         updateStatusIcon()
 
-        // Poll recording state and appearance to update icon
-        recordingStateTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+        // Poll recording state and appearance to update icon (0.1s to stay in sync with RecordingManager.durationTimer)
+        recordingStateTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             DispatchQueue.main.async {
                 self?.updateStatusIcon()
             }
@@ -162,7 +167,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Use system appearance (not NSApp.effectiveAppearance which follows the app's theme)
         let isDark = UserDefaults.standard.string(forKey: "AppleInterfaceStyle") == "Dark"
 
-        // Only update if state changed
+        // Always update timer title (changes every second during recording)
+        if isRecording {
+            let duration = AppState.shared?.recordingManager.formattedDuration ?? ""
+            button.title = " \(duration)"
+        } else {
+            button.title = ""
+        }
+
+        // Only swap image when state actually changed
         guard isRecording != lastIsRecording || isDark != lastIsDark else { return }
         lastIsRecording = isRecording
         lastIsDark = isDark
@@ -188,6 +201,80 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func statusItemClicked() {
+        guard let event = NSApp.currentEvent else { return }
+        let isActive = AppState.shared?.recordingManager.isRecording ?? false
+        // During recording/pause: left=menu, right=app
+        // When idle:              left=app,  right=menu
+        let wantsMenu = isActive ? (event.type == .leftMouseUp) : (event.type == .rightMouseUp)
+
+        if wantsMenu {
+            let menu = buildContextMenu()
+            statusItem?.menu = menu
+            statusItem?.button?.performClick(nil)
+            statusItem?.menu = nil
+        } else {
+            showMainWindow()
+        }
+    }
+
+    // MARK: - Context Menu
+
+    private func buildContextMenu() -> NSMenu {
+        let menu = NSMenu()
+        let isRecording = AppState.shared?.recordingManager.isRecording ?? false
+        let isPaused = AppState.shared?.recordingManager.isPaused ?? false
+
+        // Recording controls
+        if isRecording {
+            let stopItem = NSMenuItem(title: "Stop Recording", action: #selector(toggleRecording), keyEquivalent: "")
+            stopItem.target = self
+            menu.addItem(stopItem)
+
+            let pauseTitle = isPaused ? "Resume Recording" : "Pause Recording"
+            let pauseItem = NSMenuItem(title: pauseTitle, action: #selector(togglePause), keyEquivalent: "")
+            pauseItem.target = self
+            menu.addItem(pauseItem)
+
+            let abortItem = NSMenuItem(title: "Abort Recording", action: #selector(abortRecording), keyEquivalent: "")
+            abortItem.target = self
+            menu.addItem(abortItem)
+        } else {
+            let startItem = NSMenuItem(title: "Start Recording", action: #selector(toggleRecording), keyEquivalent: "")
+            startItem.target = self
+            menu.addItem(startItem)
+        }
+
+        menu.addItem(NSMenuItem.separator())
+
+        // Navigation
+        let openItem = NSMenuItem(title: "Open NoCorny Tracer", action: #selector(showMainWindow), keyEquivalent: "")
+        openItem.target = self
+        menu.addItem(openItem)
+
+        let folderItem = NSMenuItem(title: "Open Dropbox Folder", action: #selector(openDropboxFolder), keyEquivalent: "")
+        folderItem.target = self
+        menu.addItem(folderItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        // Updates
+        let updateItem = NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
+        updateItem.target = self
+        menu.addItem(updateItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        // Quit
+        let quitItem = NSMenuItem(title: "Quit NoCorny Tracer", action: #selector(quitApp), keyEquivalent: "")
+        quitItem.target = self
+        menu.addItem(quitItem)
+
+        return menu
+    }
+
+    // MARK: - Menu Actions
+
+    @objc private func showMainWindow() {
         NSApp.activate(ignoringOtherApps: true)
         for window in NSApp.windows {
             if window.title == "NoCorny Tracer" {
@@ -195,6 +282,44 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
         }
+    }
+
+    @objc private func toggleRecording() {
+        guard let appState = AppState.shared else { return }
+        Task { @MainActor in
+            if appState.recordingManager.isRecording {
+                await appState.stopRecording()
+            } else {
+                NSApp.windows.first { $0.title == "NoCorny Tracer" }?.orderOut(nil)
+                try? await appState.startRecording()
+            }
+        }
+    }
+
+    @objc private func togglePause() {
+        guard let appState = AppState.shared else { return }
+        Task { @MainActor in
+            await appState.recordingManager.togglePause()
+        }
+    }
+
+    @objc private func abortRecording() {
+        guard let appState = AppState.shared else { return }
+        Task { @MainActor in
+            await appState.abortRecording()
+        }
+    }
+
+    @objc private func openDropboxFolder() {
+        AppState.shared?.openDropboxWebFolder()
+    }
+
+    @objc private func checkForUpdates() {
+        updaterController?.checkForUpdates(nil)
+    }
+
+    @objc private func quitApp() {
+        NSApplication.shared.terminate(self)
     }
 
     // MARK: - URL Handling

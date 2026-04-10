@@ -1,5 +1,24 @@
 # Changelog
 
+## [3.4.7] - 2026-04-10
+### Added
+- **Menubar Timer**: Live recording timer appears next to the menubar icon during recording, stays frozen while paused.
+- **Smart Click Behavior**: During recording/pause, left-click opens the quick-access menu and right-click opens the app window. Swaps back to normal when idle.
+- **Instant Window Hide**: App window disappears instantly when recording starts (no minimize animation).
+### Changed
+- **Resume Delay**: Reduced pause-to-resume delay from 1s to 0.5s.
+- **Menubar Timer Sync**: Increased menubar poll rate to 0.1s to match in-app timer, eliminating desync after pause/resume.
+
+## [3.4.6] - 2026-04-10
+### Added
+- **Right-Click Menubar Menu**: Added full context menu to menubar icon with quick-access recording controls (Start/Stop, Pause, Abort), app navigation (Open app, Dropbox folder), update checking, and quit option.
+
+## [3.4.5] - 2026-04-10
+### Fixed
+- **Settings Pickers Theme Bug**: Replaced system `.menu`-style SwiftUI Pickers with custom pure-SwiftUI dropdown components to fix issue where picker text became invisible when toggling theme while on Settings tab.
+### Changed
+- **Settings Button Styling**: Unified visual design of all buttons in Settings panel (Sign Out, Open, Permissions, Show Logs) to match custom dropdown buttons with purple text on light purple background.
+
 ## [3.4.4] - 2026-04-09
 ### Changed
 - **Dropbox Storage Bar**: Moved Dropbox storage indicator from Recorder tab to Recordings tab, pinned at the bottom so recordings scroll freely above it while storage status remains visible.

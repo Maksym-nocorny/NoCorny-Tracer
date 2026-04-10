@@ -106,6 +106,7 @@ struct RecordingControlsView: View {
         } else {
             Button {
                 Task {
+                    NSApp.windows.first { $0.title == "NoCorny Tracer" }?.orderOut(nil)
                     try? await appState.startRecording()
                 }
             } label: {

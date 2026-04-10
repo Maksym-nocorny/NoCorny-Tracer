@@ -150,7 +150,7 @@ final class RecordingManager {
         // If we are currently paused, we are about to resume.
         // Wait 1.0 second so the sound doesn't get recorded.
         if isPaused {
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            try? await Task.sleep(nanoseconds: 500_000_000)
         }
         
         isPaused.toggle()
