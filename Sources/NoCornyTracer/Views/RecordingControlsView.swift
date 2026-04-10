@@ -7,9 +7,6 @@ struct RecordingControlsView: View {
 
     var body: some View {
         VStack(spacing: Theme.Spacing.xl) {
-            // Recording status / timer
-            recordingStatusView
-
             // Main action button
             mainActionButton
 
@@ -18,40 +15,6 @@ struct RecordingControlsView: View {
 
             // Camera controls
             cameraSection
-        }
-    }
-
-    // MARK: - Recording Status
-
-    @ViewBuilder
-    private var recordingStatusView: some View {
-        if appState.recordingManager.isRecording {
-            HStack(spacing: Theme.Spacing.md) {
-                Circle()
-                    .fill(Theme.Colors.red)
-                    .frame(width: 10, height: 10)
-                    .modifier(PulsingModifier(isActive: !appState.recordingManager.isPaused))
-
-                Text(appState.recordingManager.formattedDuration)
-                    .font(Theme.Typography.mono(24, weight: .medium))
-                    .foregroundStyle(.primary)
-
-                Spacer()
-
-                // Pause button
-                Button {
-                    Task {
-                        await appState.recordingManager.togglePause()
-                    }
-                } label: {
-                    Image(systemName: appState.recordingManager.isPaused ? "play.fill" : "pause.fill")
-                        .font(.system(size: 16))
-                        .frame(width: 32, height: 32)
-                        .background(.ultraThinMaterial)
-                        .clipShape(Circle())
-                }
-                .buttonStyle(.plain)
-            }
         }
     }
 
@@ -74,6 +37,27 @@ struct RecordingControlsView: View {
                     .frame(maxWidth: .infinity)
                     .frame(height: 44)
                     .background(Theme.Colors.neutralGradient)
+                    .foregroundStyle(.white)
+                    .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.md))
+                }
+                .buttonStyle(.plain)
+                .onHover { inside in
+                    if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+                }
+
+                // Pause / Resume button
+                Button {
+                    Task { await appState.recordingManager.togglePause() }
+                } label: {
+                    HStack(spacing: Theme.Spacing.sm) {
+                        Image(systemName: appState.recordingManager.isPaused ? "play.fill" : "pause.fill")
+                            .font(.system(size: 14))
+                        Text(appState.recordingManager.isPaused ? "Resume" : "Pause")
+                            .font(Theme.Typography.body(13, weight: .semibold))
+                    }
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 44)
+                    .background(Color.adaptive(light: Color(hex: 0x3E0693), dark: Color(hex: 0xA855F7)))
                     .foregroundStyle(.white)
                     .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.md))
                 }
@@ -133,27 +117,25 @@ struct RecordingControlsView: View {
 
     @ViewBuilder
     private var microphoneSection: some View {
-        VStack(spacing: Theme.Spacing.md) {
-            HStack {
-                Image(systemName: appState.isMicrophoneEnabled ? "mic.fill" : "mic.slash.fill")
-                    .foregroundStyle(appState.isMicrophoneEnabled ? Theme.Colors.green : .secondary)
-                    .font(.system(size: 14))
+        HStack(spacing: Theme.Spacing.sm) {
+            Image(systemName: appState.isMicrophoneEnabled ? "mic.fill" : "mic.slash.fill")
+                .foregroundStyle(appState.isMicrophoneEnabled ? Theme.Colors.green : .secondary)
+                .font(.system(size: 14))
 
-                Text("Microphone")
-                    .font(Theme.Typography.body(13))
+            Text("Microphone")
+                .font(Theme.Typography.body(13))
 
-                Spacer()
-
-                Toggle("", isOn: $appState.isMicrophoneEnabled)
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-            }
-
-            // Audio level meter (shown during recording)
+            // Audio level meter inline between label and toggle
             if appState.isMicrophoneEnabled && appState.recordingManager.isRecording {
                 AudioLevelView(level: appState.recordingManager.audioCaptureManager.audioLevel)
                     .frame(height: 4)
+            } else {
+                Spacer()
             }
+
+            Toggle("", isOn: $appState.isMicrophoneEnabled)
+                .toggleStyle(.switch)
+                .controlSize(.small)
         }
     }
 

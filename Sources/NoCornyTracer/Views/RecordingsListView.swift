@@ -111,7 +111,6 @@ struct RecordingsListView: View {
         let remaining = max(0, allocated - used)
         let percentLeft = remaining / allocated
 
-        let approxMinutes = remaining / (19.5 * 1024 * 1024)
         let isLowSpace = percentLeft < 0.2
 
         let formatter = ByteCountFormatter()
@@ -131,7 +130,7 @@ struct RecordingsListView: View {
 
                 Spacer()
 
-                Text("\(usedStr) / \(allocatedStr) • \(Int(approxMinutes)) min left")
+                Text("\(usedStr) / \(allocatedStr)")
                     .font(Theme.Typography.body(10, weight: .medium))
             }
             .foregroundStyle(isLowSpace ? Theme.Colors.red : .secondary)

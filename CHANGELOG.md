@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.4.8] - 2026-04-10
+### Changed
+- **Recorder UI**: Recording timer moved between the tab bar and top card, always visible (shows `00:00` when idle, live time when recording).
+- **Recording Controls**: Pause/Resume button added as a third button alongside Abort and Stop (order: Abort → Pause → Stop).
+- **Microphone Row**: Audio sensitivity bar now appears inline between the "Microphone" label and its toggle during recording.
+- **Footer**: Storage time remaining (`~N min left`) moved to the right corner of the footer, visible across all tabs.
+- **Storage Bar**: Removed redundant time-remaining text from the Dropbox storage card in the Recordings tab.
+
 ## [3.4.7] - 2026-04-10
 ### Added
 - **Menubar Timer**: Live recording timer appears next to the menubar icon during recording, stays frozen while paused.

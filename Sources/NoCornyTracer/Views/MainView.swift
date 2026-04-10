@@ -57,14 +57,13 @@ struct MainView: View {
                 recordingsTab
             case .settings:
                 SettingsView(appState: appState, updaterController: updaterController)
-                    .id(appState.appTheme)
             }
 
             // Footer
             Divider()
             footerView
         }
-        .frame(width: 380, minHeight: 350)
+        .frame(width: 380)
         .background(Theme.Colors.backgroundPrimary)
         .onAppear {
             appState.cameraManager.refreshDevices()
@@ -134,6 +133,23 @@ struct MainView: View {
     private var recorderTab: some View {
         ScrollView {
             VStack(spacing: Theme.Spacing.lg) {
+                // Timer — always visible, shows 00:00 when idle
+                HStack(spacing: Theme.Spacing.sm) {
+                    if appState.recordingManager.isRecording {
+                        Circle()
+                            .fill(Theme.Colors.red)
+                            .frame(width: 8, height: 8)
+                            .modifier(PulsingModifier(isActive: !appState.recordingManager.isPaused))
+                    }
+                    Text(appState.recordingManager.isRecording
+                         ? appState.recordingManager.formattedDuration
+                         : "00:00")
+                        .font(Theme.Typography.mono(28, weight: .medium))
+                        .foregroundStyle(appState.recordingManager.isRecording ? .primary : .tertiary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, Theme.Spacing.xs)
+
                 RecordingControlsView(appState: appState)
                     .cardStyle()
 
@@ -231,6 +247,14 @@ struct MainView: View {
             }
 
             Spacer()
+
+            if appState.dropboxAuthManager.isSignedIn && appState.dropboxAllocatedSpace > 0 {
+                let remaining = max(0, Double(appState.dropboxAllocatedSpace) - Double(appState.dropboxUsedSpace))
+                let approxMinutes = Int(remaining / (19.5 * 1024 * 1024))
+                Text("~\(approxMinutes) min left")
+                    .font(Theme.Typography.body(11, weight: .light))
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding(.horizontal, Theme.Spacing.xl)
         .padding(.vertical, Theme.Spacing.md)
