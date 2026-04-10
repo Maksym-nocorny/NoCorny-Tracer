@@ -1,5 +1,10 @@
 # Changelog
 
+## [3.4.10] - 2026-04-10
+### Changed
+- **Settings**: Resolution, Frame Rate, Microphone, and Camera controls are now disabled (locked) while a recording is in progress, with a "Locked during recording" label shown in each section header.
+- **Settings**: Removed the "Save Location" row from the Recording section.
+
 ## [3.4.9] - 2026-04-10
 ### Changed
 - **Timer**: Recording timer centered horizontally between the tab bar and top card.

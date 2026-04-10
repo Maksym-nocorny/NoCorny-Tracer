@@ -7,6 +7,9 @@ struct SettingsView: View {
     @Bindable var appState: AppState
     let updaterController: SPUStandardUpdaterController
     @Environment(\.openWindow) var openWindow
+    @State private var activeDropdownID: String? = nil
+
+    private var isRecording: Bool { appState.recordingManager.isRecording }
 
     var body: some View {
         ScrollView {
@@ -30,6 +33,7 @@ struct SettingsView: View {
             .padding(.vertical, Theme.Spacing.lg)
         }
         .background(Theme.Colors.backgroundPrimary)
+        .customDropdownOverlay(activeDropdownID: $activeDropdownID)
     }
 
     // MARK: - Dropbox Account
@@ -64,7 +68,7 @@ struct SettingsView: View {
                         Button("Sign Out") {
                             appState.dropboxAuthManager.signOut()
                         }
-                        .controlSize(.small)
+                        .buttonStyle(SettingsButtonStyle())
                         .onHover { inside in
                             if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
                         }
@@ -119,35 +123,48 @@ struct SettingsView: View {
     @ViewBuilder
     private var recordingSettingsSection: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
-            Label("Recording", systemImage: "video")
-                .font(Theme.Typography.body(13, weight: .semibold))
+            HStack {
+                Label("Recording", systemImage: "video")
+                    .font(Theme.Typography.body(13, weight: .semibold))
+                Spacer()
+                if isRecording {
+                    Text("Locked during recording")
+                        .font(Theme.Typography.body(10, weight: .light))
+                        .foregroundStyle(.secondary)
+                }
+            }
 
             VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                HStack {
-                    Text("Resolution")
-                        .font(Theme.Typography.body(12))
-                    Spacer()
-                    Picker("", selection: $appState.videoResolution) {
-                        ForEach(VideoResolution.allCases) { res in
-                            Text(res.displayName).tag(res)
-                        }
+                VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+                    HStack {
+                        Text("Resolution")
+                            .font(Theme.Typography.body(12))
+                        Spacer()
+                        CustomDropdownButton(
+                            id: "resolution",
+                            options: VideoResolution.allCases.map {
+                                DropdownOption(id: $0.rawValue, label: $0.displayName, value: $0)
+                            },
+                            selection: $appState.videoResolution,
+                            activeDropdownID: $activeDropdownID
+                        )
                     }
-                    .pickerStyle(.menu)
-                    .controlSize(.small)
-                }
 
-                HStack {
-                    Text("Frame Rate")
-                        .font(Theme.Typography.body(12))
-                    Spacer()
-                    Picker("", selection: $appState.videoFrameRate) {
-                        ForEach(VideoFrameRate.allCases) { rate in
-                            Text(rate.displayName).tag(rate)
-                        }
+                    HStack {
+                        Text("Frame Rate")
+                            .font(Theme.Typography.body(12))
+                        Spacer()
+                        CustomDropdownButton(
+                            id: "framerate",
+                            options: VideoFrameRate.allCases.map {
+                                DropdownOption(id: String($0.rawValue), label: $0.displayName, value: $0)
+                            },
+                            selection: $appState.videoFrameRate,
+                            activeDropdownID: $activeDropdownID
+                        )
                     }
-                    .pickerStyle(.menu)
-                    .controlSize(.small)
                 }
+                .disabled(isRecording)
 
                 HStack {
                     Text("Format")
@@ -157,19 +174,6 @@ struct SettingsView: View {
                         .font(Theme.Typography.mono(12, weight: .light))
                 }
 
-                HStack {
-                    Text("Save Location")
-                        .font(Theme.Typography.body(12))
-                    Spacer()
-                    Button("Open") {
-                        NSWorkspace.shared.open(AppState.recordingsDirectory)
-                    }
-                    .controlSize(.small)
-                    .font(Theme.Typography.body(11))
-                    .onHover { inside in
-                        if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
-                    }
-                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -180,50 +184,57 @@ struct SettingsView: View {
     @ViewBuilder
     private var inputDevicesSection: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
-            Label("Input Devices", systemImage: "mic.and.signal.meter")
-                .font(Theme.Typography.body(13, weight: .semibold))
+            HStack {
+                Label("Input Devices", systemImage: "mic.and.signal.meter")
+                    .font(Theme.Typography.body(13, weight: .semibold))
+                Spacer()
+                if isRecording {
+                    Text("Locked during recording")
+                        .font(Theme.Typography.body(10, weight: .light))
+                        .foregroundStyle(.secondary)
+                }
+            }
 
             VStack(alignment: .leading, spacing: Theme.Spacing.md) {
                 HStack {
                     Text("Microphone")
                         .font(Theme.Typography.body(12))
                     Spacer()
-                    Picker("", selection: Binding(
-                        get: { appState.selectedMicrophoneID ?? "" },
-                        set: { appState.selectedMicrophoneID = $0.isEmpty ? nil : $0 }
-                    )) {
-                        Text("Default Input")
-                            .tag("")
-                        ForEach(appState.recordingManager.audioCaptureManager.availableDevices, id: \.uniqueID) { device in
-                            Text(device.localizedName)
-                                .tag(device.uniqueID)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .controlSize(.small)
-                    .frame(minWidth: 160)
+                    CustomDropdownButton(
+                        id: "microphone",
+                        options: [DropdownOption(id: "", label: "Default Input", value: "")] +
+                            appState.recordingManager.audioCaptureManager.availableDevices.map {
+                                DropdownOption(id: $0.uniqueID, label: $0.localizedName, value: $0.uniqueID)
+                            },
+                        selection: Binding(
+                            get: { appState.selectedMicrophoneID ?? "" },
+                            set: { appState.selectedMicrophoneID = $0.isEmpty ? nil : $0 }
+                        ),
+                        activeDropdownID: $activeDropdownID,
+                        minWidth: 160
+                    )
                 }
 
                 HStack {
                     Text("Camera")
                         .font(Theme.Typography.body(12))
                     Spacer()
-                    Picker("", selection: Binding(
-                        get: { appState.selectedCameraDeviceID ?? "" },
-                        set: { appState.selectedCameraDeviceID = $0.isEmpty ? nil : $0 }
-                    )) {
-                        Text("Default Camera")
-                            .tag("")
-                        ForEach(appState.cameraManager.availableDevices, id: \.uniqueID) { device in
-                            Text(device.localizedName)
-                                .tag(device.uniqueID)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .controlSize(.small)
-                    .frame(minWidth: 160)
+                    CustomDropdownButton(
+                        id: "camera",
+                        options: [DropdownOption(id: "", label: "Default Camera", value: "")] +
+                            appState.cameraManager.availableDevices.map {
+                                DropdownOption(id: $0.uniqueID, label: $0.localizedName, value: $0.uniqueID)
+                            },
+                        selection: Binding(
+                            get: { appState.selectedCameraDeviceID ?? "" },
+                            set: { appState.selectedCameraDeviceID = $0.isEmpty ? nil : $0 }
+                        ),
+                        activeDropdownID: $activeDropdownID,
+                        minWidth: 160
+                    )
                 }
             }
+            .disabled(isRecording)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -248,8 +259,7 @@ struct SettingsView: View {
                     openWindow(id: "permissions")
                     NSApp.activate(ignoringOtherApps: true)
                 }
-                .controlSize(.small)
-                .font(Theme.Typography.body(12))
+                .buttonStyle(SettingsButtonStyle())
                 .onHover { inside in
                     if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
                 }
@@ -257,8 +267,7 @@ struct SettingsView: View {
                 Button("Show Logs") {
                     NSWorkspace.shared.selectFile(LogManager.shared.getLogFileURL().path, inFileViewerRootedAtPath: "")
                 }
-                .controlSize(.small)
-                .font(Theme.Typography.body(12, weight: .light))
+                .buttonStyle(SettingsButtonStyle())
                 .onHover { inside in
                     if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
                 }
