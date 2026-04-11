@@ -1,5 +1,14 @@
 # Changelog
 
+## [3.4.12] - 2026-04-11
+### Changed
+- **Security**: Secrets are now XOR-obfuscated in the binary — no longer extractable via `strings`.
+- **Security**: Dropbox tokens moved from UserDefaults (plaintext) to macOS Keychain (encrypted). Existing sessions migrate automatically.
+
+## [3.4.11] - 2026-04-10
+### Added
+- **Settings**: Dropbox connection confirmation sheet shown after successful OAuth login with user account details.
+
 ## [3.4.10] - 2026-04-10
 ### Changed
 - **Settings**: Resolution, Frame Rate, Microphone, and Camera controls are now disabled (locked) while a recording is in progress, with a "Locked during recording" label shown in each section header.

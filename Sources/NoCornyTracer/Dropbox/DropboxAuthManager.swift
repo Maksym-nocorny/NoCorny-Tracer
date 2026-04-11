@@ -12,6 +12,7 @@ final class DropboxAuthManager: NSObject {
     var accessToken: String?
     var isLoading = false
     var errorMessage: String?
+    var showConnectionConfirmation = false
 
     // MARK: - Configuration
     private let appKey = AppSecrets.dropboxAppKey
@@ -25,9 +26,10 @@ final class DropboxAuthManager: NSObject {
         !appKey.contains("YOUR_DROPBOX_APP_KEY")
     }
 
-    // UserDefaults keys
+    // Keychain keys (tokens are sensitive — never store in UserDefaults)
     private let tokenKey = "DropboxAccessToken"
     private let refreshTokenKey = "DropboxRefreshToken"
+    // Expiry is not sensitive, fine in UserDefaults
     private let expiresAtKey = "DropboxTokenExpiry"
 
     /// Stored between signIn() and handleCallback()
@@ -94,8 +96,8 @@ final class DropboxAuthManager: NSObject {
     // MARK: - Sign Out
 
     func signOut() {
-        UserDefaults.standard.removeObject(forKey: tokenKey)
-        UserDefaults.standard.removeObject(forKey: refreshTokenKey)
+        KeychainHelper.delete(key: tokenKey)
+        KeychainHelper.delete(key: refreshTokenKey)
         UserDefaults.standard.removeObject(forKey: expiresAtKey)
 
         isSignedIn = false
@@ -107,8 +109,11 @@ final class DropboxAuthManager: NSObject {
     // MARK: - Restore Session
 
     private func restorePreviousSignIn() {
+        // Migrate tokens from UserDefaults to Keychain (one-time, for existing users)
+        migrateTokensToKeychain()
+
         guard isConfigured,
-              let _ = UserDefaults.standard.string(forKey: refreshTokenKey) else { return }
+              let _ = KeychainHelper.load(key: refreshTokenKey) else { return }
 
         Task {
             if let token = await refreshTokenIfNeeded() {
@@ -121,11 +126,11 @@ final class DropboxAuthManager: NSObject {
     // MARK: - Token Refresh
 
     func refreshTokenIfNeeded() async -> String? {
-        guard let refreshToken = UserDefaults.standard.string(forKey: refreshTokenKey) else { return nil }
+        guard let refreshToken = KeychainHelper.load(key: refreshTokenKey) else { return nil }
 
         // Use current token if still valid (5 min buffer)
         if let expiry = UserDefaults.standard.object(forKey: expiresAtKey) as? Date,
-           let currentToken = UserDefaults.standard.string(forKey: tokenKey),
+           let currentToken = KeychainHelper.load(key: tokenKey),
            Date().addingTimeInterval(300) < expiry {
             return currentToken
         }
@@ -151,7 +156,7 @@ final class DropboxAuthManager: NSObject {
                 if let expiresIn = json["expires_in"] as? TimeInterval {
                     UserDefaults.standard.set(Date().addingTimeInterval(expiresIn), forKey: expiresAtKey)
                 }
-                UserDefaults.standard.set(newAccessToken, forKey: tokenKey)
+                try? KeychainHelper.save(key: tokenKey, value: newAccessToken)
 
                 DispatchQueue.main.async { self.accessToken = newAccessToken }
                 return newAccessToken
@@ -207,9 +212,9 @@ final class DropboxAuthManager: NSObject {
                             return
                         }
 
-                        UserDefaults.standard.set(token, forKey: self?.tokenKey ?? "")
+                        try? KeychainHelper.save(key: self?.tokenKey ?? "", value: token)
                         if let refreshToken = json["refresh_token"] as? String {
-                            UserDefaults.standard.set(refreshToken, forKey: self?.refreshTokenKey ?? "")
+                            try? KeychainHelper.save(key: self?.refreshTokenKey ?? "", value: refreshToken)
                         }
                         if let expiresIn = json["expires_in"] as? TimeInterval {
                             UserDefaults.standard.set(Date().addingTimeInterval(expiresIn), forKey: self?.expiresAtKey ?? "")
@@ -218,7 +223,7 @@ final class DropboxAuthManager: NSObject {
                         self?.accessToken = token
 
                         Task { [weak self] in
-                            await self?.fetchAccountInfo(token: token)
+                            await self?.fetchAccountInfo(token: token, isNewConnection: true)
                         }
                     }
                 } catch {
@@ -230,7 +235,7 @@ final class DropboxAuthManager: NSObject {
 
     // MARK: - Account Info
 
-    private func fetchAccountInfo(token: String) async {
+    private func fetchAccountInfo(token: String, isNewConnection: Bool = false) async {
         var request = URLRequest(url: URL(string: "https://api.dropboxapi.com/2/users/get_current_account")!)
         request.httpMethod = "POST"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -244,10 +249,26 @@ final class DropboxAuthManager: NSObject {
                     if let name = json["name"] as? [String: Any] {
                         self.userName = name["display_name"] as? String
                     }
+                    if isNewConnection {
+                        self.showConnectionConfirmation = true
+                    }
                 }
             }
         } catch {
             print("Failed to fetch Dropbox account info: \(error)")
+        }
+    }
+
+    // MARK: - Migration (UserDefaults → Keychain, one-time)
+
+    private func migrateTokensToKeychain() {
+        if let token = UserDefaults.standard.string(forKey: tokenKey) {
+            try? KeychainHelper.save(key: tokenKey, value: token)
+            UserDefaults.standard.removeObject(forKey: tokenKey)
+        }
+        if let refresh = UserDefaults.standard.string(forKey: refreshTokenKey) {
+            try? KeychainHelper.save(key: refreshTokenKey, value: refresh)
+            UserDefaults.standard.removeObject(forKey: refreshTokenKey)
         }
     }
 

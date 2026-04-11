@@ -34,6 +34,17 @@ struct SettingsView: View {
         }
         .background(Theme.Colors.backgroundPrimary)
         .customDropdownOverlay(activeDropdownID: $activeDropdownID)
+        .sheet(isPresented: Binding(
+            get: { appState.dropboxAuthManager.showConnectionConfirmation },
+            set: { appState.dropboxAuthManager.showConnectionConfirmation = $0 }
+        )) {
+            DropboxConnectedView(
+                userName: appState.dropboxAuthManager.userName ?? "User",
+                userEmail: appState.dropboxAuthManager.userEmail ?? ""
+            ) {
+                appState.dropboxAuthManager.showConnectionConfirmation = false
+            }
+        }
     }
 
     // MARK: - Dropbox Account
