@@ -78,6 +78,7 @@ struct MainView: View {
         .onChange(of: appState.selectedTab) { _, newValue in
             if newValue == .settings && appState.tracerAPIClient.isSignedIn {
                 Task { await appState.tracerAPIClient.refreshProfile() }
+                Task { await appState.syncDropboxFromTracer() }
             }
         }
         .alert("Start at Login?", isPresented: $appState.showLaunchAtLoginPrompt) {

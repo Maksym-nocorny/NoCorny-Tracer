@@ -161,6 +161,9 @@ final class AppState {
         dropboxAuthManager.isTracerSignedIn = { [weak self] in
             self?.tracerAPIClient.isSignedIn ?? false
         }
+        dropboxAuthManager.disconnectProxied = { [weak self] in
+            await self?.tracerAPIClient.disconnectDropbox()
+        }
 
         // If the user is already signed in to Tracer at launch, try to pick up
         // their Dropbox connection from the server immediately.

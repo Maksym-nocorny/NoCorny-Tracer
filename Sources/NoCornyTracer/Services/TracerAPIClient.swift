@@ -306,6 +306,22 @@ final class TracerAPIClient {
         }
     }
 
+    /// Removes the user's Dropbox connection from the Tracer backend.
+    @discardableResult
+    func disconnectDropbox() async -> Bool {
+        guard let token = apiToken else { return false }
+        var request = URLRequest(url: URL(string: "\(Self.baseURL)/api/dropbox/disconnect")!)
+        request.httpMethod = "DELETE"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            return (response as? HTTPURLResponse)?.statusCode == 200
+        } catch {
+            LogManager.shared.log(error: error, message: "🌐 Tracer: disconnect Dropbox failed")
+            return false
+        }
+    }
+
     // MARK: - List Videos
 
     /// Lists the signed-in user's registered videos from the Tracer backend.

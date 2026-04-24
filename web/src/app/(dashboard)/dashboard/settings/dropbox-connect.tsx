@@ -1,5 +1,8 @@
 "use client";
 
+import { useRouter } from "next/navigation";
+import { useState } from "react";
+
 export function DropboxConnect({
   isConnected,
   lastSynced,
@@ -7,6 +10,15 @@ export function DropboxConnect({
   isConnected: boolean;
   lastSynced: string | null;
 }) {
+  const router = useRouter();
+  const [disconnecting, setDisconnecting] = useState(false);
+
+  async function handleDisconnect() {
+    setDisconnecting(true);
+    await fetch("/api/dropbox/disconnect", { method: "DELETE" });
+    router.refresh();
+  }
+
   if (isConnected) {
     return (
       <div>
@@ -29,8 +41,12 @@ export function DropboxConnect({
           >
             Sync now
           </button>
-          <button className="px-4 py-2 rounded-md text-sm font-medium text-brand-red hover:bg-bg-secondary transition-all cursor-pointer">
-            Disconnect
+          <button
+            onClick={handleDisconnect}
+            disabled={disconnecting}
+            className="px-4 py-2 rounded-md text-sm font-medium text-brand-red hover:bg-bg-secondary transition-all cursor-pointer disabled:opacity-50"
+          >
+            {disconnecting ? "Disconnecting…" : "Disconnect"}
           </button>
         </div>
       </div>

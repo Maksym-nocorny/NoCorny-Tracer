@@ -233,8 +233,8 @@ struct SettingsView: View {
 
                         Spacer()
 
-                        Button("Sign Out") {
-                            appState.dropboxAuthManager.signOut()
+                        Button("Manage") {
+                            appState.openTracerSettings()
                         }
                         .buttonStyle(SettingsButtonStyle())
                         .onHover { inside in
@@ -257,7 +257,7 @@ struct SettingsView: View {
                     }
                 } else {
                     Button {
-                        appState.dropboxAuthManager.signIn()
+                        appState.openTracerSettings()
                     } label: {
                         HStack(spacing: Theme.Spacing.md) {
                             Image(systemName: "arrow.down.doc")
@@ -273,12 +273,6 @@ struct SettingsView: View {
                     .buttonStyle(.plain)
                     .onHover { inside in
                         if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
-                    }
-
-                    if let error = appState.dropboxAuthManager.errorMessage {
-                        Text(error)
-                            .font(Theme.Typography.body(11))
-                            .foregroundStyle(Theme.Colors.red)
                     }
                 }
             }

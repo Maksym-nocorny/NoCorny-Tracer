@@ -27,6 +27,9 @@ final class DropboxAuthManager: NSObject {
     /// Set by `AppState` after construction. Returns nil if server says not connected.
     var fetchProxiedToken: (() async -> (accessToken: String, expiresAt: Date?)?)?
 
+    /// Disconnects Dropbox on the backend (called by sign-out in proxied mode).
+    var disconnectProxied: (() async -> Void)?
+
     /// Opens the web settings page where the user manages their Dropbox connection.
     var openWebDropboxSettings: (() -> Void)?
 
@@ -65,10 +68,9 @@ final class DropboxAuthManager: NSObject {
     // MARK: - Sign In (opens default browser)
 
     func signIn() {
-        // When user is signed in to Tracer, Dropbox is managed on the web.
-        // Redirect to the web settings page instead of triggering a second OAuth flow.
-        if isTracerSignedIn(), let openWeb = openWebDropboxSettings {
-            openWeb()
+        // When signed in to Tracer, Dropbox is managed on the web — UI redirects there directly.
+        if isTracerSignedIn() {
+            openWebDropboxSettings?()
             return
         }
 
@@ -128,12 +130,13 @@ final class DropboxAuthManager: NSObject {
         // Proxied sign-out means "manage connection on the web" — open the settings page
         // and clear the in-memory token. The actual Dropbox link is removed on the web.
         if isProxied {
-            openWebDropboxSettings?()
+            isProxied = false
             isSignedIn = false
             accessToken = nil
             proxiedExpiresAt = nil
             userName = nil
             userEmail = nil
+            Task { await self.disconnectProxied?() }
             return
         }
 
