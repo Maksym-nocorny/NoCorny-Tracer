@@ -1,5 +1,9 @@
 # Changelog
 
+## [3.5.8] - 2026-04-24
+### Fixed
+- **Connect Dropbox — silent re-sync**: When signed in to a Tracer account, clicking "Connect Dropbox" now first checks if Dropbox is already connected on the web. If it is, the app connects silently without opening the browser. The browser only opens when Dropbox is not yet connected on the web.
+
 ## [3.5.7] - 2026-04-24
 ### Fixed
 - **Dropbox disconnect bidirectional sync**: "Sign Out" from Dropbox in the macOS app now immediately removes the connection from the backend — no browser redirect needed. Switching to Settings tab now also checks live connection status, so if the user disconnects on the web, the app reflects it automatically.
