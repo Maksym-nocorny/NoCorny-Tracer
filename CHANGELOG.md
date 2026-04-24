@@ -1,5 +1,9 @@
 # Changelog
 
+## [3.5.9] - 2026-04-25
+### Changed
+- **Dropbox managed via web only**: Removed "Sign Out" button for Dropbox in the app. When connected, a "Manage" button opens tracer.nocorny.com/dashboard/settings where the user can disconnect. When not connected, "Connect Dropbox" also opens the web settings. Connection status syncs automatically when opening the Settings tab.
+
 ## [3.5.8] - 2026-04-24
 ### Fixed
 - **Connect Dropbox — silent re-sync**: When signed in to a Tracer account, clicking "Connect Dropbox" now first checks if Dropbox is already connected on the web. If it is, the app connects silently without opening the browser. The browser only opens when Dropbox is not yet connected on the web.
