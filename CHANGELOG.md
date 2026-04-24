@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.5.7] - 2026-04-24
+### Fixed
+- **Dropbox disconnect bidirectional sync**: "Sign Out" from Dropbox in the macOS app now immediately removes the connection from the backend — no browser redirect needed. Switching to Settings tab now also checks live connection status, so if the user disconnects on the web, the app reflects it automatically.
+
+## [3.5.6] - 2026-04-24
+### Fixed
+- **Dropbox disconnect**: The "Sign Out" button in Settings now fully disconnects Dropbox from the app. Fixed a bug where `isProxied` flag was not cleared, causing the app to automatically reconnect on next launch if the web settings page wasn't explicitly used to complete the disconnection. Web settings page "Disconnect" button now works (was previously non-functional) and properly removes the Dropbox connection from the backend.
+
 ## [3.5.5] - 2026-04-24
 ### Fixed
 - **Player controls**: Removed invalid nested layout objects from the Vidstack slot config that were breaking the player layout after the previous update.
