@@ -51,11 +51,14 @@ final class RecordingManager {
         let outputURL = AppState.recordingsDirectory.appendingPathComponent(fileName)
         currentFileURL = outputURL
 
-        // Create video writer with configured settings
+        // Start screen capture first — returns the actual output size (matched to display aspect ratio)
+        let actualSize = try await screenRecorder.startCapture(width: videoWidth, height: videoHeight, fps: fps)
+
+        // Create video writer sized to the capture output so frames aren't letterboxed
         let writer = VideoWriter(
             outputURL: outputURL,
-            videoWidth: videoWidth,
-            videoHeight: videoHeight,
+            videoWidth: actualSize.width,
+            videoHeight: actualSize.height,
             fps: fps
         )
         try writer.startWriting()
@@ -66,9 +69,6 @@ final class RecordingManager {
             guard let self = self, !self.isPaused else { return }
             writer?.appendVideoBuffer(sampleBuffer)
         }
-
-        // Start screen capture with configured settings
-        try await screenRecorder.startCapture(width: videoWidth, height: videoHeight, fps: fps)
 
         // Start microphone if enabled
         if microphoneEnabled {

@@ -11,6 +11,9 @@ struct Recording: Identifiable, Codable {
     var driveFileID: String?       // Legacy: old Google Drive file ID (kept for backward compat)
     var dropboxPath: String?       // Dropbox file path (e.g. "/Recording_2026-03-28.mp4")
     var dropboxSharedURL: String?  // Dropbox shared link URL
+    var tracerSlug: String?        // Short slug on tracer.nocorny.com (e.g. "xFel134")
+    var tracerURL: String?         // Full public URL on tracer.nocorny.com
+    var thumbnailURL: String?      // Public Dropbox URL for the generated JPG thumbnail
     var thumbnailData: Data?
     var fileSize: UInt64?
     var uploadCompletedAt: Date?
@@ -48,8 +51,13 @@ struct Recording: Identifiable, Codable {
         return String(format: "%02d:%02d", minutes, seconds)
     }
 
-    /// Shared URL for the uploaded video (Dropbox or legacy Google Drive)
+    /// Shared URL for the uploaded video.
+    /// Prefers the Tracer web page (tracer.nocorny.com/v/{slug}) when available,
+    /// falls back to the raw Dropbox shared link, then legacy Google Drive.
     var shareURL: URL? {
+        if let tracerURL = tracerURL, let url = URL(string: tracerURL) {
+            return url
+        }
         if let sharedURL = dropboxSharedURL {
             return URL(string: sharedURL)
         }

@@ -26,14 +26,14 @@ struct RecordingsListView: View {
                     if appState.dropboxAuthManager.isSignedIn {
                         HStack(spacing: Theme.Spacing.lg) {
                             Button {
-                                appState.openDropboxWebFolder()
+                                appState.openTracerDashboard()
                             } label: {
-                                Image(systemName: "folder")
+                                Image(systemName: "safari")
                             }
                             .buttonStyle(.plain)
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
-                            .help("Open Dropbox folder")
+                            .help("Open on tracer.nocorny.com")
                             .onHover { inside in
                                 if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
                             }

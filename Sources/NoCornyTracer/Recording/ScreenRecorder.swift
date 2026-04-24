@@ -51,7 +51,8 @@ final class ScreenRecorder: NSObject {
     // MARK: - Capture
 
     @MainActor
-    func startCapture(width: Int = 1920, height: Int = 1080, fps: Int = 30) async throws {
+    @discardableResult
+    func startCapture(width: Int = 1920, height: Int = 1080, fps: Int = 30) async throws -> (width: Int, height: Int) {
         guard let display = selectedDisplay else {
             throw ScreenRecorderError.noDisplaySelected
         }
@@ -59,10 +60,17 @@ final class ScreenRecorder: NSObject {
         // Content filter for full display capture
         let filter = SCContentFilter(display: display, excludingWindows: [])
 
+        // Match the display's aspect ratio so the output isn't letterboxed.
+        // Target the requested height; scale width proportionally and round to even pixels (H.264 requirement).
+        let displayAspect = Double(display.width) / Double(display.height)
+        let outHeight = height
+        var outWidth = Int((Double(outHeight) * displayAspect).rounded())
+        if outWidth % 2 != 0 { outWidth += 1 }
+
         // Configure stream
         let config = SCStreamConfiguration()
-        config.width = width
-        config.height = height
+        config.width = outWidth
+        config.height = outHeight
         config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(fps))
         config.showsCursor = true
         config.pixelFormat = kCVPixelFormatType_32BGRA
@@ -81,6 +89,7 @@ final class ScreenRecorder: NSObject {
         try await captureStream.startCapture()
         stream = captureStream
         isCapturing = true
+        return (outWidth, outHeight)
     }
 
     @MainActor

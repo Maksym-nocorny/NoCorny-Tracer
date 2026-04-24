@@ -14,6 +14,9 @@ struct SettingsView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: Theme.Spacing.lg) {
+                tracerAccountSection
+                    .cardStyle()
+
                 dropboxAccountSection
                     .cardStyle()
 
@@ -32,6 +35,7 @@ struct SettingsView: View {
             .padding(.horizontal, Theme.Spacing.xl)
             .padding(.vertical, Theme.Spacing.lg)
         }
+        .scrollIndicators(.hidden)
         .background(Theme.Colors.backgroundPrimary)
         .customDropdownOverlay(activeDropdownID: $activeDropdownID)
         .sheet(isPresented: Binding(
@@ -47,16 +51,169 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: - Tracer Account
+
+    @ViewBuilder
+    private var tracerAccountSection: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
+            HStack {
+                Label("NoCorny Tracer Account", systemImage: "person.crop.circle.badge.checkmark")
+                    .font(Theme.Typography.body(13, weight: .semibold))
+
+                Spacer()
+
+                if appState.tracerAPIClient.isSignedIn {
+                    Button {
+                        appState.openTracerSettings()
+                    } label: {
+                        HStack(spacing: Theme.Spacing.xs) {
+                            Image(systemName: "pencil")
+                                .font(.system(size: 10))
+                            Text("Edit")
+                                .font(Theme.Typography.body(11))
+                        }
+                        .foregroundStyle(Theme.Colors.brandPurple)
+                    }
+                    .buttonStyle(.plain)
+                    .onHover { inside in
+                        if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+                    }
+                    .help("Edit name and avatar on tracer.nocorny.com")
+                }
+            }
+
+            VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+                if appState.tracerAPIClient.isSignedIn {
+                    HStack(spacing: Theme.Spacing.lg) {
+                        tracerAvatar
+
+                        VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+                            Text(tracerDisplayName)
+                                .font(Theme.Typography.body(13, weight: .medium))
+                            Text(appState.tracerAPIClient.userEmail ?? "")
+                                .font(Theme.Typography.body(11, weight: .light))
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Spacer()
+
+                        Button("Sign Out") {
+                            Task {
+                                await appState.tracerAPIClient.signOut()
+                                await MainActor.run {
+                                    appState.dropboxAuthManager.clearProxiedState()
+                                }
+                            }
+                        }
+                        .buttonStyle(SettingsButtonStyle())
+                        .onHover { inside in
+                            if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+                        }
+                    }
+                } else {
+                    Text("Sign in to automatically publish recordings to tracer.nocorny.com and get shareable links.")
+                        .font(Theme.Typography.body(11, weight: .light))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .foregroundStyle(.secondary)
+
+                    Button {
+                        appState.tracerAPIClient.errorMessage = nil
+                        appState.tracerAPIClient.startBrowserSignIn()
+                    } label: {
+                        HStack(spacing: Theme.Spacing.md) {
+                            Image(systemName: "safari.fill")
+                            Text("Sign in with Browser")
+                        }
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 36)
+                        .background(Theme.Colors.primaryGradient)
+                        .foregroundStyle(.white)
+                        .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.md))
+                        .font(Theme.Typography.body(13, weight: .medium))
+                    }
+                    .buttonStyle(.plain)
+                    .onHover { inside in
+                        if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+                    }
+
+                    if let error = appState.tracerAPIClient.errorMessage {
+                        Text(error)
+                            .font(Theme.Typography.body(11))
+                            .foregroundStyle(Theme.Colors.red)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var tracerDisplayName: String {
+        if let name = appState.tracerAPIClient.userName, !name.isEmpty { return name }
+        if let email = appState.tracerAPIClient.userEmail { return email.split(separator: "@").first.map(String.init) ?? email }
+        return "User"
+    }
+
+    private var tracerInitial: String {
+        if let name = appState.tracerAPIClient.userName, let first = name.first {
+            return String(first).uppercased()
+        }
+        if let email = appState.tracerAPIClient.userEmail, let first = email.first {
+            return String(first).uppercased()
+        }
+        return "?"
+    }
+
+    @ViewBuilder
+    private var tracerAvatar: some View {
+        let urlString = appState.tracerAPIClient.userImageURL
+        ZStack {
+            if let image = AvatarCache.shared.image, urlString != nil {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                Circle()
+                    .fill(Theme.Colors.primaryGradient)
+                    .overlay {
+                        Text(tracerInitial)
+                            .font(Theme.Typography.body(16, weight: .semibold))
+                            .foregroundStyle(.white)
+                    }
+            }
+        }
+        .frame(width: 36, height: 36)
+        .clipShape(Circle())
+        .task(id: urlString) {
+            AvatarCache.shared.ensure(urlString: urlString)
+        }
+    }
+
     // MARK: - Dropbox Account
 
     @ViewBuilder
     private var dropboxAccountSection: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
-            Label("Dropbox", systemImage: "person.circle")
+            Label("Storage — Dropbox", systemImage: "externaldrive")
                 .font(Theme.Typography.body(13, weight: .semibold))
 
             VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                if appState.dropboxAuthManager.isSignedIn {
+                if !appState.tracerAPIClient.isSignedIn {
+                    HStack(alignment: .top, spacing: Theme.Spacing.sm) {
+                        Image(systemName: "lock.fill")
+                            .foregroundStyle(.secondary)
+                            .font(.system(size: 12))
+                        VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+                            Text("Sign in to NoCorny Tracer first")
+                                .font(Theme.Typography.body(12, weight: .medium))
+                            Text(appState.dropboxAuthManager.isSignedIn
+                                 ? "Your existing Dropbox connection is paused until you sign in. Recordings need a Tracer account to get a share link."
+                                 : "Dropbox is where recordings are stored so Tracer can publish a share link.")
+                                .font(Theme.Typography.body(11, weight: .light))
+                                .fixedSize(horizontal: false, vertical: true)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                } else if appState.dropboxAuthManager.isSignedIn {
                     HStack(spacing: Theme.Spacing.lg) {
                         Circle()
                             .fill(Theme.Colors.primaryGradient)

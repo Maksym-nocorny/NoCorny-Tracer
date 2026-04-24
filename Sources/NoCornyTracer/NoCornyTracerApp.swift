@@ -32,15 +32,26 @@ struct NoCornyTracerApp: App {
     var body: some Scene {
         // Main Window
         Window("NoCorny Tracer", id: "main") {
-            MainView(appState: appState, updaterController: updaterController, permissionsManager: permissionsManager)
+            MainWindowHost(
+                appState: appState,
+                updaterController: updaterController,
+                permissionsManager: permissionsManager,
+                cameraWindowManager: cameraWindowManager,
+                appDelegate: appDelegate
+            )
                 .preferredColorScheme(appState.appTheme.colorScheme)
                 .tint(Theme.Colors.brandPurple)
-                .onAppear {
-                    appDelegate.updaterController = updaterController
-                    cameraWindowManager.updateVisibility(isEnabled: appState.isCameraEnabled, appState: appState)
-                }
                 .onReceive(NotificationCenter.default.publisher(for: .didReceiveURL)) { notification in
-                    if let url = notification.object as? URL {
+                    guard let url = notification.object as? URL else { return }
+                    if url.scheme == "nocornytracer" {
+                        Task {
+                            await appState.tracerAPIClient.completeBrowserSignIn(url: url)
+                            if appState.tracerAPIClient.isSignedIn {
+                                await appState.syncDropboxFromTracer()
+                                await appState.reloadRecordingsFromTracer()
+                            }
+                        }
+                    } else {
                         appState.dropboxAuthManager.handleCallback(url)
                     }
                 }
@@ -60,6 +71,31 @@ struct NoCornyTracerApp: App {
     }
 }
 
+// MARK: - Main Window Host
+
+/// Thin wrapper around MainView that captures the SwiftUI `openWindow` action and
+/// bridges it to the AppDelegate so the menu-bar icon can reopen the Scene after
+/// it's been closed. (Before this bridge, `NSApp.windows` would be empty after the
+/// user closed the window, leaving the status-item click with nothing to focus.)
+private struct MainWindowHost: View {
+    @Bindable var appState: AppState
+    let updaterController: SPUStandardUpdaterController
+    @Bindable var permissionsManager: PermissionsManager
+    let cameraWindowManager: CameraWindowManager
+    let appDelegate: AppDelegate
+
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        MainView(appState: appState, updaterController: updaterController, permissionsManager: permissionsManager)
+            .onAppear {
+                appDelegate.updaterController = updaterController
+                appDelegate.reopenMainWindow = { openWindow(id: "main") }
+                cameraWindowManager.updateVisibility(isEnabled: appState.isCameraEnabled, appState: appState)
+            }
+    }
+}
+
 // MARK: - App Delegate
 
 extension Notification.Name {
@@ -74,6 +110,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // Sparkle updater (set from NoCornyTracerApp)
     var updaterController: SPUStandardUpdaterController?
+
+    /// Reopens the main window Scene. Set by MainView via `.onAppear` so that we can
+    /// invoke SwiftUI's environment `openWindow` from the AppDelegate (e.g. from the
+    /// menu-bar icon after the window has been closed).
+    var reopenMainWindow: (() -> Void)?
 
     // Preloaded menu bar images
     private var normalImage: NSImage?  // Template image — macOS auto-tints for menubar
@@ -251,7 +292,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         openItem.target = self
         menu.addItem(openItem)
 
-        let folderItem = NSMenuItem(title: "Open Dropbox Folder", action: #selector(openDropboxFolder), keyEquivalent: "")
+        let folderItem = NSMenuItem(title: "Open Recordings on Web", action: #selector(openRecordingsOnWeb), keyEquivalent: "")
         folderItem.target = self
         menu.addItem(folderItem)
 
@@ -276,12 +317,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func showMainWindow() {
         NSApp.activate(ignoringOtherApps: true)
-        for window in NSApp.windows {
-            if window.title == "NoCorny Tracer" {
-                window.makeKeyAndOrderFront(nil)
-                return
-            }
+
+        // If a main window already exists, just focus it.
+        for window in NSApp.windows where window.title == "NoCorny Tracer" {
+            window.makeKeyAndOrderFront(nil)
+            return
         }
+
+        // Otherwise ask SwiftUI to reopen the Scene via its environment handle.
+        reopenMainWindow?()
     }
 
     @objc private func toggleRecording() {
@@ -310,8 +354,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc private func openDropboxFolder() {
-        AppState.shared?.openDropboxWebFolder()
+    @objc private func openRecordingsOnWeb() {
+        AppState.shared?.openTracerDashboard()
     }
 
     @objc private func checkForUpdates() {

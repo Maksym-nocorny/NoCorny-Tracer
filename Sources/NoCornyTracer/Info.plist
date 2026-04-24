@@ -7,7 +7,7 @@
 	<key>CFBundleName</key>
 	<string>NoCorny Tracer</string>
 	<key>CFBundleShortVersionString</key>
-	<string>3.4.12</string>
+	<string>3.5.5</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
@@ -18,9 +18,17 @@
 				<string>db-uypbk3hdc7zz4l7</string>
 			</array>
 		</dict>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.nocorny.tracer.auth</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>nocornytracer</string>
+			</array>
+		</dict>
 	</array>
 	<key>CFBundleVersion</key>
-	<string>3.4.12</string>
+	<string>3.5.5</string>
 	<key>LSUIElement</key>
 	<false/>
 	<key>NSCameraUsageDescription</key>

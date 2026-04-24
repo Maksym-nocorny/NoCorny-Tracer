@@ -75,6 +75,11 @@ struct MainView: View {
                 NSApp.activate(ignoringOtherApps: true)
             }
         }
+        .onChange(of: appState.selectedTab) { _, newValue in
+            if newValue == .settings && appState.tracerAPIClient.isSignedIn {
+                Task { await appState.tracerAPIClient.refreshProfile() }
+            }
+        }
         .alert("Start at Login?", isPresented: $appState.showLaunchAtLoginPrompt) {
             Button("Yes, start at login") {
                 appState.launchAtLogin = true

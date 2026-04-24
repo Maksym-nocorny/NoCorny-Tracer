@@ -1,5 +1,36 @@
 # Changelog
 
+## [3.5.5] - 2026-04-24
+### Fixed
+- **Player controls**: Removed invalid nested layout objects from the Vidstack slot config that were breaking the player layout after the previous update.
+- **Dropbox storage card**: The storage usage card in the Recordings tab now shows immediately on launch instead of disappearing until the first sync completes (values are now persisted to disk).
+- **Transcript grouping**: Transcript segments are now grouped into logical paragraphs (by pause gaps > 1.5s or sentence-ending punctuation) instead of showing every 5-second SRT chunk as a separate line.
+- **Recordings tab links**: Clicking a recording (play button, copy link, double-click) now correctly opens the Tracer share URL when available, instead of always using Dropbox.
+
+## [3.5.4] - 2026-04-24
+### Changed
+- **Instant share link**: The browser now opens immediately after Dropbox upload completes — no longer waits for Gemini to generate subtitles and title (saves 3–6 minutes). The web page shows a "Processing…" badge on the title and updates dynamically (no page reload) when AI processing finishes.
+
+## [3.5.3] - 2026-04-24
+### Fixed
+- **Auto-open Tracer page**: Fixed a race where the app tried to read `tracerURL` from state before the async write landed, so the browser silently didn't open. Now opens the Tracer page directly from the API response.
+
+## [3.5.2] - 2026-04-24
+### Changed
+- **Share auto-open**: After a recording is uploaded, only the Tracer page opens automatically. The Dropbox folder no longer opens — Tracer is the canonical share surface.
+- **Settings avatar**: The Tracer account avatar is now cached on disk (with ETag / Last-Modified revalidation, once per day). Opening Settings no longer re-downloads the image every time.
+
+## [3.5.1] - 2026-04-24
+### Added
+- **Transcripts on the web**: The app now forwards auto-generated subtitles (SRT) when registering videos with Tracer. The web player at `tracer.nocorny.com/v/{slug}` shows a synced transcript panel, captions, search, and an AI-generated description.
+
+## [3.5.0] - 2026-04-15
+### Added
+- **Tracer Account**: New "NoCorny Tracer Account" section in Settings (above Dropbox). Sign in by pasting an API token generated at tracer.nocorny.com/dashboard/settings.
+- **Web share links**: After recording and uploading, the app now registers each video with the Tracer backend and gets a public shareable page at `tracer.nocorny.com/v/{slug}`. The copy-link button in the Recordings tab now copies this Tracer URL instead of the raw Dropbox link.
+- **Auto-open**: The browser opens the Tracer page (not the Dropbox link) automatically after processing finishes.
+- **Fallback**: If not signed into Tracer, behaviour is unchanged — Dropbox shared link is used as before.
+
 ## [3.4.12] - 2026-04-11
 ### Changed
 - **Security**: Secrets are now XOR-obfuscated in the binary — no longer extractable via `strings`.

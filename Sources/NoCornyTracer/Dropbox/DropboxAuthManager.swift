@@ -2,7 +2,13 @@ import Foundation
 import AppKit
 import CryptoKit
 
-/// Manages Dropbox OAuth2 authentication using PKCE + system default browser
+/// Manages Dropbox OAuth2 authentication using PKCE + system default browser.
+///
+/// Also supports **proxied mode**: when the user is signed in to Tracer
+/// (tracer.nocorny.com) and has connected Dropbox there, the app skips its own
+/// OAuth flow and obtains short-lived access tokens from the Tracer backend.
+/// In proxied mode `isProxied == true`, `signIn()` opens the web settings, and
+/// token refresh hits `/api/dropbox/access-token` instead of Dropbox directly.
 @Observable
 final class DropboxAuthManager: NSObject {
     // MARK: - State
@@ -13,6 +19,22 @@ final class DropboxAuthManager: NSObject {
     var isLoading = false
     var errorMessage: String?
     var showConnectionConfirmation = false
+
+    /// True when Dropbox credentials are sourced from the Tracer backend rather than local OAuth.
+    var isProxied = false
+
+    /// Async closure that fetches a fresh Dropbox access token from Tracer.
+    /// Set by `AppState` after construction. Returns nil if server says not connected.
+    var fetchProxiedToken: (() async -> (accessToken: String, expiresAt: Date?)?)?
+
+    /// Opens the web settings page where the user manages their Dropbox connection.
+    var openWebDropboxSettings: (() -> Void)?
+
+    /// Indicates whether the user is signed in to Tracer. Controls whether the
+    /// Dropbox sign-in button opens the web settings or falls back to local OAuth.
+    var isTracerSignedIn: () -> Bool = { false }
+
+    private var proxiedExpiresAt: Date?
 
     // MARK: - Configuration
     private let appKey = AppSecrets.dropboxAppKey
@@ -43,6 +65,13 @@ final class DropboxAuthManager: NSObject {
     // MARK: - Sign In (opens default browser)
 
     func signIn() {
+        // When user is signed in to Tracer, Dropbox is managed on the web.
+        // Redirect to the web settings page instead of triggering a second OAuth flow.
+        if isTracerSignedIn(), let openWeb = openWebDropboxSettings {
+            openWeb()
+            return
+        }
+
         guard isConfigured else {
             errorMessage = "Dropbox App Key not configured."
             return
@@ -96,6 +125,18 @@ final class DropboxAuthManager: NSObject {
     // MARK: - Sign Out
 
     func signOut() {
+        // Proxied sign-out means "manage connection on the web" — open the settings page
+        // and clear the in-memory token. The actual Dropbox link is removed on the web.
+        if isProxied {
+            openWebDropboxSettings?()
+            isSignedIn = false
+            accessToken = nil
+            proxiedExpiresAt = nil
+            userName = nil
+            userEmail = nil
+            return
+        }
+
         KeychainHelper.delete(key: tokenKey)
         KeychainHelper.delete(key: refreshTokenKey)
         UserDefaults.standard.removeObject(forKey: expiresAtKey)
@@ -123,9 +164,54 @@ final class DropboxAuthManager: NSObject {
         }
     }
 
+    // MARK: - Proxied Mode (Tracer backend issues Dropbox tokens)
+
+    /// Activates proxied mode with an initial token. Subsequent refreshes go through `fetchProxiedToken`.
+    @MainActor
+    func applyProxiedToken(accessToken: String, expiresAt: Date?) async {
+        self.isProxied = true
+        self.accessToken = accessToken
+        self.proxiedExpiresAt = expiresAt
+        self.isSignedIn = true
+        await fetchAccountInfo(token: accessToken)
+    }
+
+    /// Clears proxied state when the user signs out of Tracer.
+    @MainActor
+    func clearProxiedState() {
+        guard isProxied else { return }
+        isProxied = false
+        accessToken = nil
+        proxiedExpiresAt = nil
+        isSignedIn = false
+        userName = nil
+        userEmail = nil
+    }
+
     // MARK: - Token Refresh
 
     func refreshTokenIfNeeded() async -> String? {
+        // Proxied mode — refresh via Tracer backend, not Dropbox OAuth.
+        if isProxied {
+            if let current = accessToken,
+               let expiry = proxiedExpiresAt,
+               Date().addingTimeInterval(300) < expiry {
+                return current
+            }
+            guard let fetch = fetchProxiedToken, let result = await fetch() else {
+                DispatchQueue.main.async {
+                    self.isSignedIn = false
+                    self.accessToken = nil
+                }
+                return nil
+            }
+            DispatchQueue.main.async {
+                self.accessToken = result.accessToken
+                self.proxiedExpiresAt = result.expiresAt
+            }
+            return result.accessToken
+        }
+
         guard let refreshToken = KeychainHelper.load(key: refreshTokenKey) else { return nil }
 
         // Use current token if still valid (5 min buffer)
