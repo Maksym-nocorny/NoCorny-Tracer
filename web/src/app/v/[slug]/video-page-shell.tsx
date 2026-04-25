@@ -119,6 +119,51 @@ export function VideoPageShell({
 
   return (
     <>
+      {/* Desktop: title row (left) + ShareActions (right) — original position above transcript */}
+      <div className="hidden md:flex flex-row items-start justify-between gap-4 mb-5">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-start gap-3 flex-wrap">
+            <TitleEditor
+              title={title}
+              isOwner={isOwner}
+              headingClass="text-3xl"
+              isEditing={isEditingTitle}
+              draft={titleDraft}
+              onDraftChange={setTitleDraft}
+              onStartEdit={startEditTitle}
+              onSave={saveTitle}
+              onCancel={cancelTitle}
+              saving={titleSaving}
+            />
+            {isProcessing && (
+              <span className="text-xs px-2 py-0.5 rounded-full border border-[var(--card-border)] text-text-tertiary animate-pulse self-center">
+                Processing…
+              </span>
+            )}
+          </div>
+
+          {/* Author row: avatar+meta left, Save/Cancel right when editing */}
+          <div className="flex items-center justify-between gap-4 mt-2">
+            <div className="flex items-center gap-3 min-w-0">
+              {authorAvatar}
+              {authorMeta}
+            </div>
+            {isOwner && isEditingTitle && (
+              <div className="flex items-center gap-2 flex-shrink-0">
+                {titleError && <span className="text-xs text-brand-red">{titleError}</span>}
+                <button onClick={saveTitle} className="btn-gradient" disabled={titleSaving}>
+                  {titleSaving ? "Saving…" : "Save"}
+                </button>
+                <button onClick={cancelTitle} className="btn-ghost" disabled={titleSaving}>
+                  Cancel
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+        <ShareActions src={directUrl} />
+      </div>
+
       {/* Mobile: title above the player */}
       <div className="md:hidden mb-3">
         <div className="flex items-start gap-3 flex-wrap">
@@ -154,105 +199,46 @@ export function VideoPageShell({
       </div>
 
       <PlayerProvider>
-        {/*
-          Desktop layout: outer flex puts ShareActions top-right (original position),
-          while the grid inside flex-1 ensures title aligns exactly with the video column.
-        */}
-        <div className="flex items-start gap-4">
-          <div className="min-w-0 flex-1">
-            <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_360px] gap-6">
-
-              {/* Video column */}
-              <div className="min-w-0">
-
-                {/* Desktop title + author — same width as video */}
-                <div className="hidden md:block mb-5">
-                  <div className="flex items-start gap-3 flex-wrap">
-                    <TitleEditor
-                      title={title}
-                      isOwner={isOwner}
-                      headingClass="text-3xl"
-                      isEditing={isEditingTitle}
-                      draft={titleDraft}
-                      onDraftChange={setTitleDraft}
-                      onStartEdit={startEditTitle}
-                      onSave={saveTitle}
-                      onCancel={cancelTitle}
-                      saving={titleSaving}
-                    />
-                    {isProcessing && (
-                      <span className="text-xs px-2 py-0.5 rounded-full border border-[var(--card-border)] text-text-tertiary animate-pulse self-center">
-                        Processing…
-                      </span>
-                    )}
-                  </div>
-
-                  <div className="flex items-center justify-between gap-4 mt-2">
-                    <div className="flex items-center gap-3 min-w-0">
-                      {authorAvatar}
-                      {authorMeta}
-                    </div>
-                    {isOwner && isEditingTitle && (
-                      <div className="flex items-center gap-2 flex-shrink-0">
-                        {titleError && <span className="text-xs text-brand-red">{titleError}</span>}
-                        <button onClick={saveTitle} className="btn-gradient" disabled={titleSaving}>
-                          {titleSaving ? "Saving…" : "Save"}
-                        </button>
-                        <button onClick={cancelTitle} className="btn-ghost" disabled={titleSaving}>
-                          Cancel
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {/* Video */}
-                <div className="-mx-6 md:mx-0">
-                  <div className="md:rounded-lg md:overflow-hidden">
-                    <VideoPlayer
-                      src={directUrl}
-                      slug={slug}
-                      title={title}
-                      poster={thumbnailUrl}
-                      captionsSrc={captionsSrc}
-                    />
-                  </div>
-                </div>
-
-                {/* Mobile: author + actions below the video */}
-                <div className="md:hidden mt-4">
-                  <div className="flex items-center gap-3 mb-4">
-                    {authorAvatar}
-                    {authorMeta}
-                  </div>
-                  <ShareActions src={directUrl} />
-                </div>
-
-                <DescriptionEditor
-                  key={description ?? "__empty__"}
+        <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_360px] gap-6">
+          <div className="min-w-0">
+            <div className="-mx-6 md:mx-0">
+              <div className="md:rounded-lg md:overflow-hidden">
+                <VideoPlayer
+                  src={directUrl}
                   slug={slug}
-                  initialDescription={description}
-                  isOwner={isOwner}
-                  hasTranscript={hasTranscript}
-                />
-              </div>
-
-              {/* Transcript column */}
-              <div className="min-w-0">
-                <TranscriptPanel
-                  key={transcriptSrt ?? "__empty__"}
-                  segments={transcriptSegments ?? []}
-                  srt={transcriptSrt}
-                  language={transcriptLanguage}
-                  slug={slug}
+                  title={title}
+                  poster={thumbnailUrl}
+                  captionsSrc={captionsSrc}
                 />
               </div>
             </div>
+
+            {/* Mobile: author + actions below the video */}
+            <div className="md:hidden mt-4">
+              <div className="flex items-center gap-3 mb-4">
+                {authorAvatar}
+                {authorMeta}
+              </div>
+              <ShareActions src={directUrl} />
+            </div>
+
+            <DescriptionEditor
+              key={description ?? "__empty__"}
+              slug={slug}
+              initialDescription={description}
+              isOwner={isOwner}
+              hasTranscript={hasTranscript}
+            />
           </div>
 
-          {/* ShareActions: desktop only, top-right, original position */}
-          <div className="hidden md:block flex-shrink-0">
-            <ShareActions src={directUrl} />
+          <div className="min-w-0">
+            <TranscriptPanel
+              key={transcriptSrt ?? "__empty__"}
+              segments={transcriptSegments ?? []}
+              srt={transcriptSrt}
+              language={transcriptLanguage}
+              slug={slug}
+            />
           </div>
         </div>
       </PlayerProvider>
