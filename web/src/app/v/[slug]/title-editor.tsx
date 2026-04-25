@@ -28,7 +28,7 @@ export function TitleEditor({
   if (isEditing) {
     return (
       <input
-        className={`font-heading font-bold text-text-primary bg-transparent border-b-2 border-[color:var(--brand-purple)] outline-none min-w-0 w-full max-w-2xl ${headingClass}`}
+        className={`font-heading font-bold text-text-primary bg-transparent border-b-2 border-[color:var(--brand-purple)] outline-none min-w-0 w-full ${headingClass}`}
         value={draft}
         onChange={(e) => onDraftChange(e.target.value)}
         onKeyDown={(e) => {
