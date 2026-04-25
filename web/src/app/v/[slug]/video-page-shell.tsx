@@ -59,6 +59,12 @@ export function VideoPageShell({
     processingStatus === "processing"
   );
 
+  // Title editing state
+  const [isEditingTitle, setIsEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState(initialTitle);
+  const [titleSaving, setTitleSaving] = useState(false);
+  const [titleError, setTitleError] = useState<string | null>(null);
+
   const handleReady = useCallback((data: StatusPayload) => {
     setTitle(data.title);
     setDescription(data.description);
@@ -67,6 +73,41 @@ export function VideoPageShell({
     setThumbnailUrl(data.thumbnailUrl);
     setIsProcessing(false);
   }, []);
+
+  async function saveTitle() {
+    const trimmed = titleDraft.trim();
+    if (!trimmed || trimmed === title) {
+      setIsEditingTitle(false);
+      return;
+    }
+    setTitleSaving(true);
+    setTitleError(null);
+    try {
+      const res = await fetch(`/api/videos/${slug}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: trimmed }),
+      });
+      if (!res.ok) throw new Error("Failed to save title");
+      setTitle(trimmed);
+      setIsEditingTitle(false);
+    } catch (err) {
+      setTitleError(err instanceof Error ? err.message : "Failed");
+    } finally {
+      setTitleSaving(false);
+    }
+  }
+
+  function cancelTitle() {
+    setTitleDraft(title);
+    setIsEditingTitle(false);
+    setTitleError(null);
+  }
+
+  function startEditTitle() {
+    setTitleDraft(title);
+    setIsEditingTitle(true);
+  }
 
   const captionsSrc = transcriptSegments?.length
     ? `/v/${slug}/captions.vtt`
@@ -80,11 +121,16 @@ export function VideoPageShell({
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-3 flex-wrap">
             <TitleEditor
-              slug={slug}
-              initialTitle={title}
+              title={title}
               isOwner={isOwner}
               headingClass="text-3xl"
-              onTitleChange={setTitle}
+              isEditing={isEditingTitle}
+              draft={titleDraft}
+              onDraftChange={setTitleDraft}
+              onStartEdit={startEditTitle}
+              onSave={saveTitle}
+              onCancel={cancelTitle}
+              saving={titleSaving}
             />
             {isProcessing && (
               <span className="text-xs px-2 py-0.5 rounded-full border border-[var(--card-border)] text-text-tertiary animate-pulse">
@@ -92,26 +138,49 @@ export function VideoPageShell({
               </span>
             )}
           </div>
-          <div className="flex items-center gap-3 mt-2">
-            {authorImage ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={authorImage} alt="" className="w-8 h-8 rounded-full" />
-            ) : (
-              <div className="w-8 h-8 rounded-full bg-brand text-text-alt flex items-center justify-center font-bold text-sm">
-                {authorDisplay.slice(0, 1).toUpperCase()}
+          <div className="flex items-center justify-between gap-3 mt-2">
+            <div className="flex items-center gap-3">
+              {authorImage ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={authorImage} alt="" className="w-8 h-8 rounded-full" />
+              ) : (
+                <div className="w-8 h-8 rounded-full bg-brand text-text-alt flex items-center justify-center font-bold text-sm">
+                  {authorDisplay.slice(0, 1).toUpperCase()}
+                </div>
+              )}
+              <div className="flex items-center gap-1.5 text-xs text-text-tertiary flex-wrap">
+                <span className="text-sm font-semibold text-text-primary">
+                  {authorDisplay}
+                </span>
+                <span>·</span>
+                <span>{ago}</span>
+                <span>·</span>
+                <span>
+                  {views} view{views !== 1 ? "s" : ""}
+                </span>
+              </div>
+            </div>
+            {isOwner && isEditingTitle && (
+              <div className="flex items-center gap-2 flex-shrink-0">
+                {titleError && (
+                  <span className="text-xs text-brand-red">{titleError}</span>
+                )}
+                <button
+                  onClick={saveTitle}
+                  className="btn-gradient"
+                  disabled={titleSaving}
+                >
+                  {titleSaving ? "Saving…" : "Save"}
+                </button>
+                <button
+                  onClick={cancelTitle}
+                  className="btn-ghost"
+                  disabled={titleSaving}
+                >
+                  Cancel
+                </button>
               </div>
             )}
-            <div className="flex items-center gap-1.5 text-xs text-text-tertiary flex-wrap">
-              <span className="text-sm font-semibold text-text-primary">
-                {authorDisplay}
-              </span>
-              <span>·</span>
-              <span>{ago}</span>
-              <span>·</span>
-              <span>
-                {views} view{views !== 1 ? "s" : ""}
-              </span>
-            </div>
           </div>
         </div>
         <ShareActions src={directUrl} />
@@ -121,11 +190,16 @@ export function VideoPageShell({
       <div className="md:hidden mb-3">
         <div className="flex items-center gap-3 flex-wrap">
           <TitleEditor
-            slug={slug}
-            initialTitle={title}
+            title={title}
             isOwner={isOwner}
             headingClass="text-2xl"
-            onTitleChange={setTitle}
+            isEditing={isEditingTitle}
+            draft={titleDraft}
+            onDraftChange={setTitleDraft}
+            onStartEdit={startEditTitle}
+            onSave={saveTitle}
+            onCancel={cancelTitle}
+            saving={titleSaving}
           />
           {isProcessing && (
             <span className="text-xs px-2 py-0.5 rounded-full border border-[var(--card-border)] text-text-tertiary animate-pulse">
@@ -133,6 +207,27 @@ export function VideoPageShell({
             </span>
           )}
         </div>
+        {isOwner && isEditingTitle && (
+          <div className="flex items-center gap-2 mt-2">
+            {titleError && (
+              <span className="text-xs text-brand-red">{titleError}</span>
+            )}
+            <button
+              onClick={saveTitle}
+              className="btn-gradient"
+              disabled={titleSaving}
+            >
+              {titleSaving ? "Saving…" : "Save"}
+            </button>
+            <button
+              onClick={cancelTitle}
+              className="btn-ghost"
+              disabled={titleSaving}
+            >
+              Cancel
+            </button>
+          </div>
+        )}
       </div>
 
       <PlayerProvider>
