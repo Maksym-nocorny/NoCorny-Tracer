@@ -37,14 +37,14 @@ export function DropboxConnect({
         <div className="flex gap-3">
           <button
             onClick={() => fetch("/api/sync/dropbox", { method: "POST" })}
-            className="px-4 py-2 rounded-md bg-bg-secondary text-sm font-medium text-text-primary hover:brightness-95 transition-all cursor-pointer"
+            className="btn-ghost"
           >
             Sync now
           </button>
           <button
             onClick={handleDisconnect}
             disabled={disconnecting}
-            className="px-4 py-2 rounded-md text-sm font-medium text-brand-red hover:bg-bg-secondary transition-all cursor-pointer disabled:opacity-50"
+            className="btn-ghost text-brand-red hover:text-brand-red disabled:opacity-50"
           >
             {disconnecting ? "Disconnecting…" : "Disconnect"}
           </button>

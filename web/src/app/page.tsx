@@ -1,8 +1,11 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
 
 export default async function Home() {
   const session = await auth();
+
+  if (session) redirect("/dashboard");
 
   return (
     <div className="min-h-screen flex flex-col bg-bg-primary">

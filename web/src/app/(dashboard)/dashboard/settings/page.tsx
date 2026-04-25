@@ -51,12 +51,19 @@ export default async function SettingsPage() {
 
       {/* Desktop app */}
       <section className="card mb-6">
-        <h2 className="section-heading text-base mb-2">Desktop app</h2>
-        <p className="text-sm text-text-secondary mb-4">
-          {desktopSignedIn
-            ? `Connected${desktopLastUsed ? ` · last active ${new Date(desktopLastUsed).toLocaleDateString()}` : ""}.`
-            : "No device signed in yet."}
-        </p>
+        <h2 className="section-heading text-base mb-4">Desktop app</h2>
+        <div className="flex items-center gap-2 mb-3">
+          {desktopSignedIn ? (
+            <>
+              <div className="w-2 h-2 rounded-full bg-brand-green" />
+              <span className="text-sm font-medium text-text-primary">
+                Connected{desktopLastUsed ? ` · last active ${new Date(desktopLastUsed).toLocaleDateString()}` : ""}
+              </span>
+            </>
+          ) : (
+            <span className="text-sm text-text-secondary">No device signed in yet.</span>
+          )}
+        </div>
         <p className="text-sm text-text-secondary mb-4">
           Download the macOS app and tap{" "}
           <span className="font-semibold">Sign in with Browser</span> in

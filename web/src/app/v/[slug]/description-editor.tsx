@@ -107,24 +107,18 @@ export function DescriptionEditor({
 
   return (
     <section className="mt-6">
-      <div className="flex items-center justify-between mb-2">
-        <h2 className="font-heading text-lg font-bold text-text-primary">
-          Description
-        </h2>
-        {isOwner && (
-          <div className="flex items-center gap-3">
-            {description && hasTranscript && (
-              <button
-                onClick={generate}
-                disabled={generating}
-                className="text-sm text-text-secondary hover:text-text-primary transition-colors cursor-pointer disabled:opacity-50"
-              >
-                {generating ? "Regenerating…" : "Regenerate"}
-              </button>
-            )}
+      <div
+        className={`-mx-3 px-3 py-2 rounded-md transition-colors duration-[150ms]${isOwner ? " group hover:bg-[var(--bg-card)] cursor-pointer" : ""}`}
+        onClick={() => isOwner && setEditing(true)}
+      >
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="font-heading text-lg font-bold text-text-primary">
+            Description
+          </h2>
+          {isOwner && (
             <button
-              onClick={() => setEditing(true)}
-              className="text-sm text-text-secondary hover:text-text-primary transition-colors cursor-pointer flex items-center gap-1.5"
+              onClick={(e) => { e.stopPropagation(); setEditing(true); }}
+              className="opacity-0 group-hover:opacity-100 max-md:opacity-100 transition-opacity duration-[150ms] text-sm text-text-secondary hover:text-text-primary cursor-pointer flex items-center gap-1.5"
             >
               <svg
                 width="14"
@@ -141,37 +135,37 @@ export function DescriptionEditor({
               </svg>
               Edit
             </button>
+          )}
+        </div>
+        {description ? (
+          <p className="text-text-secondary whitespace-pre-wrap leading-relaxed">
+            {description}
+          </p>
+        ) : isOwner ? (
+          <div className="flex flex-wrap items-center gap-3" onClick={(e) => e.stopPropagation()}>
+            {hasTranscript && (
+              <button
+                onClick={generate}
+                disabled={generating}
+                className="btn-gradient"
+              >
+                {generating ? "Generating…" : "Generate from transcript"}
+              </button>
+            )}
+            <button
+              onClick={() => setEditing(true)}
+              className="text-sm text-text-tertiary italic hover:text-text-secondary transition-colors cursor-pointer text-left"
+            >
+              {hasTranscript ? "or write one yourself…" : "Add a description…"}
+            </button>
           </div>
+        ) : (
+          <p className="text-text-tertiary italic text-sm">No description yet.</p>
+        )}
+        {error && (
+          <div className="text-xs text-brand-red mt-2">{error}</div>
         )}
       </div>
-      {description ? (
-        <p className="text-text-secondary whitespace-pre-wrap leading-relaxed">
-          {description}
-        </p>
-      ) : isOwner ? (
-        <div className="flex flex-wrap items-center gap-3">
-          {hasTranscript && (
-            <button
-              onClick={generate}
-              disabled={generating}
-              className="btn-gradient"
-            >
-              {generating ? "Generating…" : "Generate from transcript"}
-            </button>
-          )}
-          <button
-            onClick={() => setEditing(true)}
-            className="text-sm text-text-tertiary italic hover:text-text-secondary transition-colors cursor-pointer text-left"
-          >
-            {hasTranscript ? "or write one yourself…" : "Add a description…"}
-          </button>
-        </div>
-      ) : (
-        <p className="text-text-tertiary italic text-sm">No description yet.</p>
-      )}
-      {error && (
-        <div className="text-xs text-brand-red mt-2">{error}</div>
-      )}
     </section>
   );
 }

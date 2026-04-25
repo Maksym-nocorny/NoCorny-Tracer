@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 import { db } from "@/lib/db";
 import { videos, users } from "@/lib/db/schema";
-import { eq, sql } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { auth } from "@/lib/auth";
@@ -32,11 +32,6 @@ async function getVideo(slug: string) {
     .limit(1);
 
   if (!result.length || result[0].video.isDeleted) return null;
-
-  await db
-    .update(videos)
-    .set({ viewCount: sql`${videos.viewCount} + 1` })
-    .where(eq(videos.slug, slug));
 
   return {
     ...result[0].video,
@@ -91,7 +86,7 @@ export default async function VideoPage({ params }: Props) {
       "dl.dropboxusercontent.com"
     ) ?? null;
 
-  const views = (video.viewCount ?? 0) + 1;
+  const views = video.viewCount ?? 0;
   const stamp = video.recordedAt ?? video.createdAt;
   const ago = stamp ? relativeTime(stamp) : "";
   const isOwner = !!session?.user?.id && session.user.id === video.userId;

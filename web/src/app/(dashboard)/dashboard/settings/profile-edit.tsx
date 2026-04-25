@@ -2,6 +2,7 @@
 
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { signOut } from "next-auth/react";
 
 type Props = {
   initialName: string | null;
@@ -16,6 +17,7 @@ export function ProfileEdit({ initialName, initialImage, email, dropboxConnected
 
   const [name, setName] = useState(initialName ?? "");
   const [image, setImage] = useState(initialImage ?? "");
+  const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [dragging, setDragging] = useState(false);
@@ -31,12 +33,19 @@ export function ProfileEdit({ initialName, initialImage, email, dropboxConnected
         body: JSON.stringify({ name }),
       });
       if (!res.ok) throw new Error(`Save failed (${res.status})`);
+      setEditing(false);
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Save failed");
     } finally {
       setSaving(false);
     }
+  }
+
+  function cancelEdit() {
+    setName(initialName ?? "");
+    setEditing(false);
+    setError(null);
   }
 
   async function uploadAvatar(file: File) {
@@ -51,8 +60,6 @@ export function ProfileEdit({ initialName, initialImage, email, dropboxConnected
     setUploading(true);
     setError(null);
     try {
-      // Resize & re-encode as JPEG client-side. Avoids Vercel's ~4.5 MB body
-      // limit on large PNG/HEIC uploads and keeps Dropbox storage tidy.
       const jpeg = await resizeImageToJpeg(file, 512, 0.85);
       const form = new FormData();
       form.append("file", jpeg, "avatar.jpg");
@@ -72,7 +79,6 @@ export function ProfileEdit({ initialName, initialImage, email, dropboxConnected
   }
 
   const initial = (name || email)[0]?.toUpperCase() ?? "?";
-  const nameDirty = name !== (initialName ?? "");
 
   async function resizeImageToJpeg(file: File, maxSide: number, quality: number): Promise<File> {
     const dataUrl = await new Promise<string>((resolve, reject) => {
@@ -105,7 +111,7 @@ export function ProfileEdit({ initialName, initialImage, email, dropboxConnected
 
   return (
     <div className="flex flex-col gap-5">
-      {/* Avatar drop zone + name */}
+      {/* Avatar + identity */}
       <div
         onDragOver={(e) => {
           e.preventDefault();
@@ -118,23 +124,21 @@ export function ProfileEdit({ initialName, initialImage, email, dropboxConnected
           const file = e.dataTransfer.files?.[0];
           if (file) uploadAvatar(file);
         }}
-        className={`flex items-center gap-4 rounded-xl border-2 border-dashed p-3 transition-colors ${
-          dragging
-            ? "border-brand bg-brand/10"
-            : "border-transparent hover:border-border"
+        className={`flex flex-col sm:flex-row items-center sm:items-start gap-5 rounded-xl transition-colors ${
+          dragging ? "ring-2 ring-brand bg-brand/5" : ""
         }`}
       >
         <button
           type="button"
           onClick={() => fileInputRef.current?.click()}
-          className="relative w-16 h-16 shrink-0 rounded-full overflow-hidden group cursor-pointer focus:outline-none focus:ring-2 focus:ring-brand"
+          className="relative w-20 h-20 shrink-0 rounded-full overflow-hidden group cursor-pointer focus:outline-none focus:ring-2 focus:ring-brand"
           title="Click or drop an image to change avatar"
         >
           {image ? (
             // eslint-disable-next-line @next/next/no-img-element
-            <img src={image} alt="" className="w-16 h-16 object-cover" />
+            <img src={image} alt="" className="w-20 h-20 object-cover" />
           ) : (
-            <div className="w-16 h-16 bg-brand flex items-center justify-center text-text-alt text-2xl font-bold">
+            <div className="w-20 h-20 bg-brand flex items-center justify-center text-text-alt text-2xl font-bold">
               {initial}
             </div>
           )}
@@ -143,11 +147,14 @@ export function ProfileEdit({ initialName, initialImage, email, dropboxConnected
           </div>
         </button>
 
-        <div className="flex-1 min-w-0">
-          <p className="text-sm text-text-tertiary mb-0.5">{email}</p>
+        <div className="flex-1 min-w-0 text-center sm:text-left">
+          <p className="font-semibold text-text-primary truncate">
+            {name || "No name set"}
+          </p>
+          <p className="text-sm text-text-tertiary mb-1 truncate">{email}</p>
           <p className="text-xs text-text-tertiary">
             {dropboxConnected
-              ? "Drag & drop an image or click the avatar to upload. Stored in your Dropbox."
+              ? "Click avatar to change photo. Stored in Dropbox."
               : "Connect Dropbox below to upload an avatar."}
           </p>
         </div>
@@ -165,28 +172,64 @@ export function ProfileEdit({ initialName, initialImage, email, dropboxConnected
         />
       </div>
 
-      <label className="flex flex-col gap-1">
-        <span className="text-xs font-medium text-text-secondary">Display name</span>
-        <input
-          type="text"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="Your name"
-          className="px-3 py-2 rounded-lg border border-border bg-surface text-text-primary focus:outline-none focus:ring-2 focus:ring-brand"
-          maxLength={120}
-        />
-      </label>
+      {/* Display name — read-only until "Edit name" clicked */}
+      {editing ? (
+        <div className="flex flex-col gap-3 pt-4 border-t border-[var(--card-border)]">
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-medium text-text-secondary">Display name</span>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Your name"
+              className="px-3 py-2 rounded-lg border border-border bg-surface text-text-primary focus:outline-none focus:ring-2 focus:ring-brand"
+              maxLength={120}
+              autoFocus
+            />
+          </label>
+          {error && <p className="text-sm text-red-500">{error}</p>}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={saveName}
+              disabled={saving}
+              className="btn-gradient disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {saving ? "Saving…" : "Save name"}
+            </button>
+            <button
+              type="button"
+              onClick={cancelEdit}
+              className="btn-ghost"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex items-center justify-between gap-3 pt-4 border-t border-[var(--card-border)]">
+          <div>
+            <div className="text-xs font-medium text-text-secondary mb-0.5">Display name</div>
+            <div className="text-sm text-text-primary">{name || <span className="text-text-tertiary">No name set</span>}</div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setEditing(true)}
+            className="btn-ghost text-sm shrink-0"
+          >
+            Edit name
+          </button>
+        </div>
+      )}
 
-      {error && <p className="text-sm text-red-500">{error}</p>}
-
-      <div>
+      {/* Sign out */}
+      <div className="pt-4 border-t border-[var(--card-border)]">
         <button
           type="button"
-          onClick={saveName}
-          disabled={saving || !nameDirty}
-          className="btn-gradient disabled:opacity-50 disabled:cursor-not-allowed"
+          onClick={() => signOut({ callbackUrl: "/" })}
+          className="text-sm text-text-tertiary hover:text-brand-red transition-colors cursor-pointer"
         >
-          {saving ? "Saving…" : "Save name"}
+          Sign out
         </button>
       </div>
     </div>

@@ -6,6 +6,7 @@ import { eq, and } from "drizzle-orm";
 import { verifyBearerToken } from "@/lib/tokens";
 import { parseSrt } from "@/lib/transcript";
 import { generateDescriptionForVideo } from "@/lib/generate-description";
+import { getDropboxTokens, dropboxMove } from "@/lib/dropbox";
 
 type Params = { params: Promise<{ slug: string }> };
 
@@ -64,6 +65,41 @@ export async function PATCH(req: NextRequest, { params }: Params) {
   if (processingStatus !== undefined) patch.processingStatus = processingStatus;
   if (thumbnailUrl !== undefined) patch.thumbnailUrl = thumbnailUrl;
   if (dropboxPath !== undefined) patch.dropboxPath = dropboxPath;
+
+  // Rename files on Dropbox when the title changes
+  if (title !== undefined && video.dropboxPath) {
+    try {
+      const tokens = await getDropboxTokens(userId);
+      if (tokens?.accessToken) {
+        const oldPath = video.dropboxPath;
+        const dir = oldPath.substring(0, oldPath.lastIndexOf("/"));
+        const ext = oldPath.substring(oldPath.lastIndexOf("."));
+        const baseName = oldPath.substring(
+          oldPath.lastIndexOf("/") + 1,
+          oldPath.lastIndexOf(".")
+        );
+        const newVideoPath = `${dir}/${title}${ext}`;
+
+        const moved = await dropboxMove(tokens.accessToken, oldPath, newVideoPath);
+        patch.dropboxPath =
+          (moved.metadata?.path_display as string | undefined) ?? newVideoPath;
+
+        for (const suffix of [".srt", ".thumb.jpg"]) {
+          try {
+            await dropboxMove(
+              tokens.accessToken,
+              `${dir}/${baseName}${suffix}`,
+              `${dir}/${title}${suffix}`
+            );
+          } catch {
+            // file may not exist — ignore
+          }
+        }
+      }
+    } catch (err) {
+      console.error("Dropbox rename failed, continuing:", err);
+    }
+  }
 
   let triggerDescriptionGen = false;
   if (transcriptSrt !== undefined) {

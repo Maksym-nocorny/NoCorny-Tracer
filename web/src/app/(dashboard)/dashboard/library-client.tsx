@@ -9,7 +9,6 @@ type Video = InferSelectModel<typeof videos>;
 
 type DateFilter = "all" | "7" | "30" | "90";
 type SortOrder = "newest" | "oldest";
-type Tab = "videos" | "screenshots" | "archive";
 
 const DATE_FILTERS: Array<{ value: DateFilter; label: string }> = [
   { value: "all", label: "All time" },
@@ -36,7 +35,6 @@ export function LibraryClient({
   videos: Video[];
   author: GridAuthor;
 }) {
-  const [tab, setTab] = useState<Tab>("videos");
   const [query, setQuery] = useState("");
   const [dateFilter, setDateFilter] = useState<DateFilter>("all");
   const [sort, setSort] = useState<SortOrder>("newest");
@@ -71,63 +69,25 @@ export function LibraryClient({
           <div className="text-xs font-semibold uppercase tracking-wider text-text-tertiary mb-1">
             Library
           </div>
-          <h1 className="font-heading text-3xl font-bold text-text-primary">
-            Videos
-          </h1>
+          <div className="flex items-center gap-3">
+            <h1 className="font-heading text-3xl font-bold text-text-primary">
+              Videos
+            </h1>
+            <span className="self-center inline-flex items-center justify-center h-8 min-w-8 px-2 rounded-full bg-brand/10 text-brand font-semibold text-sm">
+              {allVideos.length}
+            </span>
+          </div>
         </div>
         <div className="flex items-center gap-3">
-          <span className="chip">
-            {allVideos.length} {allVideos.length === 1 ? "video" : "videos"}
-          </span>
-          <button
-            className="btn-ghost opacity-60 cursor-not-allowed"
-            title="Coming soon"
-            disabled
-          >
-            New folder
-          </button>
           <a
             href="https://github.com/Maksym-nocorny/NoCorny-Tracer/releases/latest"
             target="_blank"
             rel="noopener noreferrer"
             className="btn-gradient"
           >
-            New video
+            Download for macOS
           </a>
         </div>
-      </div>
-
-      {/* Tabs */}
-      <div className="tabs mb-5">
-        <button
-          role="tab"
-          aria-selected={tab === "videos"}
-          className="tab"
-          onClick={() => setTab("videos")}
-        >
-          Videos
-        </button>
-        <button
-          role="tab"
-          aria-selected={tab === "screenshots"}
-          aria-disabled
-          className="tab"
-          title="Coming soon"
-        >
-          Screenshots
-        </button>
-        <button
-          role="tab"
-          aria-selected={tab === "archive"}
-          aria-disabled
-          className="tab"
-          title="Coming soon"
-        >
-          Archive
-        </button>
-        <span className="ml-auto text-xs text-text-tertiary">
-          {filtered.length} {filtered.length === 1 ? "video" : "videos"}
-        </span>
       </div>
 
       {/* Sub-toolbar */}
@@ -170,9 +130,7 @@ export function LibraryClient({
       </div>
 
       {/* Grid / empty states */}
-      {tab !== "videos" ? (
-        <ComingSoon label={tab === "screenshots" ? "Screenshots" : "Archive"} />
-      ) : filtered.length === 0 && allVideos.length > 0 ? (
+      {filtered.length === 0 && allVideos.length > 0 ? (
         <div className="card text-center py-16">
           <div className="text-4xl mb-3">🔍</div>
           <h2 className="font-heading text-lg font-bold text-text-primary mb-1">
@@ -196,20 +154,6 @@ export function LibraryClient({
       ) : (
         <VideoGrid videos={filtered} author={author} />
       )}
-    </div>
-  );
-}
-
-function ComingSoon({ label }: { label: string }) {
-  return (
-    <div className="card text-center py-16">
-      <div className="text-4xl mb-3">🚧</div>
-      <h2 className="font-heading text-lg font-bold text-text-primary mb-1">
-        {label} coming soon
-      </h2>
-      <p className="text-text-secondary text-sm">
-        This tab isn&apos;t available yet.
-      </p>
     </div>
   );
 }

@@ -127,6 +127,17 @@ export const videos = pgTable("videos", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
 });
 
+// ── Video views (deduplication by fingerprint) ──
+
+export const videoViews = pgTable("video_views", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  videoId: uuid("video_id")
+    .notNull()
+    .references(() => videos.id, { onDelete: "cascade" }),
+  fingerprint: text("fingerprint").notNull(),
+  viewedAt: timestamp("viewed_at", { withTimezone: true }).defaultNow(),
+});
+
 // ── Future: Workspaces (schema only) ──
 
 export const workspaces = pgTable("workspaces", {

@@ -367,11 +367,45 @@ body {
   --media-tooltip-bg: color-mix(in oklab, black 80%, transparent);
 }
 
-.vds-wrap media-poster img {
-  object-fit: cover;
+/* Pin the aspect-ratio to the wrap itself so the player container always has a
+   definite size regardless of Vidstack's internal CSS. Everything inside fills
+   100% of that box. */
+.vds-wrap {
+  aspect-ratio: 16 / 9;
   width: 100%;
-  height: 100%;
-  color: transparent;
+}
+
+.vds-wrap [data-media-player] {
+  display: block !important;
+  width: 100% !important;
+  height: 100% !important;
+  aspect-ratio: auto !important;
+}
+
+.vds-wrap [data-media-provider] {
+  display: block !important;
+  width: 100% !important;
+  height: 100% !important;
+  aspect-ratio: auto !important;
+}
+
+.vds-wrap [data-media-provider] > video,
+.vds-wrap [data-media-provider] > img {
+  width: 100% !important;
+  height: 100% !important;
+  max-width: 100% !important;
+  object-fit: contain !important;
+  aspect-ratio: auto !important;
+}
+
+.vds-wrap img.vds-poster {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: cover !important;
+}
+
+.vds-wrap [data-media-player][data-fullscreen] video {
+  height: 100% !important;
 }
 
 /* ── Custom speed menu (Vidstack bottom bar) ── */
@@ -489,17 +523,38 @@ body {
 }
 
 /* Center the timecode ("0:01 / 3:27") in the bottom controls bar.
-   The controls bar is a flex row; we pull the time out of the flow
-   and anchor it to the horizontal center of the player. */
-.vds-wrap .vds-controls-group .vds-time {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
-  pointer-events: none;
-  font-variant-numeric: tabular-nums;
+   The timecode lives inside `.vds-time-group` (current + divider +
+   duration). We pin the group dead-center via absolute positioning
+   so it sits at the true center of the player, independent of the
+   width of the left/right button clusters. To keep the right cluster
+   anchored to the right edge, the element immediately after the
+   time-group gets `margin-left: auto` — that pushes it (and every
+   sibling that follows) to the right side. */
+.vds-wrap .vds-controls-group {
+  position: relative;
 }
 
-/* Compensate so the time doesn't overlap the left control buttons */
-.vds-wrap [data-layout="video"] .vds-controls {
-  position: relative;
+.vds-wrap .vds-controls-group .vds-time-group {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  margin: 0 !important;
+  pointer-events: none;
+}
+
+/* Vidstack DOM order in the bottom controls group is:
+     play → volume → time-group → chapter-title (we hide it) → caption → menus → … → fullscreen
+   The sibling immediately after the time-group is the hidden chapter
+   title, so `margin-left: auto` on it has no visual effect. We push
+   the right cluster by anchoring it on the chapter-title's next
+   sibling (the first visible right-side element). */
+.vds-wrap .vds-controls-group .vds-chapter-title + *,
+.vds-wrap .vds-controls-group [part="chapter-title"] + *,
+.vds-wrap .vds-controls-group [data-part="chapter-title"] + * {
+  margin-left: auto !important;
+}
+
+.vds-wrap .vds-controls-group .vds-time {
+  font-variant-numeric: tabular-nums;
 }

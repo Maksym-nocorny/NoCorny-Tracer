@@ -2,7 +2,6 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { signOut } from "next-auth/react";
 import type { User } from "next-auth";
 
 const NAV_ITEMS = [
@@ -68,12 +67,7 @@ export function DashboardNav({ user }: { user: User }) {
             <div className="text-sm font-semibold text-text-primary truncate">
               {user.name || user.email}
             </div>
-            <button
-              onClick={() => signOut({ callbackUrl: "/" })}
-              className="text-xs text-text-tertiary hover:text-brand-red transition-colors cursor-pointer"
-            >
-              Sign out
-            </button>
+            <div className="text-xs text-text-tertiary truncate">{user.email}</div>
           </div>
         </div>
       </div>
@@ -96,17 +90,17 @@ export function MobileDashboardBar({ user }: { user: User }) {
         </Link>
         <Link
           href="/dashboard/settings"
-          className="text-sm font-medium text-text-secondary hover:text-text-primary"
+          className="flex items-center gap-2 text-sm font-medium text-text-secondary hover:text-text-primary"
         >
           Settings
+          {user.image ? (
+            <img src={user.image} alt="" className="w-8 h-8 rounded-full" />
+          ) : (
+            <div className="w-8 h-8 rounded-full bg-brand text-text-alt flex items-center justify-center text-sm font-bold">
+              {user.name?.[0] || user.email?.[0] || "?"}
+            </div>
+          )}
         </Link>
-        {user.image ? (
-          <img src={user.image} alt="" className="w-8 h-8 rounded-full" />
-        ) : (
-          <div className="w-8 h-8 rounded-full bg-brand text-text-alt flex items-center justify-center text-sm font-bold">
-            {user.name?.[0] || user.email?.[0] || "?"}
-          </div>
-        )}
       </div>
     </div>
   );

@@ -132,13 +132,21 @@ const seekSlots = {
 
 type VideoPlayerProps = {
   src: string | null;
+  slug: string;
   title: string;
   poster: string | null;
   captionsSrc?: string | null;
 };
 
-export function VideoPlayer({ src, title, poster, captionsSrc }: VideoPlayerProps) {
+export function VideoPlayer({ src, slug, title, poster, captionsSrc }: VideoPlayerProps) {
   const playerRef = usePlayerRef();
+  const hasFired = useRef(false);
+
+  function handlePlay() {
+    if (hasFired.current) return;
+    hasFired.current = true;
+    fetch(`/api/videos/${slug}/view`, { method: "POST" }).catch(() => {});
+  }
 
   if (!src) {
     return (
@@ -149,7 +157,7 @@ export function VideoPlayer({ src, title, poster, captionsSrc }: VideoPlayerProp
   }
 
   return (
-    <div className="vds-wrap relative rounded-lg overflow-hidden shadow-[0_10px_40px_rgba(0,0,0,0.25)] border border-[var(--card-border)]">
+    <div className="vds-wrap relative overflow-hidden md:rounded-lg shadow-[0_10px_40px_rgba(0,0,0,0.25)] md:border md:border-[var(--card-border)]">
       <MediaPlayer
         ref={playerRef}
         title={title}
@@ -158,6 +166,7 @@ export function VideoPlayer({ src, title, poster, captionsSrc }: VideoPlayerProp
         playsInline
         aspectRatio="16/9"
         storage="tracer-player"
+        onPlay={handlePlay}
       >
         <MediaProvider>
           {poster && <Poster className="vds-poster" src={poster} alt={title} />}
