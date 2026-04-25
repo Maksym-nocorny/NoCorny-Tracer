@@ -117,11 +117,29 @@ export function VideoPageShell({
     </div>
   );
 
+  const editButtons = isOwner && isEditingTitle ? (
+    <div className="flex items-center gap-2 flex-shrink-0">
+      {titleError && <span className="text-xs text-brand-red">{titleError}</span>}
+      <button onClick={saveTitle} className="btn-gradient" disabled={titleSaving}>
+        {titleSaving ? "Saving…" : "Save"}
+      </button>
+      <button onClick={cancelTitle} className="btn-ghost" disabled={titleSaving}>
+        Cancel
+      </button>
+    </div>
+  ) : null;
+
   return (
     <>
-      {/* Desktop: title row (left) + ShareActions (right) — original position above transcript */}
-      <div className="hidden md:flex flex-row items-start justify-between gap-4 mb-5">
-        <div className="min-w-0 flex-1">
+      {/*
+        Desktop header: same grid as the player below, so every element
+        aligns to the same column boundaries.
+        - Left column (video width): title block, then author block
+        - Right column (transcript width): ShareActions
+      */}
+      <div className="hidden md:grid grid-cols-[minmax(0,1fr)_360px] gap-6 mb-5 items-start">
+        <div className="min-w-0">
+          {/* Title block */}
           <div className="flex items-start gap-3 flex-wrap">
             <TitleEditor
               title={title}
@@ -142,29 +160,22 @@ export function VideoPageShell({
             )}
           </div>
 
-          {/* Author row: avatar+meta left, Save/Cancel right when editing */}
+          {/* Author block */}
           <div className="flex items-center justify-between gap-4 mt-2">
             <div className="flex items-center gap-3 min-w-0">
               {authorAvatar}
               {authorMeta}
             </div>
-            {isOwner && isEditingTitle && (
-              <div className="flex items-center gap-2 flex-shrink-0">
-                {titleError && <span className="text-xs text-brand-red">{titleError}</span>}
-                <button onClick={saveTitle} className="btn-gradient" disabled={titleSaving}>
-                  {titleSaving ? "Saving…" : "Save"}
-                </button>
-                <button onClick={cancelTitle} className="btn-ghost" disabled={titleSaving}>
-                  Cancel
-                </button>
-              </div>
-            )}
+            {editButtons}
           </div>
         </div>
-        <ShareActions src={directUrl} />
+
+        <div className="flex justify-end items-start">
+          <ShareActions src={directUrl} />
+        </div>
       </div>
 
-      {/* Mobile: title above the player */}
+      {/* Mobile title */}
       <div className="md:hidden mb-3">
         <div className="flex items-start gap-3 flex-wrap">
           <TitleEditor
@@ -213,7 +224,7 @@ export function VideoPageShell({
               </div>
             </div>
 
-            {/* Mobile: author + actions below the video */}
+            {/* Mobile: author + actions below video */}
             <div className="md:hidden mt-4">
               <div className="flex items-center gap-3 mb-4">
                 {authorAvatar}
