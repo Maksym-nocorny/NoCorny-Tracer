@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.5.14] - 2026-04-27
+### Fixed
+- **Long videos getting no transcript or description**: The audio export step previously used `AVAssetExportPresetAppleM4A` (~256 kbps), which pushed 10+ minute recordings over Gemini's 20 MB inline-data limit and silently aborted transcription. The MP4 in Dropbox stays untouched, but for transcription we now re-encode the audio to 32 kbps mono 16 kHz (the standard input format for speech-to-text models) via AVAssetReader/Writer. A 10-minute clip is now ~2.4 MB; even a 60-minute clip fits comfortably under the limit.
+### Changed
+- **Audio post-processing logs are visible**: Every step in `generateSubtitles` and `generateName` (audio extraction, file size, Gemini calls, retry attempts, NO_SPEECH detection) now writes through `LogManager.shared.log` so it shows up in the user-visible log instead of console-only `print` output.
+- **Retries on every transient error**: The Gemini retry loop in both subtitle generation and AI naming now retries on ANY error (network glitch, 5xx, proxy timeout) instead of only quota errors. Up to 3 attempts with 5s/10s/20s exponential backoff.
+- **Outer retry for subtitles**: If the inner 3-retry loop still returns nil, `processRecording` now waits 10 seconds and runs the whole subtitle pipeline a second time (fresh audio extraction + new Gemini call). Belt-and-suspenders robustness for transient backend hiccups.
+
 ## [3.5.13] - 2026-04-27
 ### Fixed
 - **Audio capture robustness**: After the AVAudioEngine + Voice Processing refactor in 3.5.12, the very first recording on some machines could end up with a silent audio track (no transcript, no description). Added three safeguards: `engine.prepare()` is now called before `engine.start()` so the audio graph and voice processing initialize before buffers start flowing; if a tap-delivered buffer reports `hostTime == 0`, the PTS now falls back to `CMClockGetHostTimeClock()` to keep audio aligned with video; a 2-second health check logs loudly if no buffers were received or if all PTS were invalid, so any future regression is diagnosable from logs.

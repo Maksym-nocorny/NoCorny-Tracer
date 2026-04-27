@@ -381,12 +381,25 @@ final class AppState {
         }
 
         // Step 2: Generate subtitles (used for AI naming, not uploaded)
+        // Outer retry: if the inner 3-attempt retry inside generateSubtitles still returns nil,
+        // wait 10s and try the whole pipeline once more (re-extracts audio, re-calls Gemini).
+        // This catches lingering transient failures (proxy hiccup, brief network drop) that
+        // would otherwise leave the recording without a transcript.
         LogManager.shared.log("🤖 Starting subtitle generation...")
         var generatedSubtitles: String? = nil
 
         if let subtitles = await aiNamingService.generateSubtitles(for: fileURL) {
             generatedSubtitles = subtitles
             LogManager.shared.log("🤖 Subtitles: ✅ Generated content length: \(subtitles.count)")
+        } else {
+            LogManager.shared.log("🤖 Subtitles: ⚠️ First pass returned nil — waiting 10s before second pass...", type: .error)
+            try? await Task.sleep(nanoseconds: 10_000_000_000)
+            if let subtitles = await aiNamingService.generateSubtitles(for: fileURL) {
+                generatedSubtitles = subtitles
+                LogManager.shared.log("🤖 Subtitles: ✅ Second pass succeeded, length: \(subtitles.count)")
+            } else {
+                LogManager.shared.log("🤖 Subtitles: ❌ Both passes failed — proceeding without transcript (no subtitles, no description)", type: .error)
+            }
         }
 
         // Step 3: AI Naming (using frames + subtitles)
@@ -703,7 +716,7 @@ final class AppState {
     }
 
     func openTracerSettings() {
-        if let url = URL(string: "https://tracer.nocorny.com/dashboard/settings") {
+        if let url = URL(string: "https://tracer.nocorny.com/settings") {
             NSWorkspace.shared.open(url)
         }
     }
