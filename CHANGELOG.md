@@ -1,5 +1,25 @@
 # Changelog
 
+## [3.5.13] - 2026-04-27
+### Fixed
+- **Audio capture robustness**: After the AVAudioEngine + Voice Processing refactor in 3.5.12, the very first recording on some machines could end up with a silent audio track (no transcript, no description). Added three safeguards: `engine.prepare()` is now called before `engine.start()` so the audio graph and voice processing initialize before buffers start flowing; if a tap-delivered buffer reports `hostTime == 0`, the PTS now falls back to `CMClockGetHostTimeClock()` to keep audio aligned with video; a 2-second health check logs loudly if no buffers were received or if all PTS were invalid, so any future regression is diagnosable from logs.
+
+## [3.5.12] - 2026-04-26
+### Changed
+- **Background audio suppression**: Microphone capture now runs through Apple's Voice Processing (the same noise suppression block FaceTime and Zoom use), so background TV, music with lyrics, distant voices, and side conversations are heavily attenuated in the recorded audio. Voice quality of the primary speaker is preserved.
+- **Smarter transcription prompt**: Gemini is now explicitly instructed to transcribe only the primary, foreground speaker. Background voices, song lyrics, and side conversations are skipped — if no clear primary speaker is present, transcription returns no speech.
+- **AI naming robustness**: When generating a filename, stray phrases that don't fit the visual context (background TV dialogue, song lyrics) are now ignored in favor of what's actually shown on screen.
+
+## [3.5.11] - 2026-04-26
+### Changed
+- **Smarter AI naming**: Frames sent to Gemini are now anchored to transcript paragraph starts (snap to nearest paragraph boundary within ±8s of each evenly spaced target), so each screenshot lands on a meaningful topic shift instead of mid-transition. For silent recordings or short clips, falls back to evenly spaced sampling. Frame count now scales with duration (3 to 10 frames; ~1 per 10s).
+- **Higher-resolution screenshots**: AI naming now extracts frames at up to 1568px on the long side (was 800px) with JPEG quality 0.85 (was 0.6). Code, UI labels, and tabs are now legible to the model, which yields more specific and accurate filenames.
+- **Near-duplicate frame removal**: Perceptual hash (dHash) drops visually identical frames before they're sent to Gemini, reducing API cost and noise on static-screen recordings.
+
+## [3.5.10] - 2026-04-26
+### Changed
+- **Settings URL**: Updated the settings link from `/dashboard/settings` to `/settings` for cleaner URL structure. Added 308 redirect for backward compatibility with older app versions.
+
 ## [3.5.9] - 2026-04-25
 ### Changed
 - **Dropbox managed via web only**: Removed "Sign Out" button for Dropbox in the app. When connected, a "Manage" button opens tracer.nocorny.com/dashboard/settings where the user can disconnect. When not connected, "Connect Dropbox" also opens the web settings. Connection status syncs automatically when opening the Settings tab.
