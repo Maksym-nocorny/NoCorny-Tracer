@@ -157,7 +157,7 @@ export function VideoPlayer({ src, slug, title, poster, captionsSrc }: VideoPlay
   }
 
   return (
-    <div className="vds-wrap relative overflow-hidden md:rounded-lg shadow-[0_10px_40px_rgba(0,0,0,0.25)] md:border md:border-[var(--card-border)]">
+    <div className="vds-wrap relative md:overflow-hidden md:rounded-lg shadow-[0_10px_40px_rgba(0,0,0,0.25)] md:border md:border-[var(--card-border)]">
       <MediaPlayer
         ref={playerRef}
         title={title}
@@ -170,9 +170,19 @@ export function VideoPlayer({ src, slug, title, poster, captionsSrc }: VideoPlay
       >
         <MediaProvider>
           {poster && <Poster className="vds-poster" src={poster} alt={title} />}
-          {captionsSrc && (
-            <Track kind="subtitles" src={captionsSrc} label="Transcript" language="en" default />
-          )}
+          {/*
+            Always render the Track so the captions button is always present
+            in the controls layout — otherwise vidstack hides it and the rest
+            of the controls collapse to the left when there is no transcript yet.
+            The captions.vtt route returns a valid empty VTT when no segments exist.
+          */}
+          <Track
+            kind="subtitles"
+            src={captionsSrc ?? `/v/${slug}/captions.vtt`}
+            label="Transcript"
+            language="en"
+            default
+          />
         </MediaProvider>
         <DefaultVideoLayout
           icons={defaultLayoutIcons}
