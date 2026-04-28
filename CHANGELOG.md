@@ -1,5 +1,35 @@
 # Changelog
 
+## [3.6.5] - 2026-04-28
+### Fixed
+- **Non-English recordings getting English names despite foreign-language narration**: When narrating in Russian or Ukrainian over English code/UI screenshots, the AI-generated filename was defaulting to English instead of matching the spoken language. The combined-call prompt now explicitly states that narrated language ALWAYS determines the output language, and screenshots showing code or English interfaces are ignored for language detection. Added worked examples showing Russian narration with English code → Russian filename (not English).
+
+## [3.6.4] - 2026-04-28
+### Fixed
+- **Cyrillic transcripts collapsed into one paragraph**: Gemini in JSON-mode sometimes returns SRT with single-newline separators between entries instead of the standard blank line, especially for Cyrillic content. Standard SRT parsers then treat the whole transcript as one block — the timestamps and entry numbers leak into the paragraph text on the video page. Both the macOS post-processor and the server-side `parseSrt` now normalize single `\n` before "`<number>\n<timestamp> -->`" sequences into the proper blank-line separator before parsing, so transcripts split into segments correctly regardless of whether Gemini included the blank line.
+
+## [3.6.3] - 2026-04-28
+### Fixed
+- **Description silently missing when transcript contains rough language**: Gemini's default safety filters block summarization of transcripts that contain mat or other strong language, returning an empty response. The catch-block on the server then logged a vague "empty response" error and the description quietly stayed null. Both the macOS Gemini proxy client and the server-side `generateText` now pass `safetySettings` with `BLOCK_NONE` for all categories — we're summarizing the user's own recording, not generating new content, so safety filters are inappropriate. Server now also logs `finishReason` and `blockReason` from the Gemini response so future blocks are diagnosable.
+- **Awkward filenames in non-English recordings**: Names like "RimWorld игра караван приближается к дому и требуется ремонт кондиционеры" (full sentence, grammar error in the last word). The combined-call prompt previously asked for "title case" (an English-only concept) and gave only English/translated examples, which led Gemini to generate a literal sentence in any language with English-style capitalization. Rewritten to demand a short noun-phrase topic header (4-8 words), explicit "sentence case for Slavic languages, title case only for English", and worked examples of both good output and the kind of broken output to avoid.
+
+## [3.6.2] - 2026-04-28
+### Added
+- **Title and description match the recording's spoken language**: When you narrate a recording in Ukrainian, Russian, Spanish, or any other language, the AI-generated filename and the description on the video page are now produced in that same language. Silent recordings continue to use English. Implemented by adding explicit language-mirroring instructions to both the macOS combined-call prompt and the server-side description prompt.
+### Changed
+- **Voice processing status is now visible in the log**: Each capture session now writes a clear status line (`🎤 Audio: Voice processing → enabled=true, AGC=true, bypassed=false`) so you can confirm Apple's Voice Isolation + AGC + Echo Cancellation engaged for the session. AGC and bypass are also explicitly set (rather than relying on defaults) for resilience against future macOS changes.
+
+## [3.6.1] - 2026-04-27
+### Fixed
+- **Transcript shown as one solid block + missing description**: In JSON-mode, Gemini occasionally collapses the entire transcript into a single SRT entry spanning the whole recording. The web's SRT parser then sees one segment, which displays as an unbroken paragraph and bypasses automatic description generation. The macOS app now (a) instructs Gemini explicitly to produce 1-2 sentence entries with blank-line separators and shows a worked example, (b) always re-parses and re-formats the SRT before uploading (no more identity passthrough), (c) auto-splits any entry that's > 15 s and > 80 chars into sentence-sized chunks with proportionally distributed timestamps, and (d) falls back to a regex-based recovery when the response has no real newlines. Result: the transcript panel shows proper paragraphs again and descriptions are generated automatically.
+
+## [3.6.0] - 2026-04-27
+### Changed
+- **AI cost optimization (~36% per recording)**: The transcription + naming pipeline now runs as a single Gemini call instead of two sequential ones, screenshots are sent at 1024×1024 (was 1568×1568) which still keeps code and UI legible, and silences in the audio are trimmed locally before sending — only the speech segments go to Gemini. The original MP4 in Dropbox is unchanged; SRT timestamps are mapped back onto the original timeline so subtitles sync with the unmodified video.
+### Added
+- **Skip transcription on silent recordings**: When the captured audio is essentially mute (e.g. UI demo with no narration), transcription is skipped entirely. The recording still gets an AI-generated name from screenshots alone.
+- **Speed-up audio for transcription (Phase B, opt-in)**: Optional 1.25× time-stretch (preserves voice pitch) before sending to Gemini. Disabled by default until validated on Ukrainian/Russian recordings; flip `enableSpeedUp` in `AINamingService` to enable.
+
 ## [3.5.14] - 2026-04-27
 ### Fixed
 - **Long videos getting no transcript or description**: The audio export step previously used `AVAssetExportPresetAppleM4A` (~256 kbps), which pushed 10+ minute recordings over Gemini's 20 MB inline-data limit and silently aborted transcription. The MP4 in Dropbox stays untouched, but for transcription we now re-encode the audio to 32 kbps mono 16 kHz (the standard input format for speech-to-text models) via AVAssetReader/Writer. A 10-minute clip is now ~2.4 MB; even a 60-minute clip fits comfortably under the limit.
