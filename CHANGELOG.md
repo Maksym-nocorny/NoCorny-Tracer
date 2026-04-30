@@ -1,5 +1,45 @@
 # Changelog
 
+## [3.9.16] - 2026-05-01
+### Changed
+- **Camera circle is now hard-clamped to screen bounds during drag instead of snapping back**: Seven attempts at a snap-back-on-release implementation (event-driven, polling-driven, GCD-driven, custom drag handlers) all hit AppKit edge cases that made the snap unreliable for trackpad drag-release in particular. Replaced with the simpler approach: override `constrainFrameRect`, `setFrameOrigin`, and both `setFrame(_:display:)` variants on the panel to clamp every position update to the visible frame of the current screen. The user can drag freely within bounds but the circle physically cannot leave the screen — no animation needed. `windowDidMove` delegate kept as a safety net in case AppKit moves the window via a path that bypasses the overrides.
+
+## [3.9.15] - 2026-04-30
+### Fixed
+- **Camera circle couldn't be dragged at all in 3.9.14, and snap-back never worked**: The dragOverlay subview approach failed because `NSHostingView` (the AppKit wrapper around SwiftUI content) blocks subview event delivery — `mouseDown` never reached our overlay, so drag broke entirely. Reverted to AppKit's built-in `isMovableByWindowBackground = true` (rock-solid drag for both mouse and trackpad), and replaced all event-driven snap detection with a **GCD-based background polling timer** (`DispatchSource.makeTimerSource(queue: .global)`). The timer ticks every 100 ms on its own queue, completely independent of the main run loop and any AppKit modes — no more `Timer`-vs-`.eventTracking` issues, no more dependence on event delivery quirks for non-activating panels. Each tick checks `CGEventSource.buttonState`; when the left button is up, dispatches a snap-check to main thread and the panel animates back if it's off-screen.
+
+## [3.9.14] - 2026-04-30
+### Fixed
+- **Camera circle snap-back failed on trackpad drag-release**: 3.9.13 used a manual `nextEvent(matching:inMode: .eventTracking)` modal loop, which works for mouse but misses trackpad mouseUp — trackpad-synthesized events (three-finger drag, tap-to-drag with drag lock, etc.) often arrive in `.default` mode rather than `.eventTracking`, so `nextEvent` filtered them out. Switched to standard AppKit `mouseDown`/`mouseDragged`/`mouseUp` handlers so the responder chain delivers events regardless of run-loop mode. Added a 50 ms `CGEventSourceButtonState` polling fallback as belt-and-suspenders — if `mouseUp` somehow doesn't fire (drag lock, gesture hand-off), the poller catches the released hardware state and ends the drag itself. Also overrode `constrainFrameRect` to no-op so AppKit doesn't quietly clamp the panel back during a drag.
+
+## [3.9.13] - 2026-04-30
+### Fixed
+- **Camera circle snap-back finally reliable on every drag-release**: Five attempts (Timer-debounced `windowDidMove`, DispatchQueue-debounced `windowDidMove`, NSEvent local+global mouseUp monitors, position polling on `.common` runloop modes, and active polling) all hit the same wall: every one of them *observes* the system and gambles on some notification, monitor, or run-loop tick firing reliably. None do, for non-activating panels with `isMovableByWindowBackground` — `windowDidMove` gets coalesced for fast drags, NSEvent monitors don't see events outside the active app's queue without Input Monitoring permission, and NSTimer-on-`.common` is suppressed inside AppKit's drag tracking modal loop. Replaced with **manual drag handling**: the panel now hosts a transparent `NSView` overlay that captures `mouseDown`, runs its own `nextEvent(matching:)` modal loop tracking `.leftMouseDragged` / `.leftMouseUp`, moves the window directly, and triggers the snap on `mouseUp`. We *know* when the drag ends because we receive the mouseUp event ourselves — no race, no permission, no notification dependency.
+
+## [3.9.12] - 2026-04-30
+### Fixed
+- **Camera circle snap-back still missed on quick drag-release**: The `windowDidMove` + `DispatchQueue` approach (3.9.11) was also unreliable — for very fast drags, the system can coalesce position updates and the final move may not generate a separate `windowDidMove` callback at all, so the debounced snap had nothing to fire from. Replaced with direct polling: `windowDidMove` arms a `Timer` registered in `RunLoop.common` modes (so it fires during `.eventTracking` mouse-drag loops too), which observes `window.frame.origin` and `NSEvent.pressedMouseButtons` every 40 ms. When the mouse button is released and the position has been stable for 50 ms, the panel snaps back. Doesn't depend on any one notification firing reliably, so quick drag-release now always snaps.
+
+## [3.9.11] - 2026-04-30
+### Fixed
+- **Camera circle snap-back still missed events on quick drag-release**: 3.9.10 tried to fix this by listening to `leftMouseUp` via global + local `NSEvent` monitors. Both turned out unreliable here: the local monitor doesn't fire because non-activating panels deliver events outside our app's queue, and the global monitor needs Input Monitoring/Accessibility permission to receive mouse events reliably (which isn't granted). Replaced with the original `windowDidMove` approach, but using `DispatchQueue.main.asyncAfter` for the debounce instead of `Timer.scheduledTimer` — `DispatchQueue` runs in `.common` runloop modes and fires regardless of whether the run loop is currently in `.eventTracking` or `.default`, which is what was tripping up the previous timer-based debounce.
+
+## [3.9.10] - 2026-04-30
+### Fixed
+- **Camera circle snap-back missed when dragged off-screen quickly**: The previous implementation debounced `windowDidMove` with a 80 ms `Timer`, which schedules in `.default` runloop mode while window drags run in `.eventTracking`. A fast drag-then-release could finish before the timer got a chance to fire, leaving the circle stranded off-screen. The overlay now listens for `leftMouseUp` directly (via global + local `NSEvent` monitors) and triggers the snap immediately on release — independent of run-loop timing.
+
+## [3.9.9] - 2026-04-30
+### Fixed
+- **Camera circle could be dragged off-screen**: If the user accidentally moved the circle past a screen edge it would disappear and be unrecoverable without restarting. The overlay now snaps back with a smooth ease-out animation (~80 ms after the drag settles) so it always stays fully visible on-screen. Works correctly on multi-monitor setups — snaps to the edges of whichever screen the circle is mostly on.
+
+## [3.9.8] - 2026-04-30
+### Fixed
+- **Clicking or dragging the camera circle pulled the app to the foreground**: The overlay was a regular `NSWindow`, and any mouse-down on it caused AppKit to activate the owning app — disruptive when repositioning the circle mid-recording while another app is in front. The overlay is now an `NSPanel` with the `.nonactivatingPanel` style mask, so clicks and drags no longer steal focus from whatever the user is doing.
+
+## [3.9.7] - 2026-04-30
+### Fixed
+- **Main window wouldn't appear when clicking the menu bar / Dock icon while the camera circle was on**: The face-cam overlay was created as a regular `NSWindow` and `makeKeyAndOrderFront` made it the app's key window, so AppKit brought *it* forward on activation instead of the main window. The overlay is now a non-activating `NSWindow` subclass (`canBecomeKey`/`canBecomeMain` return `false`) ordered front via `orderFrontRegardless`, so it floats without intercepting focus. `showMainWindow()` now also deminiaturizes the main window if it was collapsed to the Dock, and a new `applicationShouldHandleReopen` routes Dock-icon clicks through the same path so the camera overlay no longer counts as a "visible window" that suppresses the default reopen.
+
 ## [3.9.6] - 2026-04-30
 ### Fixed
 - **Dropbox account email was brighter than Tracer account email in Settings**: The Tracer section applied `.foregroundStyle(.secondary)` to the email label but the Dropbox section did not, causing the two emails to render at different opacities. Both now use `.secondary`.

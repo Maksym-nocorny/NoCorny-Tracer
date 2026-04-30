@@ -51,15 +51,19 @@ struct NoCornyTracerApp: App {
                                 await appState.reloadRecordingsFromTracer()
                             }
                         }
-                    } else {
-                        appState.dropboxAuthManager.handleCallback(url)
                     }
+                    // Dropbox is now managed entirely on the web — the app no longer
+                    // listens for db-<key>:// callbacks.
                 }
                 .onChange(of: appState.isCameraEnabled) { _, newValue in
                     cameraWindowManager.updateVisibility(isEnabled: newValue, appState: appState)
                 }
         }
-        .windowResizability(.contentSize)
+        // .contentMinSize: window won't auto-resize when content changes (e.g. switching
+        // tabs no longer collapses the window). The window's minimum is the content's
+        // minimum (380×480), and the user can resize larger if they want.
+        .defaultSize(width: 380, height: 560)
+        .windowResizability(.contentMinSize)
 
         // Permissions Window
         Window("Permissions", id: "permissions") {
@@ -122,7 +126,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var recordingDarkImage: NSImage?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // URL handler for Dropbox OAuth
+        // URL handler for Tracer browser sign-in (nocornytracer://...).
         NSAppleEventManager.shared().setEventHandler(
             self,
             andSelector: #selector(handleProcessURLEvent(_:withReplyEvent:)),
@@ -318,14 +322,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func showMainWindow() {
         NSApp.activate(ignoringOtherApps: true)
 
-        // If a main window already exists, just focus it.
-        for window in NSApp.windows where window.title == "NoCorny Tracer" {
+        // If a main window already exists, focus it. Deminiaturize first if it
+        // was collapsed to the Dock — makeKeyAndOrderFront alone won't expand.
+        if let window = NSApp.windows.first(where: { $0.title == "NoCorny Tracer" }) {
+            if window.isMiniaturized {
+                window.deminiaturize(nil)
+            }
             window.makeKeyAndOrderFront(nil)
             return
         }
 
         // Otherwise ask SwiftUI to reopen the Scene via its environment handle.
         reopenMainWindow?()
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        // The floating camera overlay counts as a "visible window" to AppKit, which
+        // breaks the default dock-click reopen. Handle it ourselves.
+        showMainWindow()
+        return false
     }
 
     @objc private func toggleRecording() {
