@@ -97,9 +97,20 @@ final class AppState {
     private static let hasLaunchedBeforeKey = "hasLaunchedBefore"
     private static let dropboxUsedSpaceKey = "dropboxUsedSpace"
     private static let dropboxAllocatedSpaceKey = "dropboxAllocatedSpace"
+    private static let lastTracerSyncAtKey = "lastTracerSyncAt"
 
     /// Set to true on first launch to show a dialog asking about launch at login
     var showLaunchAtLoginPrompt = false
+
+    /// Polls Tracer for the current Dropbox connection state. Lets the macOS app
+    /// notice within ~60s when the user disconnects (or switches accounts) on the
+    /// web — without needing a recording / upload to trigger a token refresh.
+    private var dropboxStatusTimer: Timer?
+    /// True once the first `syncDropboxFromTracer` of this session has finished.
+    /// Until then, any sync (launch Task, didBecomeActive, heartbeat — they can
+    /// race) is treated as a launch restore and must NOT trigger the
+    /// "Dropbox Connected" success sheet.
+    private var hasCompletedInitialDropboxSync = false
 
     init() {
         if let themeRaw = UserDefaults.standard.string(forKey: "appTheme"),
@@ -166,16 +177,47 @@ final class AppState {
         }
 
         // If the user is already signed in to Tracer at launch, try to pick up
-        // their Dropbox connection from the server immediately.
+        // their Dropbox connection from the server immediately. Run these
+        // sequentially so the Dropbox-status check has a chance to wipe the
+        // local library cache (in case the user disconnected on the web while
+        // the app was closed) BEFORE reloadRecordingsFromTracer would otherwise
+        // run an incremental `?since=` sync that wouldn't notice the deletions.
         if tracerAPIClient.isSignedIn {
-            Task { await self.syncDropboxFromTracer() }
-            Task { await self.reloadRecordingsFromTracer() }
+            Task {
+                await self.syncDropboxFromTracer()
+                await self.reloadRecordingsFromTracer()
+            }
         }
 
         // Apply theme appearance after app finishes launching (NSApp is nil during init)
         DispatchQueue.main.async { [weak self] in
             self?.updateAppAppearance()
         }
+
+        // Start polling Dropbox connection state, and refresh on app activation
+        // so a Disconnect on the web reflects in the macOS app within ~60s
+        // (or instantly when the window is brought to the front).
+        startDropboxStatusPolling()
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self, self.tracerAPIClient.isSignedIn else { return }
+            Task { await self.syncDropboxFromTracer() }
+        }
+    }
+
+    private func startDropboxStatusPolling() {
+        dropboxStatusTimer?.invalidate()
+        let timer = Timer(timeInterval: 60.0, repeats: true) { [weak self] _ in
+            guard let self = self, self.tracerAPIClient.isSignedIn else { return }
+            Task { await self.syncDropboxFromTracer() }
+        }
+        // Tolerance lets the OS coalesce the wake — fine for a 60s heartbeat.
+        timer.tolerance = 10.0
+        RunLoop.main.add(timer, forMode: .common)
+        dropboxStatusTimer = timer
     }
 
     // MARK: - Theme Appearance
@@ -380,40 +422,73 @@ final class AppState {
             }
         }
 
-        // Step 2: Generate subtitles (used for AI naming, not uploaded)
-        // Outer retry: if the inner 3-attempt retry inside generateSubtitles still returns nil,
-        // wait 10s and try the whole pipeline once more (re-extracts audio, re-calls Gemini).
-        // This catches lingering transient failures (proxy hiccup, brief network drop) that
-        // would otherwise leave the recording without a transcript.
-        LogManager.shared.log("🤖 Starting subtitle generation...")
+        // Step 2+3: Combined Gemini call — generates SRT subtitles AND AI filename in one request.
+        // Audio is locally trimmed of silence before sending (Phase A); SRT timestamps are
+        // mapped back onto the original timeline so they sync with the unmodified video.
+        // Outer retry: if the combined call returns both nil, wait 10s and retry once.
+        LogManager.shared.log("🤖 Starting combined subtitle + naming generation...")
         var generatedSubtitles: String? = nil
-
-        if let subtitles = await aiNamingService.generateSubtitles(for: fileURL) {
-            generatedSubtitles = subtitles
-            LogManager.shared.log("🤖 Subtitles: ✅ Generated content length: \(subtitles.count)")
-        } else {
-            LogManager.shared.log("🤖 Subtitles: ⚠️ First pass returned nil — waiting 10s before second pass...", type: .error)
-            try? await Task.sleep(nanoseconds: 10_000_000_000)
-            if let subtitles = await aiNamingService.generateSubtitles(for: fileURL) {
-                generatedSubtitles = subtitles
-                LogManager.shared.log("🤖 Subtitles: ✅ Second pass succeeded, length: \(subtitles.count)")
-            } else {
-                LogManager.shared.log("🤖 Subtitles: ❌ Both passes failed — proceeding without transcript (no subtitles, no description)", type: .error)
-            }
-        }
-
-        // Step 3: AI Naming (using frames + subtitles)
-        LogManager.shared.log("🤖 Starting AI naming...")
         var aiName: String? = nil
         var thumbnailShareURL: String? = nil
 
-        if let aiNameBase = await aiNamingService.generateName(for: fileURL, subtitles: generatedSubtitles) {
-            aiName = aiNameBase
+        var aiUsage = GeminiUsage.zero
+        var aiTotalLatencyMs = 0
+        var aiTotalAttempts = 0
+        var aiModel = "gemini-2.5-flash-lite"
+        var aiLastError: String? = nil
+        var aiSucceeded = false
 
-            updateRecording(id: id) {
-                $0.aiGeneratedName = aiName
+        let firstPass = await aiNamingService.generateSubtitlesAndName(for: fileURL)
+        generatedSubtitles = firstPass.srt
+        aiName = firstPass.name
+        aiUsage.add(firstPass.usage)
+        aiTotalLatencyMs += firstPass.latencyMs
+        aiTotalAttempts += firstPass.attempts
+        aiModel = firstPass.model
+        aiLastError = firstPass.errorCode
+        aiSucceeded = firstPass.success
+
+        if generatedSubtitles == nil && aiName == nil {
+            LogManager.shared.log("🤖 Combined: ⚠️ First pass returned nothing — waiting 10s before second pass...", type: .error)
+            try? await Task.sleep(nanoseconds: 10_000_000_000)
+            let secondPass = await aiNamingService.generateSubtitlesAndName(for: fileURL)
+            generatedSubtitles = secondPass.srt
+            aiName = secondPass.name
+            aiUsage.add(secondPass.usage)
+            aiTotalLatencyMs += secondPass.latencyMs
+            aiTotalAttempts += secondPass.attempts
+            aiModel = secondPass.model
+            aiLastError = secondPass.errorCode ?? aiLastError
+            aiSucceeded = aiSucceeded || secondPass.success
+            if generatedSubtitles == nil && aiName == nil {
+                LogManager.shared.log("🤖 Combined: ❌ Both passes failed — proceeding with placeholder name and no transcript", type: .error)
+            } else {
+                LogManager.shared.log("🤖 Combined: ✅ Second pass succeeded — name=\"\(aiName ?? "nil")\", srtLen=\(generatedSubtitles?.count ?? 0)")
             }
-            LogManager.shared.log("🤖 AI Naming: ✅ Named: \"\(aiName ?? "")\"")
+        } else {
+            LogManager.shared.log("🤖 Combined: ✅ First pass — name=\"\(aiName ?? "nil")\", srtLen=\(generatedSubtitles?.count ?? 0)")
+        }
+
+        let aiUsagePayload = TracerAPIClient.AIUsagePayload(
+            kind: "naming",
+            model: aiModel,
+            promptTokens: aiUsage.promptTokens,
+            outputTokens: aiUsage.outputTokens,
+            totalTokens: aiUsage.totalTokens,
+            modalityBreakdown: aiUsage.modalityBreakdown.map { ($0.modality, $0.tokenCount) },
+            latencyMs: aiTotalLatencyMs,
+            attempts: aiTotalAttempts,
+            success: aiSucceeded,
+            errorCode: aiLastError
+        )
+        LogManager.shared.log("🤖 AI usage total: prompt=\(aiUsage.promptTokens), out=\(aiUsage.outputTokens), attempts=\(aiTotalAttempts), success=\(aiSucceeded)")
+
+        // Step 4: rename on Dropbox + thumbnail upload (only when we got a name).
+        if let aiNameBase = aiName {
+            updateRecording(id: id) {
+                $0.aiGeneratedName = aiNameBase
+            }
+            LogManager.shared.log("🤖 AI Naming: ✅ Named: \"\(aiNameBase)\"")
 
             // Step 4: Rename on Dropbox if uploaded
             if let currentPath = dropboxPath, !token.isEmpty, let name = aiName {
@@ -461,7 +536,8 @@ final class AppState {
                 title: finalTitle,
                 dropboxPath: finalPath,
                 transcriptSrt: generatedSubtitles,
-                thumbnailURL: thumbnailShareURL.map(Self.toRawDropboxURL)
+                thumbnailURL: thumbnailShareURL.map(Self.toRawDropboxURL),
+                aiUsage: aiUsagePayload
             )
             LogManager.shared.log("🌐 Tracer: Phase 2 complete — title: \"\(finalTitle)\"")
         } else if tracerAPIClient.isSignedIn,
@@ -477,7 +553,8 @@ final class AppState {
                 fileSize: current.fileSize,
                 recordedAt: current.createdAt,
                 thumbnailURL: thumbnailShareURL.map(Self.toRawDropboxURL),
-                subtitlesSrt: generatedSubtitles
+                subtitlesSrt: generatedSubtitles,
+                aiUsage: aiUsagePayload
             )
             if let registered = registered {
                 updateRecording(id: id) {
@@ -495,8 +572,8 @@ final class AppState {
             try? FileManager.default.removeItem(at: fileURL)
             LogManager.shared.log("🗑️ Local file deleted: \(fileURL.lastPathComponent)")
 
-            // Step 6: Sync Dropbox state to update UI
-            await syncDropboxState()
+            // Step 6: Refresh library from our DB so the new row appears
+            await reloadRecordingsFromTracer()
         }
     }
 
@@ -544,92 +621,16 @@ final class AppState {
         return components.string ?? sharedURL
     }
 
-    // MARK: - Dropbox Sync
+    // MARK: - Library refresh entry point
+    //
+    // The library is now sourced entirely from our DB (`tracer.nocorny.com`).
+    // This used to call Dropbox listFolder/sharedLinks/getFileDuration on every
+    // refresh — now it's a single incremental call to /api/videos?since=…
+    // backed by the videos.updated_at cursor.
 
     @MainActor
     func syncDropboxState() async {
-        guard dropboxAuthManager.isSignedIn else { return }
-        isSyncingDropbox = true
-        defer { isSyncingDropbox = false }
-        
-        guard let token = await dropboxAuthManager.refreshTokenIfNeeded() ?? dropboxAuthManager.accessToken else { return }
-        
-        do {
-            // 1. Storage
-            let space = try await dropboxUploadManager.getSpaceUsage(accessToken: token)
-            self.dropboxUsedSpace = space.used
-            self.dropboxAllocatedSpace = space.allocated
-            UserDefaults.standard.set(Double(space.used), forKey: Self.dropboxUsedSpaceKey)
-            UserDefaults.standard.set(Double(space.allocated), forKey: Self.dropboxAllocatedSpaceKey)
-            
-            // 2. Fetch list & links
-            async let filesTask = dropboxUploadManager.listFolder(path: "", accessToken: token)
-            async let linksTask = dropboxUploadManager.listAllSharedLinks(accessToken: token)
-            
-            let files = try await filesTask
-            let links = try await linksTask
-            
-            // 3. Process into Recordings
-            var syncedRecordings: [Recording] = []
-            let df = ISO8601DateFormatter()
-            
-            for file in files {
-                let lowerPath = file.pathDisplay.lowercased()
-                let sharedUrl = links[lowerPath]
-                let date = df.date(from: file.clientModified) ?? Date()
-                
-                var existingID = UUID()
-                var existingDuration: TimeInterval? = nil
-                var existingTracerSlug: String? = nil
-                var existingTracerURL: String? = nil
-                var existingThumbnailURL: String? = nil
-                if let matched = self.recordings.first(where: { $0.dropboxPath?.lowercased() == lowerPath }) {
-                    existingID = matched.id
-                    existingDuration = matched.duration
-                    existingTracerSlug = matched.tracerSlug
-                    existingTracerURL = matched.tracerURL
-                    existingThumbnailURL = matched.thumbnailURL
-                }
-
-                let fakeURL = URL(fileURLWithPath: "/tmp/\(file.name)")
-                let finalDuration = file.duration ?? existingDuration ?? 0
-                var rec = Recording(id: existingID, fileURL: fakeURL, createdAt: date, duration: finalDuration, uploadStatus: .uploaded)
-                rec.dropboxPath = file.pathDisplay
-                rec.dropboxSharedURL = sharedUrl
-                rec.fileSize = file.size
-                rec.tracerSlug = existingTracerSlug
-                rec.tracerURL = existingTracerURL
-                rec.thumbnailURL = existingThumbnailURL
-                
-                let baseName = (file.name as NSString).deletingPathExtension
-                if !baseName.starts(with: "Recording_") {
-                    rec.aiGeneratedName = baseName
-                }
-                
-                syncedRecordings.append(rec)
-            }
-            
-            // Fetch duration for files where Dropbox didn't return media_info
-            for i in syncedRecordings.indices where syncedRecordings[i].duration == 0 {
-                if let path = syncedRecordings[i].dropboxPath,
-                   let dur = await dropboxUploadManager.getFileDuration(path: path, accessToken: token),
-                   dur > 0 {
-                    syncedRecordings[i].duration = dur
-                }
-            }
-
-            // Sort synced by date descending
-            syncedRecordings.sort { $0.createdAt > $1.createdAt }
-            
-            // 4. Merge with local active ones (e.g. uploading/failed)
-            let activeLocal = self.recordings.filter { $0.uploadStatus != .uploaded && $0.uploadStatus != .notUploaded }
-            self.recordings = activeLocal + syncedRecordings
-            
-            saveRecordings()
-            
-        } catch {
-            print("❌ Dropbox Sync Failed: \(error)")
-        }
+        await reloadRecordingsFromTracer()
     }
 
     // MARK: - Persistence
@@ -654,30 +655,28 @@ final class AppState {
     }
 
     func deleteRecording(_ recording: Recording) async {
-        // 1. Delete from remote if uploaded
-        if let path = recording.dropboxPath, dropboxAuthManager.isSignedIn {
-            do {
-                let token = await dropboxAuthManager.refreshTokenIfNeeded() ?? dropboxAuthManager.accessToken ?? ""
-                try await dropboxUploadManager.deleteFile(path: path, accessToken: token)
-                print("🗑️ Remote: Deleted \(path)")
-            } catch {
-                print("❌ Remote Delete Failed: \(error)")
-            }
+        // 1. Server is the source of truth: ask our backend to soft-delete the
+        //    DB row and remove the Dropbox file. The app never talks to Dropbox
+        //    directly for deletion anymore.
+        if let slug = recording.tracerSlug, tracerAPIClient.isSignedIn {
+            let ok = await tracerAPIClient.deleteVideo(slug: slug)
+            LogManager.shared.log(ok ? "🗑️ Tracer: deleted \(slug)" : "❌ Tracer: delete \(slug) failed",
+                                  type: ok ? .info : .error)
         }
-        
-        // 2. Delete local if exists
+
+        // 2. Delete local file if it still exists (in-flight upload, etc.)
         if FileManager.default.fileExists(atPath: recording.fileURL.path) {
             try? FileManager.default.removeItem(at: recording.fileURL)
         }
-        
-        // 3. Remove from state
+
+        // 3. Drop from local state immediately so UI updates without a re-sync
         DispatchQueue.main.async {
             self.recordings.removeAll { $0.id == recording.id }
             self.saveRecordings()
         }
-        
-        // 4. Sync storage info
-        await syncDropboxState()
+
+        // 4. Refresh usage counters from our DB (cheap — same call as a list refresh)
+        await reloadRecordingsFromTracer()
     }
 
     // MARK: - Retry Upload
@@ -724,51 +723,137 @@ final class AppState {
     // MARK: - Tracer → Dropbox sync
 
     /// Fetches the Dropbox access token that Tracer issues for the signed-in user,
-    /// and activates proxied mode in the DropboxAuthManager. Called after Tracer sign-in.
+    /// and activates proxied mode in the DropboxAuthManager. Called on launch,
+    /// on app activation, and from a 60s heartbeat — so Disconnect/Connect on
+    /// the web propagates to the macOS app without restarting it.
     @MainActor
     func syncDropboxFromTracer() async {
         guard tracerAPIClient.isSignedIn else { return }
+        let wasSignedIn = dropboxAuthManager.isSignedIn
+        let isInitialSync = !hasCompletedInitialDropboxSync
+
         guard let result = await tracerAPIClient.fetchDropboxAccessToken(),
               result.connected, let token = result.accessToken else {
             dropboxAuthManager.clearProxiedState()
+            // Server says Dropbox is gone. The web hard-deletes video rows on
+            // disconnect, so the incremental `?since=` sync would never notice
+            // them disappear — we have to wipe the local cache ourselves.
+            // Includes the launch-after-disconnect case: in-memory `isSignedIn`
+            // is false fresh out of init(), but `recordings`/quota/cursor were
+            // restored from disk and need cleaning.
+            if hasLocalDropboxLibraryState() {
+                resetTracerLibraryState()
+            }
+            hasCompletedInitialDropboxSync = true
             return
         }
         let expiresAt = result.expiresAt.flatMap { ISO8601DateFormatter().date(from: $0) }
         await dropboxAuthManager.applyProxiedToken(accessToken: token, expiresAt: expiresAt)
+        hasCompletedInitialDropboxSync = true
+
+        // Fresh connection (or account switch) detected mid-session — pull the
+        // new account's library so the Recordings tab populates immediately,
+        // and surface the success sheet. Suppress on the initial launch sync,
+        // where wasSignedIn is always false simply because DropboxAuthManager
+        // doesn't persist isSignedIn across launches. We gate by a session
+        // flag (not a parameter) because launch fires concurrent syncs from
+        // both the init Task and didBecomeActive — either can win the race.
+        if !wasSignedIn && !isInitialSync {
+            dropboxAuthManager.showConnectionConfirmation = true
+            await reloadRecordingsFromTracer()
+        }
     }
 
-    /// Pulls the user's registered videos from Tracer and replaces the local list.
-    /// Called after Tracer sign-in so the Recordings tab reflects server state
-    /// instead of stale Dropbox-scanned results.
+    private func hasLocalDropboxLibraryState() -> Bool {
+        if !recordings.isEmpty { return true }
+        if dropboxAllocatedSpace > 0 || dropboxUsedSpace > 0 { return true }
+        if UserDefaults.standard.object(forKey: Self.lastTracerSyncAtKey) != nil {
+            return true
+        }
+        return false
+    }
+
+    /// Incremental sync from our DB. The server uses `videos.updated_at` as the
+    /// cursor; we persist the last server time we saw so subsequent calls only
+    /// fetch what changed (typically zero rows). Storage usage comes back in
+    /// the same envelope so we never have to call Dropbox for quota at runtime.
     @MainActor
     func reloadRecordingsFromTracer() async {
         guard tracerAPIClient.isSignedIn else { return }
-        let serverVideos = await tracerAPIClient.listVideos()
-        guard !serverVideos.isEmpty else { return }
 
-        let mapped: [Recording] = serverVideos.map { v in
-            let id = UUID()
-            let fakeURL = URL(fileURLWithPath: "/tmp/\(v.slug).mp4")
-            let created = v.recordedAt ?? v.createdAt ?? Date()
-            var rec = Recording(
-                id: id,
-                fileURL: fakeURL,
-                createdAt: created,
-                duration: v.duration ?? 0,
-                aiGeneratedName: v.title,
-                uploadStatus: .uploaded
-            )
-            rec.dropboxPath = v.dropboxPath
-            rec.dropboxSharedURL = v.dropboxSharedUrl
-            rec.tracerSlug = v.slug
-            rec.tracerURL = "https://tracer.nocorny.com/v/\(v.slug)"
-            rec.fileSize = v.fileSize.map { UInt64($0) }
-            return rec
+        isSyncingDropbox = true
+        defer { isSyncingDropbox = false }
+
+        let lastSync = UserDefaults.standard.object(forKey: Self.lastTracerSyncAtKey) as? Date
+        guard let envelope = await tracerAPIClient.listVideos(since: lastSync) else { return }
+
+        var working = recordings
+
+        for v in envelope.videos {
+            if let idx = working.firstIndex(where: { $0.tracerSlug == v.slug }) {
+                if v.isDeleted == true {
+                    working.remove(at: idx)
+                    continue
+                }
+                // Preserve fields the server doesn't know about (in-flight status,
+                // local fileURL, the local UUID).
+                working[idx].dropboxPath = v.dropboxPath
+                working[idx].dropboxSharedURL = v.dropboxSharedUrl
+                working[idx].duration = v.duration ?? working[idx].duration
+                working[idx].fileSize = v.fileSize.map { UInt64($0) } ?? working[idx].fileSize
+                working[idx].thumbnailURL = v.thumbnailUrl ?? working[idx].thumbnailURL
+                working[idx].aiGeneratedName = v.title
+                working[idx].tracerURL = "https://tracer.nocorny.com/v/\(v.slug)"
+            } else if v.isDeleted != true {
+                let created = v.recordedAt ?? v.createdAt ?? Date()
+                let fakeURL = URL(fileURLWithPath: "/tmp/\(v.slug).mp4")
+                var rec = Recording(
+                    id: UUID(),
+                    fileURL: fakeURL,
+                    createdAt: created,
+                    duration: v.duration ?? 0,
+                    aiGeneratedName: v.title,
+                    uploadStatus: .uploaded
+                )
+                rec.dropboxPath = v.dropboxPath
+                rec.dropboxSharedURL = v.dropboxSharedUrl
+                rec.tracerSlug = v.slug
+                rec.tracerURL = "https://tracer.nocorny.com/v/\(v.slug)"
+                rec.thumbnailURL = v.thumbnailUrl
+                rec.fileSize = v.fileSize.map { UInt64($0) }
+                working.append(rec)
+            }
         }
 
-        let activeLocal = recordings.filter { $0.uploadStatus != .uploaded && $0.uploadStatus != .notUploaded }
-        recordings = activeLocal + mapped.sorted { $0.createdAt > $1.createdAt }
+        working.sort { $0.createdAt > $1.createdAt }
+        recordings = working
         saveRecordings()
+
+        if let used = envelope.usage?.usedBytes, used >= 0 {
+            dropboxUsedSpace = UInt64(used)
+            UserDefaults.standard.set(Double(used), forKey: Self.dropboxUsedSpaceKey)
+        }
+        if let allocated = envelope.usage?.allocatedBytes, allocated > 0 {
+            dropboxAllocatedSpace = UInt64(allocated)
+            UserDefaults.standard.set(Double(allocated), forKey: Self.dropboxAllocatedSpaceKey)
+        }
+
+        if let serverTime = envelope.serverTime {
+            UserDefaults.standard.set(serverTime, forKey: Self.lastTracerSyncAtKey)
+        }
+    }
+
+    /// Clears local library state. Call from sign-out so the next account that
+    /// signs in does a fresh full sync instead of inheriting another user's rows.
+    @MainActor
+    func resetTracerLibraryState() {
+        recordings.removeAll()
+        saveRecordings()
+        dropboxUsedSpace = 0
+        dropboxAllocatedSpace = 0
+        UserDefaults.standard.removeObject(forKey: Self.dropboxUsedSpaceKey)
+        UserDefaults.standard.removeObject(forKey: Self.dropboxAllocatedSpaceKey)
+        UserDefaults.standard.removeObject(forKey: Self.lastTracerSyncAtKey)
     }
 
     // MARK: - Open Recordings Folder

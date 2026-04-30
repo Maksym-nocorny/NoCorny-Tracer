@@ -1,5 +1,56 @@
 # Changelog
 
+## [3.9.3] - 2026-04-30
+### Fixed
+- **"Dropbox Connected" sheet appeared on every app launch**: After 3.8.0 moved Dropbox connection management to the web, the macOS app discovered an existing connection by fetching a proxied token from Tracer at launch. `DropboxAuthManager` doesn't persist `isSignedIn` across launches, so the in-memory state was always `false` when `applyProxiedToken` ran — and the "new connection?" check (`!self.isSignedIn`) was therefore always true, firing the success sheet every time. The sheet trigger now lives in `AppState.syncDropboxFromTracer`, gated by a session flag that flips after the *first* sync completes — so launch-time syncs (which can fire concurrently from both the init Task and `didBecomeActive` and race each other) never surface the modal, while later heartbeat/foreground syncs still trigger it the moment the user connects Dropbox on the web mid-session.
+
+## [3.9.2] - 2026-04-29
+### Fixed
+- **Subtitles sometimes contained only one short segment for a multi-minute recording**: Gemini occasionally returns one tiny SRT entry (e.g. "Я сейчас делаю сайт..." at 0:01) for a 2-minute video that has speech throughout — the model is non-deterministic and sometimes truncates despite the prompt's "8-15 entries" instruction. The combined naming pass now compares the SRT's last timestamp against the VAD-detected speech duration; if it covers <30% (or ends before 5s) and there were ≥10s of detected speech, the call is retried up to 3× before accepting the partial result. Genuinely silent recordings (NO_SPEECH) bypass the check so they don't loop.
+- **Description generation surrendered on the first 503 from Gemini**: When `gemini-2.5-flash-lite` returned "model is currently experiencing high demand" (a routine transient condition), `generateDescriptionForVideo` failed permanently and the video stayed without a description until the user happened to trigger a PATCH that retried it. Web-side description generation now retries up to 4 times with exponential backoff (2s/4s/8s) on 429/5xx/UNAVAILABLE/RESOURCE_EXHAUSTED responses. The recorded `ai_events` row carries the actual attempt count so the admin dashboard reflects retry pressure.
+
+## [3.9.1] - 2026-04-29
+### Fixed
+- **Recording duration and file size were missing for re-imported videos**: When the macOS app reconnected to Dropbox, the rebuild walked the app folder but didn't request `include_media_info`, so newly imported rows had `null` for both `duration` and `fileSize` — making the Recordings list show `00:00` and breaking the Total Recording Time tile in the admin dashboard. The folder walk and `dropboxGetMetadata` now request media info, and `importMissingFiles` writes the duration extracted by Dropbox into the row. The 40 affected rows in the production DB were backfilled directly from `media_info`.
+- **Fresh recordings on macOS were missing `fileSize`**: `RecordingManager.stopRecording()` created the `Recording` struct without populating `fileSize`, so the first registration call sent `null` and only the eventual Dropbox metadata sync filled it in. Now we read the on-disk file size immediately after `finishWriting` finishes and attach it to the recording before processing starts.
+
+## [3.9.0] - 2026-04-29
+### Added
+- **AI cost analytics on tracer.nocorny.com**: Every Gemini call now reports its token usage and latency back to the backend, where a new `ai_events` table stores per-event prompt tokens, output tokens, modality breakdown, and computed USD cost. The naming/transcription run on macOS aggregates usage across all retry attempts before sending it with the video update so retries are billed too.
+- **Internal admin dashboard at `/admin`**: Email-whitelisted overview of total videos, total recording time, total storage, AI spend, cost-per-video, cost-per-minute, success rate, top users by AI cost, recent uploads, recent AI errors, and Dropbox quota utilization. Drill-down at `/admin/users/[id]` shows per-user video list and full AI-event history. Whitelist is configured via the `ADMIN_EMAILS` env on Vercel.
+### Changed
+- `GeminiProxyClient` now returns a `GeminiProxyResult` (text + usage + model + latency) instead of a raw string. `AINamingService.generateSubtitlesAndName` returns a `NamingResult` struct that includes accumulated usage across retries.
+
+## [3.8.2] - 2026-04-28
+### Fixed
+- **Recordings cache survived an app restart after disconnecting Dropbox**: 3.8.1 cleaned the cache when the disconnect happened mid-session, but if you disconnected Dropbox on the web and then quit & relaunched the macOS app, the Recordings tab still showed the old library. Two fixes: (a) on launch the Dropbox-status check now runs sequentially before the library reload (was parallel), so a stale cache is wiped before the incremental `?since=` sync would otherwise paper over the missing rows; (b) the disconnect-detected cleanup now triggers whenever a local library cache exists (any persisted recordings, storage quota, or sync cursor), not only when the in-memory connection flag flips — that flag is always false at the moment of launch.
+
+## [3.8.1] - 2026-04-28
+### Fixed
+- **Recordings list lingered after disconnecting Dropbox on the web**: When you disconnected Dropbox on `tracer.nocorny.com`, the macOS app correctly switched the footer to "Connect Dropbox on Web" but the Recordings tab kept showing the old library. The cache wasn't cleared because the app uses an incremental `?since=updated_at` sync — and the web disconnect hard-deletes those rows from the DB, so they never come back as `isDeleted: true` markers. The Dropbox-status sync now wipes the local library state (recordings, storage usage, sync cursor) the moment it observes a disconnect transition, and does a fresh full reload when a new Dropbox account is connected mid-session.
+
+## [3.8.0] - 2026-04-28
+### Changed
+- **Dropbox is now managed entirely on tracer.nocorny.com**: The macOS app no longer runs its own OAuth flow or stores Dropbox tokens. "Connect Dropbox" opens the web settings, and the app obtains short-lived access tokens from the Tracer backend. Disconnecting on the web propagates to the app within ~60 seconds (or instantly when you bring the app to the front), so a single click in your browser fully revokes the macOS app's access — no more out-of-sync state between web and Mac.
+- **Switching Dropbox accounts now actually switches**: The OAuth flow now passes `force_reapprove=true`, so clicking "Connect" always shows Dropbox's approval screen and lets you pick a different account. Previously an active dropbox.com session silently re-approved the same account, making it impossible to swap accounts without signing out of Dropbox in the browser first.
+### Added
+- **Library rebuilds when you switch Dropbox accounts**: When the OAuth callback detects a different `account_id`, the previous account's video records are wiped from the database, the sync cursor is reset, and any video files in the new account's `/Apps/NoCorny Tracer/` folder are imported as fresh entries. The Library on the website always reflects the currently connected Dropbox.
+- **Metadata backup in your own Dropbox**: AI titles, descriptions, transcripts, and view counts are written to `/.tracer-metadata.json` inside your Dropbox app folder — debounced after every change and finalized on disconnect. If you reconnect the same account later, the rebuild reads the backup and restores all metadata for files that still exist. Backups carry the user ID and Dropbox account ID, so we never restore from another user's snapshot.
+### Important
+- The `db-<APP_KEY>://` URL scheme has been removed from `Info.plist` — the app no longer needs to receive Dropbox OAuth callbacks.
+
+## [3.7.1] - 2026-04-28
+### Added
+- **Library auto-refreshes when you open Recordings or focus the app**: Previously you had to click the refresh button to see metadata changes (e.g. a title you renamed on `tracer.nocorny.com`). The Recordings tab now silently re-syncs with our DB whenever you switch to that tab AND whenever the app window gets focus — so jumping back from your browser after a rename on the website immediately reflects locally. The sync is incremental (only fetches rows whose `updated_at` changed since the last sync), so in steady state it's a single zero-row HTTP request.
+
+## [3.7.0] - 2026-04-28
+### Changed
+- **Library now syncs from our own database, not Dropbox**: The Recordings tab used to rebuild itself on every refresh by walking the Dropbox API (list folder + list shared links + per-file metadata fallback) — three or more round-trips, slow and rate-limited. It now reads from `tracer.nocorny.com`, which is the same database that powers the website, so the app and the site can never disagree. Refresh is incremental: the server uses each video's `updated_at` as a cursor and the client only fetches rows that changed since the last sync, so a typical refresh returns zero rows and is effectively instant.
+- **Storage usage reads from the database too**: "X GB used" is now `SUM(file_size)` across the user's videos in our DB (always exact, always live); the Dropbox plan size ("Y GB allocated") is fetched once when Dropbox is connected and cached in our DB. The app no longer calls Dropbox for quota at runtime.
+- **Deleting a recording is now atomic across app, site, and Dropbox**: Deleting in the app (or on the site) calls a single backend endpoint that soft-deletes the row in our DB and removes the file from Dropbox in one step. Previously the app deleted only from Dropbox; the DB record was never removed, so the site kept showing the video until the Dropbox webhook fired. The deletion now propagates instantly everywhere.
+### Important
+- The Dropbox webhook is now a safety net only: it soft-deletes DB rows for files that disappeared from the Dropbox folder via the Dropbox web/desktop UI. It no longer creates new DB rows from arbitrary Dropbox files — every legitimate upload goes through the app, with proper transcript and AI-generated metadata.
+
 ## [3.6.5] - 2026-04-28
 ### Fixed
 - **Non-English recordings getting English names despite foreign-language narration**: When narrating in Russian or Ukrainian over English code/UI screenshots, the AI-generated filename was defaulting to English instead of matching the spoken language. The combined-call prompt now explicitly states that narrated language ALWAYS determines the output language, and screenshots showing code or English interfaces are ignored for language detection. Added worked examples showing Russian narration with English code → Russian filename (not English).
