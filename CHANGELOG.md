@@ -1,5 +1,9 @@
 # Changelog
 
+## [3.9.5] - 2026-04-30
+### Fixed
+- **Window collapsed vertically on the Recordings tab when there were no videos**: With `.windowResizability(.contentMinSize)`, the window's minimum tracks the content's intrinsic size — and the empty-state card on Recordings was much shorter than the Recorder/Settings tabs, so the window snapped to a tiny height when you switched in. The Recordings tab now claims all available vertical space so its intrinsic height matches the other tabs whether or not the list has content.
+
 ## [3.9.4] - 2026-04-30
 ### Fixed
 - **Connecting Dropbox on the web could take up to 60s to reflect in the app**: The macOS app only synced Dropbox state from the backend on `didBecomeActive` (app-level focus change) and via a 60s heartbeat. If the user clicked back into the app's window from a browser tab without switching apps, no sync fired and they'd wait for the next heartbeat. Added a `windowDidBecomeKey` observer with a 3s debounce so any click into the window triggers an immediate sync — connecting/disconnecting on the web now reflects within a second of returning to the app, with no extra polling cost.

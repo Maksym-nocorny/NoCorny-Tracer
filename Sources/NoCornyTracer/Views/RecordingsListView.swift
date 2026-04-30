@@ -67,7 +67,7 @@ struct RecordingsListView: View {
                         Text("No recordings yet")
                             .font(Theme.Typography.body(12, weight: .light))
                     }
-                    .frame(maxWidth: .infinity)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .padding(.vertical, Theme.Spacing.xxxl)
                 } else {
                     ZStack(alignment: .bottom) {

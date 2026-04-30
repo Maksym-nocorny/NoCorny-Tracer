@@ -64,6 +64,7 @@ struct MainView: View {
             footerView
         }
         .frame(width: 380)
+        .frame(minHeight: 540)
         .background(Theme.Colors.backgroundPrimary)
         .onAppear {
             appState.cameraManager.refreshDevices()
@@ -79,6 +80,18 @@ struct MainView: View {
             if newValue == .settings && appState.tracerAPIClient.isSignedIn {
                 Task { await appState.tracerAPIClient.refreshProfile() }
                 Task { await appState.syncDropboxFromTracer() }
+            }
+            // Pull fresh metadata from our DB when the user opens Recordings.
+            // Incremental — typically returns zero rows (cheap).
+            if newValue == .recordings && appState.tracerAPIClient.isSignedIn {
+                Task { await appState.reloadRecordingsFromTracer() }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            // Refresh when the user switches back to the app (e.g. after
+            // renaming a video on tracer.nocorny.com in their browser).
+            if appState.tracerAPIClient.isSignedIn && appState.selectedTab == .recordings {
+                Task { await appState.reloadRecordingsFromTracer() }
             }
         }
         .alert("Start at Login?", isPresented: $appState.showLaunchAtLoginPrompt) {
@@ -176,6 +189,9 @@ struct MainView: View {
         RecordingsListView(appState: appState)
             .padding(.horizontal, Theme.Spacing.xl)
             .padding(.vertical, Theme.Spacing.lg)
+            // Claim all available vertical space so the tab doesn't collapse
+            // the window when the list is empty (no Dropbox / no videos).
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
     // MARK: - Keyboard Shortcuts
@@ -226,14 +242,14 @@ struct MainView: View {
                     Text("Dropbox connected")
                         .font(Theme.Typography.body(11, weight: .light))
                 }
-            } else if appState.dropboxAuthManager.isConfigured {
+            } else {
                 Button {
                     appState.dropboxAuthManager.signIn()
                 } label: {
                     HStack(spacing: Theme.Spacing.xs) {
                         Image(systemName: "cloud.slash")
                             .font(.system(size: 11))
-                        Text("Connect Dropbox")
+                        Text("Connect Dropbox on Web")
                             .font(Theme.Typography.body(11))
                     }
                     .foregroundStyle(Theme.Colors.brandPurple)
@@ -241,13 +257,6 @@ struct MainView: View {
                 .buttonStyle(.plain)
                 .onHover { inside in
                     if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
-                }
-            } else {
-                HStack(spacing: Theme.Spacing.xs) {
-                    Image(systemName: "exclamationmark.triangle")
-                        .font(.system(size: 11))
-                    Text("Dropbox not configured")
-                        .font(Theme.Typography.body(11, weight: .light))
                 }
             }
 
