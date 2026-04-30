@@ -195,17 +195,46 @@ final class AppState {
         }
 
         // Start polling Dropbox connection state, and refresh on app activation
-        // so a Disconnect on the web reflects in the macOS app within ~60s
-        // (or instantly when the window is brought to the front).
+        // so a Disconnect/Connect on the web reflects in the macOS app within
+        // ~60s (or instantly when the window is brought to the front).
         startDropboxStatusPolling()
         NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            guard let self = self, self.tracerAPIClient.isSignedIn else { return }
-            Task { await self.syncDropboxFromTracer() }
+            self?.requestDropboxSyncFromUserActivity()
         }
+        // didBecomeActive only fires on app-level focus change (e.g. Cmd+Tab).
+        // didBecomeKey fires when any of our windows becomes the key window —
+        // catching the case where the user clicks back into the app's window
+        // from a browser tab without an app switch (the most common path
+        // after connecting Dropbox on the web).
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.requestDropboxSyncFromUserActivity()
+        }
+    }
+
+    /// Debounced entry point for event-driven Dropbox syncs (window focus,
+    /// app activation). The 60s heartbeat bypasses this — it has its own
+    /// cadence. Debouncing avoids back-to-back requests when several focus
+    /// events fire in quick succession (e.g. didBecomeActive + didBecomeKey
+    /// arriving together when the user Cmd+Tabs back).
+    private static let dropboxSyncDebounceInterval: TimeInterval = 3.0
+    private var lastDropboxSyncRequestAt: Date?
+
+    private func requestDropboxSyncFromUserActivity() {
+        guard tracerAPIClient.isSignedIn else { return }
+        if let last = lastDropboxSyncRequestAt,
+           Date().timeIntervalSince(last) < Self.dropboxSyncDebounceInterval {
+            return
+        }
+        lastDropboxSyncRequestAt = Date()
+        Task { await self.syncDropboxFromTracer() }
     }
 
     private func startDropboxStatusPolling() {

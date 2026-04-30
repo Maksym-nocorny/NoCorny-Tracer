@@ -1,5 +1,9 @@
 # Changelog
 
+## [3.9.4] - 2026-04-30
+### Fixed
+- **Connecting Dropbox on the web could take up to 60s to reflect in the app**: The macOS app only synced Dropbox state from the backend on `didBecomeActive` (app-level focus change) and via a 60s heartbeat. If the user clicked back into the app's window from a browser tab without switching apps, no sync fired and they'd wait for the next heartbeat. Added a `windowDidBecomeKey` observer with a 3s debounce so any click into the window triggers an immediate sync — connecting/disconnecting on the web now reflects within a second of returning to the app, with no extra polling cost.
+
 ## [3.9.3] - 2026-04-30
 ### Fixed
 - **"Dropbox Connected" sheet appeared on every app launch**: After 3.8.0 moved Dropbox connection management to the web, the macOS app discovered an existing connection by fetching a proxied token from Tracer at launch. `DropboxAuthManager` doesn't persist `isSignedIn` across launches, so the in-memory state was always `false` when `applyProxiedToken` ran — and the "new connection?" check (`!self.isSignedIn`) was therefore always true, firing the success sheet every time. The sheet trigger now lives in `AppState.syncDropboxFromTracer`, gated by a session flag that flips after the *first* sync completes — so launch-time syncs (which can fire concurrently from both the init Task and `didBecomeActive` and race each other) never surface the modal, while later heartbeat/foreground syncs still trigger it the moment the user connects Dropbox on the web mid-session.
