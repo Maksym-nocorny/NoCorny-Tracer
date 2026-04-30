@@ -1,5 +1,9 @@
 # Changelog
 
+## [3.9.6] - 2026-04-30
+### Fixed
+- **Dropbox account email was brighter than Tracer account email in Settings**: The Tracer section applied `.foregroundStyle(.secondary)` to the email label but the Dropbox section did not, causing the two emails to render at different opacities. Both now use `.secondary`.
+
 ## [3.9.5] - 2026-04-30
 ### Fixed
 - **Window collapsed vertically on the Recordings tab when there were no videos**: With `.windowResizability(.contentMinSize)`, the window's minimum tracks the content's intrinsic size — and the empty-state card on Recordings was much shorter than the Recorder/Settings tabs, so the window snapped to a tiny height when you switched in. The Recordings tab now claims all available vertical space so its intrinsic height matches the other tabs whether or not the list has content.

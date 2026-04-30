@@ -102,6 +102,7 @@ struct SettingsView: View {
                                 await appState.tracerAPIClient.signOut()
                                 await MainActor.run {
                                     appState.dropboxAuthManager.clearProxiedState()
+                                    appState.resetTracerLibraryState()
                                 }
                             }
                         }
@@ -229,6 +230,7 @@ struct SettingsView: View {
                                 .font(Theme.Typography.body(13, weight: .medium))
                             Text(appState.dropboxAuthManager.userEmail ?? "")
                                 .font(Theme.Typography.body(11, weight: .light))
+                                .foregroundStyle(.secondary)
                         }
 
                         Spacer()
@@ -241,38 +243,31 @@ struct SettingsView: View {
                             if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
                         }
                     }
-                } else if !appState.dropboxAuthManager.isConfigured {
-                    VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-                        HStack(spacing: Theme.Spacing.sm) {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .foregroundStyle(Theme.Colors.yellow)
-                                .font(.system(size: 12))
-                            Text("Dropbox not configured")
-                                .font(Theme.Typography.body(12, weight: .medium))
-                        }
-
-                        Text("To enable Dropbox upload, set your App Key in Secrets.swift")
-                            .font(Theme.Typography.body(11, weight: .light))
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
                 } else {
-                    Button {
-                        appState.openTracerSettings()
-                    } label: {
-                        HStack(spacing: Theme.Spacing.md) {
-                            Image(systemName: "arrow.down.doc")
-                            Text("Connect Dropbox")
+                    VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+                        Text("Dropbox is managed in your Tracer account on the web.")
+                            .font(Theme.Typography.body(11, weight: .light))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        Button {
+                            appState.openTracerSettings()
+                        } label: {
+                            HStack(spacing: Theme.Spacing.md) {
+                                Image(systemName: "arrow.up.forward.app")
+                                Text("Connect Dropbox on Web")
+                            }
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 36)
+                            .background(Theme.Colors.primaryGradient)
+                            .foregroundStyle(.white)
+                            .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.md))
+                            .font(Theme.Typography.body(13, weight: .medium))
                         }
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 36)
-                        .background(Theme.Colors.primaryGradient)
-                        .foregroundStyle(.white)
-                        .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.md))
-                        .font(Theme.Typography.body(13, weight: .medium))
-                    }
-                    .buttonStyle(.plain)
-                    .onHover { inside in
-                        if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+                        .buttonStyle(.plain)
+                        .onHover { inside in
+                            if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+                        }
                     }
                 }
             }
