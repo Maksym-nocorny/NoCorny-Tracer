@@ -2,6 +2,10 @@
 
 You are working on **NoCorny Tracer**, a macOS menu bar app for screen + face-cam recording with Dropbox sync and AI-powered file naming.
 
+> **Web platform lives in a separate private repo.**
+> The companion site `tracer.nocorny.com` (Next.js) was split out on 2026-05-01 and is now at `Maksym-nocorny/nocorny-tracer-web` (private). Locally: `~/antigravity/nocorny-tracer-web/`. Deploy via `npx vercel --prod` from that directory — no Git integration in Vercel, deploys are manual via CLI.
+> This repo is for the **macOS Swift app only**. Do not re-introduce a `web/` directory here.
+
 ---
 
 ## BEFORE doing any work
