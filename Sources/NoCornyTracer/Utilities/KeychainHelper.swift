@@ -1,88 +1,129 @@
 import Foundation
+import Security
 
-/// Local token storage in `Application Support/NoCornyTracer/secrets.bin`.
-/// Values are XOR-obfuscated with a per-install key to avoid trivial plain-text
-/// disclosure. This is NOT real cryptography — the threat model is "don't put
-/// cleartext tokens in a file that backup tools might index." For real security,
-/// the app would need a Developer ID and proper Keychain ACLs, which ad-hoc signing
-/// cannot support without forcing the user to approve each keychain item.
+/// Real macOS Keychain backed token storage.
+///
+/// Items are stored as `kSecClassGenericPassword` under service
+/// `com.nocorny.tracer`, accessible after first user unlock. Each token is
+/// keyed by an arbitrary `account` name (e.g. `TracerAPIToken`).
+///
+/// Auto-migrates any legacy XOR-obfuscated file store from earlier builds:
+/// the first `load(key:)` after upgrade copies all surviving values into the
+/// real Keychain and deletes `~/Library/Application Support/NoCornyTracer/{secrets,key}.bin`.
+/// Idempotent — second call after migration is a no-op.
 enum KeychainHelper {
 
+    private static let service = "com.nocorny.tracer"
+
     enum KeychainError: Error {
-        case invalidData
+        case unhandledStatus(OSStatus)
+        case dataConversionFailed
     }
-
-    private static let fileURL: URL = {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("NoCornyTracer", isDirectory: true)
-        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
-        return base.appendingPathComponent("secrets.bin")
-    }()
-
-    private static let keyURL: URL = {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("NoCornyTracer", isDirectory: true)
-            .appendingPathComponent("key.bin")
-    }()
-
-    private static let lock = NSLock()
 
     // MARK: - Public API
 
     static func save(key: String, value: String) throws {
-        lock.lock(); defer { lock.unlock() }
-        var store = loadStore()
-        store[key] = value
-        try writeStore(store)
+        guard let data = value.data(using: .utf8) else {
+            throw KeychainError.dataConversionFailed
+        }
+
+        // SecItemAdd would fail with errSecDuplicateItem if the entry already
+        // exists; delete-then-add is simpler than branching on update vs add.
+        let deleteQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: key,
+        ]
+        SecItemDelete(deleteQuery as CFDictionary)
+
+        let attributes: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: key,
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
+        ]
+        let status = SecItemAdd(attributes as CFDictionary, nil)
+        guard status == errSecSuccess else {
+            let message = SecCopyErrorMessageString(status, nil) as String? ?? "n/a"
+            LogManager.shared.log("🔐 Keychain save(\(key)): FAILED status=\(status) — \(message)")
+            throw KeychainError.unhandledStatus(status)
+        }
     }
 
     static func load(key: String) -> String? {
-        lock.lock(); defer { lock.unlock() }
-        return loadStore()[key]
+        // Lazy one-shot migration from the previous file-based store.
+        migrateLegacyFileStoreIfNeeded()
+
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: key,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        // errSecItemNotFound is the normal "no value yet" case — don't log it.
+        // Anything else (auth failed, interaction required, etc.) is worth surfacing.
+        if status != errSecSuccess && status != errSecItemNotFound {
+            let message = SecCopyErrorMessageString(status, nil) as String? ?? "n/a"
+            LogManager.shared.log("🔐 Keychain load(\(key)): status=\(status) — \(message)")
+        }
+        guard status == errSecSuccess,
+              let data = item as? Data,
+              let value = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        return value
     }
 
     static func delete(key: String) {
-        lock.lock(); defer { lock.unlock() }
-        var store = loadStore()
-        store.removeValue(forKey: key)
-        try? writeStore(store)
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: key,
+        ]
+        SecItemDelete(query as CFDictionary)
     }
 
-    // MARK: - Internals
+    // MARK: - Migration
 
-    private static func loadStore() -> [String: String] {
-        guard let data = try? Data(contentsOf: fileURL) else { return [:] }
-        let key = obfuscationKey()
-        let decoded = xor(data: data, key: key)
-        guard let dict = try? JSONDecoder().decode([String: String].self, from: decoded) else { return [:] }
-        return dict
-    }
+    private static var migrationDone = false
+    private static let migrationLock = NSLock()
 
-    private static func writeStore(_ store: [String: String]) throws {
-        let data = try JSONEncoder().encode(store)
-        let key = obfuscationKey()
-        let obfuscated = xor(data: data, key: key)
-        try obfuscated.write(to: fileURL, options: [.atomic])
-    }
+    /// Read tokens left over in `~/Library/Application Support/NoCornyTracer/secrets.bin`
+    /// (XOR'd with `key.bin`), copy each value into the real Keychain, then delete
+    /// both files. Runs at most once per process.
+    private static func migrateLegacyFileStoreIfNeeded() {
+        migrationLock.lock(); defer { migrationLock.unlock() }
+        guard !migrationDone else { return }
+        migrationDone = true
 
-    /// A 32-byte random key generated once per install and stored next to the secrets file.
-    /// Same filesystem permissions protect both — this adds obfuscation, not real crypto.
-    private static func obfuscationKey() -> Data {
-        if let existing = try? Data(contentsOf: keyURL), existing.count == 32 {
-            return existing
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("NoCornyTracer", isDirectory: true)
+        let secretsFile = base.appendingPathComponent("secrets.bin")
+        let keyFile = base.appendingPathComponent("key.bin")
+
+        guard let secretsData = try? Data(contentsOf: secretsFile),
+              let keyData = try? Data(contentsOf: keyFile),
+              keyData.count == 32, !secretsData.isEmpty else {
+            return
         }
-        var bytes = [UInt8](repeating: 0, count: 32)
-        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
-        let key = Data(bytes)
-        try? key.write(to: keyURL, options: [.atomic])
-        return key
-    }
 
-    private static func xor(data: Data, key: Data) -> Data {
-        var out = Data(count: data.count)
-        for i in 0..<data.count {
-            out[i] = data[i] ^ key[i % key.count]
+        var decoded = Data(count: secretsData.count)
+        for i in 0..<secretsData.count {
+            decoded[i] = secretsData[i] ^ keyData[i % keyData.count]
         }
-        return out
+        guard let dict = try? JSONDecoder().decode([String: String].self, from: decoded) else {
+            return
+        }
+
+        for (k, v) in dict {
+            try? save(key: k, value: v)
+        }
+
+        try? FileManager.default.removeItem(at: secretsFile)
+        try? FileManager.default.removeItem(at: keyFile)
     }
 }

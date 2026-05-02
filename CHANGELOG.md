@@ -1,5 +1,9 @@
 # Changelog
 
+## [3.12.0] - 2026-05-02
+### Changed
+- **Tracer API token now lives in the real macOS Keychain instead of an XOR-obfuscated file in Application Support.** Each Keychain item is created with a fresh ACL, so any external process that tries to read the token (malware, scripts, other apps) triggers a system "wants to use your confidential information" prompt — the user explicitly grants or denies. Existing installs auto-migrate on first launch: the file-based store is read once, values are copied into the Keychain, and `secrets.bin` + `key.bin` are deleted. No re-sign-in required.
+
 ## [3.11.0] - 2026-05-02
 ### Changed
 - **AI naming now authenticates with your personal Tracer account, not a shared key.** Previously the app called Gemini through a Cloudflare Worker that accepted a single `APP_SECRET` extractable from any released DMG — meaning a leaked binary could burn through the project's Gemini billing. Calls now go through `https://tracer.nocorny.com/api/gemini/proxy` with a per-user bearer token issued at tracer.nocorny.com (revocable per user, traceable per user via `ai_events`). If you're not signed in to Tracer, AI naming is skipped gracefully and the recording falls back to a timestamp filename — sign in via Settings → Tracer Account to re-enable AI features.
