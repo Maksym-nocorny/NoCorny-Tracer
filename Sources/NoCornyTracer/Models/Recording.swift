@@ -9,7 +9,8 @@ struct Recording: Identifiable, Codable {
     var aiGeneratedName: String?
     var uploadStatus: UploadStatus
     var driveFileID: String?       // Legacy: old Google Drive file ID (kept for backward compat)
-    var dropboxPath: String?       // Dropbox file path (e.g. "/Recording_2026-03-28.mp4")
+    var dropboxPath: String?       // Dropbox file path (e.g. "/videos/xFel134/video.mp4")
+    var dropboxFolder: String?     // Slug-keyed folder, e.g. "/videos/xFel134" — cached so retry across launches uploads to the same place.
     var dropboxSharedURL: String?  // Dropbox shared link URL
     var tracerSlug: String?        // Short slug on tracer.nocorny.com (e.g. "xFel134")
     var tracerURL: String?         // Full public URL on tracer.nocorny.com

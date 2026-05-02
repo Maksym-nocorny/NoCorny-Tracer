@@ -340,8 +340,9 @@ final class AppState {
         Task { await self.processRecording(id: recordingID) }
     }
 
-    /// Background processing: upload → shared link → subtitles → AI name → rename → cleanup
-    /// Background processing: upload → shared link → subtitles → AI name → rename → cleanup
+    /// Background processing: init → open browser → parallel video+thumb upload →
+    /// PATCH (uploaded) → AI → upload SRT → final PATCH (ready) → cleanup.
+    /// Title is now pure DB metadata — the slug-keyed Dropbox folder never gets renamed.
     private func processRecording(id: UUID) async {
         LogManager.shared.log("🎬 Starting background processing for recording \(id)")
 
@@ -361,7 +362,7 @@ final class AppState {
         }
         let fileURL = recording.fileURL
 
-        // Placeholder title used for Phase 1 registration and as fallback if AI naming fails
+        // Placeholder title used as fallback if AI naming fails
         let creationDate = recording.createdAt
         let placeholderTitle: String = {
             let fmt = DateFormatter()
@@ -370,95 +371,174 @@ final class AppState {
             return "Recording · \(fmt.string(from: creationDate))"
         }()
 
-        // Step 1: Upload to Dropbox immediately with default timestamp name
-        var dropboxPath: String?
+        // Slug + folder + token captured up front; the AI step at the end
+        // PATCHes the same slug.
+        var slug: String?
+        var uploadFolder: String?
+        var videoFilename = "video.mp4"
+        var transcriptFilename = "transcript.srt"
+        var thumbnailFilename = "thumbnail.jpg"
         var token = ""
-        // Tracks the Phase 1 registration result so Phase 2 can PATCH it later
-        var phase1Result: TracerAPIClient.RegisteredVideo?
+        var didUploadVideo = false
+        var thumbnailShareURL: String? = nil
 
+        // Step 0: Reserve a slug + Dropbox folder *before* uploading so we know
+        // where to put bytes. Skipped on retry if a prior init already succeeded.
         if autoUploadEnabled && dropboxAuthManager.isSignedIn && tracerAPIClient.isSignedIn {
             updateRecording(id: id) {
                 $0.uploadStatus = .uploading
                 $0.uploadError = nil
             }
 
-            do {
-                token = await dropboxAuthManager.refreshTokenIfNeeded() ?? dropboxAuthManager.accessToken ?? ""
-
-                if token.isEmpty {
-                    throw DropboxUploadManager.DropboxError.invalidToken
+            token = await dropboxAuthManager.refreshTokenIfNeeded() ?? dropboxAuthManager.accessToken ?? ""
+            if token.isEmpty {
+                LogManager.shared.log("📤 Upload: ❌ No Dropbox token", type: .error)
+                updateRecording(id: id) {
+                    $0.uploadStatus = .failed
+                    $0.uploadError = "No Dropbox token"
                 }
+                return
+            }
 
-                let currentName = recording.displayName
-                LogManager.shared.log("📤 Upload: Starting upload for \"\(currentName)\"")
+            // Reuse a prior reservation on retry; otherwise call init.
+            if let existingSlug = recording.tracerSlug, let existingFolder = recording.dropboxFolder {
+                slug = existingSlug
+                uploadFolder = existingFolder
+                LogManager.shared.log("📤 Upload: Resuming previous reservation slug=\(existingSlug)")
+            } else if let init_ = await tracerAPIClient.initVideo(recordedAt: recording.createdAt, durationEstimate: recording.duration) {
+                slug = init_.slug
+                uploadFolder = init_.uploadFolder
+                videoFilename = init_.videoFilename
+                transcriptFilename = init_.transcriptFilename
+                thumbnailFilename = init_.thumbnailFilename
+                let folder = init_.uploadFolder
+                let videoPath = "\(folder)/\(init_.videoFilename)"
+                updateRecording(id: id) {
+                    $0.tracerSlug = init_.slug
+                    $0.tracerURL = init_.url
+                    $0.dropboxFolder = folder
+                    $0.dropboxPath = videoPath
+                }
+                if let url = URL(string: init_.url) {
+                    // Open the page right now — server already created the row in
+                    // status "uploading", so the watcher polls until "ready".
+                    DispatchQueue.main.async { NSWorkspace.shared.open(url) }
+                }
+                LogManager.shared.log("🌐 Tracer: ✅ Reserved slug=\(init_.slug), browser opened → \(init_.url)")
+            } else {
+                LogManager.shared.log("🌐 Tracer: ❌ initVideo failed — aborting upload", type: .error)
+                updateRecording(id: id) {
+                    $0.uploadStatus = .failed
+                    $0.uploadError = "Failed to reserve slug"
+                }
+                return
+            }
 
+            guard let resolvedFolder = uploadFolder, let resolvedSlug = slug else {
+                updateRecording(id: id) {
+                    $0.uploadStatus = .failed
+                    $0.uploadError = "Missing slug after init"
+                }
+                return
+            }
+
+            // Step 1: Pre-AI thumbnail. Detached so it runs concurrently with
+            // the video upload — for big videos this is the difference between
+            // a blank /v/{slug} page and one with a real preview.
+            let thumbTask: Task<String?, Never> = Task.detached { [self] in
+                guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
+                do {
+                    let jpgURL = try await ThumbnailGenerator.generateJPG(from: fileURL)
+                    defer { try? FileManager.default.removeItem(at: jpgURL) }
+                    let jpgData = try Data(contentsOf: jpgURL)
+                    let thumbPath = "\(resolvedFolder)/\(thumbnailFilename)"
+                    _ = try await self.dropboxUploadManager.uploadData(
+                        jpgData,
+                        dropboxPath: thumbPath,
+                        mode: .overwrite,
+                        accessToken: token
+                    )
+                    let shared = try await self.dropboxUploadManager.createSharedLink(
+                        path: thumbPath,
+                        accessToken: token
+                    )
+                    let raw = Self.toRawDropboxURL(shared)
+                    await self.tracerAPIClient.updateVideo(slug: resolvedSlug, thumbnailURL: raw)
+                    LogManager.shared.log("🖼️ Thumbnail: ✅ uploaded \(thumbPath)")
+                    return raw
+                } catch {
+                    LogManager.shared.log(error: error, message: "🖼️ Thumbnail: upload failed")
+                    return nil
+                }
+            }
+
+            // Step 2: Upload the video to its slug-keyed canonical path.
+            do {
+                let videoPath = "\(resolvedFolder)/\(videoFilename)"
+                LogManager.shared.log("📤 Upload: Starting video upload → \(videoPath)")
                 let uploadedPath = try await dropboxUploadManager.upload(
                     fileURL: fileURL,
-                    fileName: currentName + ".mp4",
+                    dropboxPath: videoPath,
+                    mode: .overwrite,
                     accessToken: token
                 )
+                LogManager.shared.log("📤 Upload: ✅ Uploaded → \(uploadedPath)")
 
-                dropboxPath = uploadedPath
-                updateRecording(id: id) {
-                    $0.dropboxPath = uploadedPath
-                    $0.uploadStatus = .uploaded
-                    $0.uploadCompletedAt = Date()
-                }
-                LogManager.shared.log("📤 Upload: ✅ Uploaded to Dropbox: \(uploadedPath)")
-
-                // Create shared link immediately after upload
                 let sharedURL = try await dropboxUploadManager.createSharedLink(
                     path: uploadedPath,
                     accessToken: token
                 )
-                updateRecording(id: id) {
-                    $0.dropboxSharedURL = sharedURL
-                }
                 LogManager.shared.log("🔗 Shared link: ✅ \(sharedURL)")
 
-                // Phase 1: register immediately with a placeholder title so the browser
-                // can open right now — 3-6 minutes before Gemini finishes.
-                if let current = recordings.first(where: { $0.id == id }) {
-                    phase1Result = await tracerAPIClient.registerVideo(
-                        title: placeholderTitle,
-                        dropboxPath: uploadedPath,
-                        dropboxSharedURL: sharedURL,
-                        duration: current.duration,
-                        fileSize: current.fileSize,
-                        recordedAt: current.createdAt,
-                        processingStatus: "processing"
-                    )
-                    if let phase1 = phase1Result {
-                        updateRecording(id: id) {
-                            $0.tracerSlug = phase1.slug
-                            $0.tracerURL = phase1.url
-                        }
-                        if let url = URL(string: phase1.url) {
-                            DispatchQueue.main.async { NSWorkspace.shared.open(url) }
-                        }
-                        LogManager.shared.log("🌐 Tracer: Phase 1 registered, browser opened → \(phase1.url)")
-                    }
-                }
+                let currentSize = recordings.first(where: { $0.id == id })?.fileSize
+                let currentDuration = recordings.first(where: { $0.id == id })?.duration ?? recording.duration
 
+                updateRecording(id: id) {
+                    $0.dropboxPath = uploadedPath
+                    $0.dropboxSharedURL = sharedURL
+                    $0.uploadStatus = .uploaded
+                    $0.uploadCompletedAt = Date()
+                }
+                didUploadVideo = true
+
+                // Step 2.5: Tell the server the bytes have landed. AI is still
+                // running so processingStatus stays "processing" until step 5.
+                await tracerAPIClient.updateVideo(
+                    slug: resolvedSlug,
+                    dropboxPath: uploadedPath,
+                    dropboxSharedURL: sharedURL,
+                    fileSize: currentSize,
+                    duration: currentDuration,
+                    processingStatus: "processing"
+                )
             } catch {
                 LogManager.shared.log(error: error, message: "📤 Upload: ❌ Failed")
                 updateRecording(id: id) {
                     $0.uploadStatus = .failed
                     $0.uploadError = error.localizedDescription
                 }
-                // Stop processing if upload failed
+                // Mark the row as upload_failed so the web UI can stop spinning.
+                await tracerAPIClient.updateVideo(slug: resolvedSlug, processingStatus: "upload_failed")
                 return
+            }
+
+            // Wait for the thumbnail task — keeps the local file alive until
+            // ThumbnailGenerator finishes reading it.
+            thumbnailShareURL = await thumbTask.value
+            if let thumb = thumbnailShareURL {
+                updateRecording(id: id) {
+                    $0.thumbnailURL = thumb
+                }
             }
         }
 
-        // Step 2+3: Combined Gemini call — generates SRT subtitles AND AI filename in one request.
+        // Step 3: Combined Gemini call — generates SRT subtitles AND AI filename in one request.
         // Audio is locally trimmed of silence before sending (Phase A); SRT timestamps are
         // mapped back onto the original timeline so they sync with the unmodified video.
         // Outer retry: if the combined call returns both nil, wait 10s and retry once.
         LogManager.shared.log("🤖 Starting combined subtitle + naming generation...")
         var generatedSubtitles: String? = nil
         var aiName: String? = nil
-        var thumbnailShareURL: String? = nil
 
         var aiUsage = GeminiUsage.zero
         var aiTotalLatencyMs = 0
@@ -512,131 +592,46 @@ final class AppState {
         )
         LogManager.shared.log("🤖 AI usage total: prompt=\(aiUsage.promptTokens), out=\(aiUsage.outputTokens), attempts=\(aiTotalAttempts), success=\(aiSucceeded)")
 
-        // Step 4: rename on Dropbox + thumbnail upload (only when we got a name).
         if let aiNameBase = aiName {
             updateRecording(id: id) {
                 $0.aiGeneratedName = aiNameBase
             }
             LogManager.shared.log("🤖 AI Naming: ✅ Named: \"\(aiNameBase)\"")
+        }
 
-            // Step 4: Rename on Dropbox if uploaded
-            if let currentPath = dropboxPath, !token.isEmpty, let name = aiName {
-                do {
-                    LogManager.shared.log("📤 Rename: Renaming \"\(currentPath)\" to \"\(name).mp4\"")
-                    let newPath = try await dropboxUploadManager.renameFile(
-                        fromPath: currentPath,
-                        toNewName: name + ".mp4",
-                        accessToken: token
-                    )
-                    updateRecording(id: id) {
-                        $0.dropboxPath = newPath
-                    }
-                    LogManager.shared.log("📤 Rename: ✅ Renamed on Dropbox")
-                } catch {
-                    LogManager.shared.log(error: error, message: "📤 Rename: ❌ Failed")
-                }
-            }
-
-            // Step 4b: Generate + upload thumbnail
-            if let current = recordings.first(where: { $0.id == id }),
-               current.uploadStatus == .uploaded,
-               !token.isEmpty,
-               let name = aiName {
-                thumbnailShareURL = await uploadThumbnail(
-                    localVideoURL: fileURL,
-                    videoName: name,
-                    accessToken: token
-                )
-                if let thumb = thumbnailShareURL {
-                    updateRecording(id: id) {
-                        $0.thumbnailURL = thumb
-                    }
-                }
+        // Step 4: Upload transcript.srt to Dropbox so the user has a complete
+        // copy outside our DB (full disaster-recovery from Dropbox).
+        if let srt = generatedSubtitles, !srt.isEmpty,
+           let folder = uploadFolder, !token.isEmpty {
+            do {
+                let srtPath = "\(folder)/\(transcriptFilename)"
+                _ = try await dropboxUploadManager.uploadText(srt, dropboxPath: srtPath, accessToken: token)
+                LogManager.shared.log("📝 Transcript: ✅ uploaded \(srtPath)")
+            } catch {
+                LogManager.shared.log(error: error, message: "📝 Transcript: upload failed (continuing)")
             }
         }
 
-        // Phase 2: update the registered video with AI data (title, subtitles, thumbnail, final path).
-        // Always runs so processingStatus flips to "ready" even when Gemini partially fails.
-        if let phase1 = phase1Result {
+        // Step 5: Final PATCH — title + transcript + status="ready".
+        // No Dropbox renames: the slug folder is the stable identifier.
+        if let resolvedSlug = slug {
             let finalTitle = aiName ?? placeholderTitle
-            let finalPath = recordings.first(where: { $0.id == id })?.dropboxPath
             await tracerAPIClient.updateVideo(
-                slug: phase1.slug,
+                slug: resolvedSlug,
                 title: finalTitle,
-                dropboxPath: finalPath,
                 transcriptSrt: generatedSubtitles,
-                thumbnailURL: thumbnailShareURL.map(Self.toRawDropboxURL),
+                thumbnailURL: thumbnailShareURL,
+                processingStatus: "ready",
                 aiUsage: aiUsagePayload
             )
-            LogManager.shared.log("🌐 Tracer: Phase 2 complete — title: \"\(finalTitle)\"")
-        } else if tracerAPIClient.isSignedIn,
-                  let current = recordings.first(where: { $0.id == id }),
-                  let finalPath = current.dropboxPath {
-            // Fallback: Phase 1 failed (network error), register now with final data
-            let finalTitle = aiName ?? placeholderTitle
-            let registered = await tracerAPIClient.registerVideo(
-                title: finalTitle,
-                dropboxPath: finalPath,
-                dropboxSharedURL: current.dropboxSharedURL,
-                duration: current.duration,
-                fileSize: current.fileSize,
-                recordedAt: current.createdAt,
-                thumbnailURL: thumbnailShareURL.map(Self.toRawDropboxURL),
-                subtitlesSrt: generatedSubtitles,
-                aiUsage: aiUsagePayload
-            )
-            if let registered = registered {
-                updateRecording(id: id) {
-                    $0.tracerSlug = registered.slug
-                    $0.tracerURL = registered.url
-                }
-                if let url = URL(string: registered.url) {
-                    DispatchQueue.main.async { NSWorkspace.shared.open(url) }
-                }
-            }
+            LogManager.shared.log("🌐 Tracer: ✅ Final PATCH — title: \"\(finalTitle)\"")
         }
 
-        // Step 5: Delete local file after everything is done
-        if dropboxPath != nil {
+        // Step 6: Delete local file after everything is done
+        if didUploadVideo {
             try? FileManager.default.removeItem(at: fileURL)
             LogManager.shared.log("🗑️ Local file deleted: \(fileURL.lastPathComponent)")
-
-            // Step 6: Refresh library from our DB so the new row appears
             await reloadRecordingsFromTracer()
-        }
-    }
-
-    // MARK: - Thumbnail Upload
-
-    /// Generates a JPG thumbnail from a local video, uploads it to Dropbox next to the video
-    /// (named `{videoName}.thumb.jpg`), creates a shared link, and returns the shared URL.
-    /// Returns nil on any failure — thumbnail upload must never block video registration.
-    private func uploadThumbnail(
-        localVideoURL: URL,
-        videoName: String,
-        accessToken: String
-    ) async -> String? {
-        guard FileManager.default.fileExists(atPath: localVideoURL.path) else {
-            return nil
-        }
-        do {
-            let jpgURL = try await ThumbnailGenerator.generateJPG(from: localVideoURL)
-            defer { try? FileManager.default.removeItem(at: jpgURL) }
-
-            let uploadedPath = try await dropboxUploadManager.upload(
-                fileURL: jpgURL,
-                fileName: "\(videoName).thumb.jpg",
-                accessToken: accessToken
-            )
-            let sharedURL = try await dropboxUploadManager.createSharedLink(
-                path: uploadedPath,
-                accessToken: accessToken
-            )
-            LogManager.shared.log("🖼️ Thumbnail: ✅ Uploaded \(uploadedPath)")
-            return sharedURL
-        } catch {
-            LogManager.shared.log(error: error, message: "🖼️ Thumbnail: upload failed")
-            return nil
         }
     }
 

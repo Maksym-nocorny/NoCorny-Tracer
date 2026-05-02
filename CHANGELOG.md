@@ -1,5 +1,25 @@
 # Changelog
 
+## [3.10.1] - 2026-05-02
+### Changed
+- **App icon redesigned to match the web brand**: replaces the old purple "scallop + N" mark with the same concentric-circle "rec dot" used on `tracer.nocorny.com` — squircle 1024×1024 with the brand `#3E0693 → #6B00DE` gradient and white dot-in-ring centered. Affects Dock, Finder, App Switcher, About panel, and the Permissions screen. Menu bar icon (status item) is intentionally unchanged. Source-of-truth lives in `assets/icon-source.svg`; rerun `bash scripts/generate_icons.sh` (uses `librsvg`) to regenerate all PNGs after edits.
+
+## [3.10.0] - 2026-05-01
+### Fixed
+- **Raw SRT timestamps no longer leak into the transcript text**: when Gemini occasionally collapses several adjacent cues into one block (with the inner `00:00:XX,XXX --> 00:00:YY,YYY` pairs left inline as plain text), the parser now splits that block back into proper per-cue segments using the embedded timestamps as breakpoints, with a regex sanitizer as a safety net. Most visible on Cyrillic/Ukrainian recordings.
+- **AI-generated title is now reliably in the transcript's language**: the combined Gemini call now runs at `temperature=0` (deterministic) and a post-check compares the script of the returned name against the script of the SRT. If they don't match (e.g. Cyrillic SRT but Latin name), one retry is issued with an explicit `"the name MUST be written in <Cyrillic|Latin> script"` hint. Fixes the recurring case where Russian/Ukrainian-narrated videos got English titles because the on-screen IDE/code biased the model.
+
+### Changed
+- **Each video now lives in its own Dropbox folder under `/videos/{slug}/`** — `video.mp4`, `transcript.srt`, and `thumbnail.jpg` sit together under the slug-keyed folder instead of dumping into the Dropbox app root. System files (`metadata-backup.json`, `avatar.jpg`) move under `/_settings/`. The Dropbox app folder is now organized instead of looking like a dumping ground.
+- **Slug is reserved before upload, not after**: a new `POST /api/videos/init` mints the slug + folder up front, so the macOS app opens the `/v/{slug}` page **immediately** when you press Stop instead of waiting 1–6 minutes for the video upload to finish. The page polls until upload + AI complete.
+- **Pre-AI thumbnail upload**: thumbnail JPG is generated and uploaded in parallel with the video upload, so the `/v/{slug}` page gets a preview within seconds instead of staying blank until Gemini finishes.
+- **Title rename no longer touches Dropbox**: with slug-keyed folders, the Dropbox path doesn't encode the title anymore. Renaming a video is a DB-only operation — no `move_v2` calls, no shared-link regeneration, no rename failures to handle.
+- **Transcripts now persist to Dropbox** as `transcript.srt` next to the video. Previously the SRT only lived in our DB, so a DB loss meant re-running AI on every recording. Full disaster-recovery from Dropbox now possible.
+
+### Important
+- **Existing users get a one-time background migration** on their next dashboard visit (or Dropbox reconnect): every legacy flat-path video is moved into its `/videos/{slug}/` folder, `/avatar.{ext}` and `/.tracer-metadata.json` move into `/_settings/`, shared links and `users.image` are regenerated, and `dropbox_connections.layout_version` is bumped to 2. The migration is idempotent and resumable. A progress banner appears on the dashboard while it runs.
+- The web is backwards-compatible with macOS ≤ 3.9.16 during the rollout: legacy `POST /api/videos` (with a flat `dropboxPath`) keeps working until users update via Sparkle.
+
 ## [3.9.16] - 2026-05-01
 ### Changed
 - **Camera circle is now hard-clamped to screen bounds during drag instead of snapping back**: Seven attempts at a snap-back-on-release implementation (event-driven, polling-driven, GCD-driven, custom drag handlers) all hit AppKit edge cases that made the snap unreliable for trackpad drag-release in particular. Replaced with the simpler approach: override `constrainFrameRect`, `setFrameOrigin`, and both `setFrame(_:display:)` variants on the panel to clamp every position update to the visible frame of the current screen. The user can drag freely within bounds but the circle physically cannot leave the screen — no animation needed. `windowDidMove` delegate kept as a safety net in case AppKit moves the window via a path that bypasses the overrides.

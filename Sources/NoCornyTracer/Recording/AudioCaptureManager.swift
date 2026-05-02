@@ -75,8 +75,14 @@ final class AudioCaptureManager: NSObject {
         // Some virtual devices (Loopback/BlackHole) don't support it — fall back gracefully.
         do {
             try input.setVoiceProcessingEnabled(true)
+            input.isVoiceProcessingAGCEnabled = true
+            input.isVoiceProcessingBypassed = false
+            let isOn = input.isVoiceProcessingEnabled
+            let agcOn = input.isVoiceProcessingAGCEnabled
+            let bypassed = input.isVoiceProcessingBypassed
+            LogManager.shared.log("🎤 Audio: Voice processing → enabled=\(isOn), AGC=\(agcOn), bypassed=\(bypassed) (Voice Isolation + AGC + Echo Cancellation active)")
         } catch {
-            print("⚠️ AudioCapture: voice processing not available on this device (\(error.localizedDescription)) — recording without it")
+            LogManager.shared.log("⚠️ AudioCapture: voice processing not available on this device (\(error.localizedDescription)) — recording without it", type: .error)
         }
 
         // Read format AFTER toggling voice processing, since enabling it can reshape the

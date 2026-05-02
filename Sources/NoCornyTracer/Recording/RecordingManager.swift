@@ -116,12 +116,21 @@ final class RecordingManager {
         }
 
         let finalDuration = lastStartTime != nil ? accumulatedDuration + Date().timeIntervalSince(lastStartTime!) : accumulatedDuration
-        
-        let recording = Recording(
+
+        // Read the on-disk file size now so we can pass it to the backend at
+        // registration time. Without this, fileSize stays nil for fresh recordings.
+        var fileSize: UInt64? = nil
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: outputURL.path),
+           let size = attrs[.size] as? NSNumber {
+            fileSize = size.uint64Value
+        }
+
+        var recording = Recording(
             fileURL: outputURL,
             createdAt: recordingStartTime ?? Date(),
             duration: finalDuration
         )
+        recording.fileSize = fileSize
 
 
         isRecording = false

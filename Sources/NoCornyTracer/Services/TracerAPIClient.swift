@@ -186,6 +186,82 @@ final class TracerAPIClient {
         }
     }
 
+    // MARK: - AI Usage payload (cost tracking)
+
+    /// Token usage + metadata sent alongside video registration/updates so the backend
+    /// can write an `ai_events` row for cost analytics.
+    struct AIUsagePayload {
+        let kind: String
+        let model: String
+        let promptTokens: Int
+        let outputTokens: Int
+        let totalTokens: Int
+        let modalityBreakdown: [(modality: String, tokenCount: Int)]
+        let latencyMs: Int
+        let attempts: Int
+        let success: Bool
+        let errorCode: String?
+
+        /// JSON dictionary suitable for embedding under `aiUsage` in API requests.
+        /// Returns nil if there's nothing meaningful to report (no tokens AND no error).
+        func toJSON() -> [String: Any]? {
+            let hasUsage = promptTokens > 0 || outputTokens > 0 || totalTokens > 0
+            let hasError = !success && errorCode != nil
+            guard hasUsage || hasError else { return nil }
+            var dict: [String: Any] = [
+                "kind": kind,
+                "model": model,
+                "promptTokens": promptTokens,
+                "outputTokens": outputTokens,
+                "totalTokens": totalTokens,
+                "latencyMs": latencyMs,
+                "attempts": attempts,
+                "success": success,
+            ]
+            dict["modalityBreakdown"] = modalityBreakdown.map { ["modality": $0.modality, "tokenCount": $0.tokenCount] }
+            if let err = errorCode { dict["errorCode"] = err }
+            return dict
+        }
+    }
+
+    // MARK: - Init Video (slug reservation)
+
+    /// Phase 0: Reserves a slug + per-video Dropbox folder *before* uploading bytes.
+    /// The macOS app calls this immediately after Stop so it can both open the
+    /// browser to /v/{slug} and start uploading in parallel.
+    /// Returns nil on failure (e.g. unauthorized, network).
+    func initVideo(recordedAt: Date, durationEstimate: TimeInterval?) async -> InitVideoResponse? {
+        guard let token = KeychainHelper.load(key: Self.tokenKey), !token.isEmpty else { return nil }
+
+        var request = URLRequest(url: URL(string: "\(Self.baseURL)/api/videos/init")!)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 20
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        var body: [String: Any] = [
+            "recordedAt": ISO8601DateFormatter().string(from: recordedAt),
+        ]
+        if let d = durationEstimate, d > 0 { body["durationEstimate"] = d }
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                if let http = response as? HTTPURLResponse {
+                    LogManager.shared.log("🌐 Tracer: initVideo failed with status \(http.statusCode)", type: .error)
+                }
+                return nil
+            }
+            let resp = try JSONDecoder().decode(InitVideoResponse.self, from: data)
+            LogManager.shared.log("🌐 Tracer: ✅ initVideo — slug=\(resp.slug) folder=\(resp.uploadFolder)")
+            return resp
+        } catch {
+            LogManager.shared.log(error: error, message: "🌐 Tracer: initVideo failed")
+            return nil
+        }
+    }
+
     // MARK: - Register Video
 
     /// Phase 1: Registers an uploaded video with the Tracer backend immediately after upload.
@@ -199,7 +275,8 @@ final class TracerAPIClient {
         recordedAt: Date,
         thumbnailURL: String? = nil,
         subtitlesSrt: String? = nil,
-        processingStatus: String = "ready"
+        processingStatus: String = "ready",
+        aiUsage: AIUsagePayload? = nil
     ) async -> RegisteredVideo? {
         guard let token = KeychainHelper.load(key: Self.tokenKey), !token.isEmpty else {
             return nil
@@ -221,6 +298,7 @@ final class TracerAPIClient {
         if let size = fileSize { body["fileSize"] = size }
         if let thumb = thumbnailURL { body["thumbnailUrl"] = thumb }
         if let srt = subtitlesSrt, !srt.isEmpty { body["transcriptSrt"] = srt }
+        if let usage = aiUsage?.toJSON() { body["aiUsage"] = usage }
 
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
@@ -241,14 +319,20 @@ final class TracerAPIClient {
         }
     }
 
-    /// Phase 2: Updates an existing video with AI-generated title, subtitles, and thumbnail.
-    /// Called after Gemini finishes; flips processingStatus to "ready" so the web page updates live.
+    /// Generic PATCH /api/videos/{slug}. Every parameter is optional so callers
+    /// can update just one slice of state — used both for "upload finished"
+    /// (sharedURL/fileSize/duration) and "AI finished" (title/transcript/thumb).
     func updateVideo(
         slug: String,
-        title: String,
-        dropboxPath: String?,
-        transcriptSrt: String?,
-        thumbnailURL: String?
+        title: String? = nil,
+        dropboxPath: String? = nil,
+        dropboxSharedURL: String? = nil,
+        fileSize: UInt64? = nil,
+        duration: TimeInterval? = nil,
+        transcriptSrt: String? = nil,
+        thumbnailURL: String? = nil,
+        processingStatus: String? = nil,
+        aiUsage: AIUsagePayload? = nil
     ) async {
         guard let token = KeychainHelper.load(key: Self.tokenKey), !token.isEmpty else { return }
 
@@ -258,23 +342,29 @@ final class TracerAPIClient {
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
-        var body: [String: Any] = [
-            "title": title,
-            "processingStatus": "ready",
-        ]
+        var body: [String: Any] = [:]
+        if let title { body["title"] = title }
         if let path = dropboxPath { body["dropboxPath"] = path }
+        if let url = dropboxSharedURL { body["dropboxSharedUrl"] = url }
+        if let size = fileSize { body["fileSize"] = size }
+        if let d = duration { body["duration"] = d }
         if let srt = transcriptSrt, !srt.isEmpty { body["transcriptSrt"] = srt }
         if let thumb = thumbnailURL { body["thumbnailUrl"] = thumb }
+        if let status = processingStatus { body["processingStatus"] = status }
+        if let usage = aiUsage?.toJSON() { body["aiUsage"] = usage }
+
+        // Don't fire an empty PATCH — server will reject with 400.
+        guard !body.isEmpty else { return }
 
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
         do {
             let (_, response) = try await URLSession.shared.data(for: request)
             if let http = response as? HTTPURLResponse {
-                LogManager.shared.log("🌐 Tracer: Phase 2 update → \(http.statusCode)")
+                LogManager.shared.log("🌐 Tracer: PATCH /api/videos/\(slug) → \(http.statusCode)")
             }
         } catch {
-            LogManager.shared.log(error: error, message: "🌐 Tracer: Phase 2 update failed")
+            LogManager.shared.log(error: error, message: "🌐 Tracer: updateVideo failed")
         }
     }
 
@@ -324,22 +414,52 @@ final class TracerAPIClient {
 
     // MARK: - List Videos
 
-    /// Lists the signed-in user's registered videos from the Tracer backend.
-    func listVideos() async -> [TracerVideo] {
-        guard let token = apiToken else { return [] }
+    /// Lists the user's videos. When `since` is non-nil the server returns only
+    /// rows whose `updatedAt > since` (including soft-deleted rows). The envelope
+    /// also carries the new cursor (`serverTime`) and current storage usage so
+    /// the app never has to call Dropbox for quota at runtime.
+    func listVideos(since: Date? = nil) async -> VideosEnvelope? {
+        guard let token = apiToken else { return nil }
 
-        var request = URLRequest(url: URL(string: "\(Self.baseURL)/api/videos")!)
+        var components = URLComponents(string: "\(Self.baseURL)/api/videos")!
+        if let since {
+            components.queryItems = [
+                URLQueryItem(name: "since", value: ISO8601DateFormatter().string(from: since)),
+            ]
+        }
+        guard let url = components.url else { return nil }
+
+        var request = URLRequest(url: url)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
 
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return [] }
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return nil }
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
-            return try decoder.decode([TracerVideo].self, from: data)
+            return try decoder.decode(VideosEnvelope.self, from: data)
         } catch {
             LogManager.shared.log(error: error, message: "🌐 Tracer: list videos failed")
-            return []
+            return nil
+        }
+    }
+
+    // MARK: - Delete Video
+
+    /// Soft-deletes the video on the server, which also asks Dropbox to delete
+    /// the underlying file. The macOS app never talks to Dropbox for deletion.
+    @discardableResult
+    func deleteVideo(slug: String) async -> Bool {
+        guard let token = apiToken else { return false }
+        var request = URLRequest(url: URL(string: "\(Self.baseURL)/api/videos/\(slug)")!)
+        request.httpMethod = "DELETE"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            return (response as? HTTPURLResponse)?.statusCode == 200
+        } catch {
+            LogManager.shared.log(error: error, message: "🌐 Tracer: delete video failed")
+            return false
         }
     }
 
@@ -365,14 +485,39 @@ final class TracerAPIClient {
         let duration: Double?
         let fileSize: Int64?
         let thumbnailUrl: String?
+        let isDeleted: Bool?
         let recordedAt: Date?
         let createdAt: Date?
+        let updatedAt: Date?
+    }
+
+    struct VideosEnvelope: Codable {
+        let videos: [TracerVideo]
+        let serverTime: Date?
+        let usage: Usage?
+
+        struct Usage: Codable {
+            let usedBytes: Int64?
+            let allocatedBytes: Int64?
+        }
     }
 
     struct RegisteredVideo: Codable {
         let id: String
         let slug: String
         let url: String
+    }
+
+    /// Response from `POST /api/videos/init`. The server picks the canonical
+    /// filenames inside the slug folder so the client doesn't drift if we ever
+    /// change them. Compose the Dropbox path as `"\(uploadFolder)/\(videoFilename)"`.
+    struct InitVideoResponse: Codable {
+        let slug: String
+        let uploadFolder: String       // e.g. "/videos/xFel134"
+        let videoFilename: String      // e.g. "video.mp4"
+        let transcriptFilename: String // e.g. "transcript.srt"
+        let thumbnailFilename: String  // e.g. "thumbnail.jpg"
+        let url: String                // e.g. "https://tracer.nocorny.com/v/xFel134"
     }
 
     struct TokenInfo: Codable {

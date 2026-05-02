@@ -19,6 +19,30 @@ final class DropboxUploadManager {
         }
     }
 
+    /// Conflict-resolution mode for `files/upload` requests.
+    /// - `.add`: refuse if a file already exists (combined with autorename, Dropbox
+    ///   appends "(1)" to avoid collisions). Used for legacy flat-root uploads.
+    /// - `.overwrite`: replace any existing file at `dropboxPath`. Used for
+    ///   slug-keyed uploads where the path itself guarantees uniqueness.
+    enum UploadMode {
+        case add
+        case overwrite
+
+        fileprivate var apiValue: String {
+            switch self {
+            case .add: return "add"
+            case .overwrite: return "overwrite"
+            }
+        }
+
+        fileprivate var autorename: Bool {
+            switch self {
+            case .add: return true
+            case .overwrite: return false
+            }
+        }
+    }
+
     /// Maximum file size for simple upload (150MB)
     private let simpleUploadLimit = 150 * 1024 * 1024
     /// Chunk size for session uploads (50MB)
@@ -26,29 +50,64 @@ final class DropboxUploadManager {
 
     // MARK: - Upload
 
-    /// Uploads a file to Dropbox. Returns the Dropbox path on success.
-    func upload(fileURL: URL, fileName: String, accessToken: String) async throws -> String {
+    /// Uploads a file to Dropbox at an explicit path. Returns the resulting
+    /// Dropbox `path_display` on success (which may differ from the requested
+    /// path if `mode == .add` and Dropbox auto-renamed on conflict).
+    func upload(
+        fileURL: URL,
+        dropboxPath: String,
+        mode: UploadMode = .overwrite,
+        accessToken: String
+    ) async throws -> String {
         guard !accessToken.isEmpty else {
             throw DropboxError.invalidToken
         }
 
         let attributes = try FileManager.default.attributesOfItem(atPath: fileURL.path)
         let fileSize = attributes[.size] as? UInt64 ?? 0
-        let dropboxPath = "/\(fileName)"
 
         if fileSize <= UInt64(simpleUploadLimit) {
             let fileData = try Data(contentsOf: fileURL)
             return try await withRetry(taskName: "Upload") {
-                try await self.simpleUpload(data: fileData, path: dropboxPath, accessToken: accessToken)
+                try await self.simpleUpload(data: fileData, path: dropboxPath, mode: mode, accessToken: accessToken)
             }
         } else {
-            return try await sessionUpload(fileURL: fileURL, fileSize: fileSize, path: dropboxPath, accessToken: accessToken)
+            return try await sessionUpload(fileURL: fileURL, fileSize: fileSize, path: dropboxPath, mode: mode, accessToken: accessToken)
         }
+    }
+
+    /// Uploads in-memory data (e.g. a thumbnail JPEG) to an explicit Dropbox path.
+    func uploadData(
+        _ data: Data,
+        dropboxPath: String,
+        mode: UploadMode = .overwrite,
+        accessToken: String
+    ) async throws -> String {
+        guard !accessToken.isEmpty else { throw DropboxError.invalidToken }
+        return try await withRetry(taskName: "Upload Data") {
+            try await self.simpleUpload(data: data, path: dropboxPath, mode: mode, accessToken: accessToken)
+        }
+    }
+
+    /// Convenience wrapper for uploading a UTF-8 text file (e.g. transcript.srt).
+    @discardableResult
+    func uploadText(
+        _ text: String,
+        dropboxPath: String,
+        accessToken: String
+    ) async throws -> String {
+        let bytes = Data(text.utf8)
+        return try await uploadData(
+            bytes,
+            dropboxPath: dropboxPath,
+            mode: .overwrite,
+            accessToken: accessToken
+        )
     }
 
     // MARK: - Simple Upload
 
-    private func simpleUpload(data: Data, path: String, accessToken: String) async throws -> String {
+    private func simpleUpload(data: Data, path: String, mode: UploadMode, accessToken: String) async throws -> String {
         let url = URL(string: "https://content.dropboxapi.com/2/files/upload")!
 
         var request = URLRequest(url: url)
@@ -58,8 +117,8 @@ final class DropboxUploadManager {
 
         let apiArg: [String: Any] = [
             "path": path,
-            "mode": "add",
-            "autorename": true,
+            "mode": mode.apiValue,
+            "autorename": mode.autorename,
             "mute": false
         ]
         try setDropboxAPIArg(request: &request, arguments: apiArg)
@@ -85,7 +144,7 @@ final class DropboxUploadManager {
 
     // MARK: - Session Upload (for files > 150MB)
 
-    private func sessionUpload(fileURL: URL, fileSize: UInt64, path: String, accessToken: String) async throws -> String {
+    private func sessionUpload(fileURL: URL, fileSize: UInt64, path: String, mode: UploadMode, accessToken: String) async throws -> String {
         let fileHandle = try FileHandle(forReadingFrom: fileURL)
         defer { try? fileHandle.close() }
 
@@ -96,7 +155,7 @@ final class DropboxUploadManager {
         }
 
         var offset = UInt64(firstChunkData.count)
-        
+
         while offset < fileSize {
             let remaining = fileSize - offset
             let currentChunkSize = Int(min(UInt64(chunkSize), remaining))
@@ -114,6 +173,7 @@ final class DropboxUploadManager {
                         offset: Int(offset),
                         data: chunkData,
                         path: path,
+                        mode: mode,
                         accessToken: accessToken
                     )
                 }
@@ -132,6 +192,7 @@ final class DropboxUploadManager {
                 offset: Int(offset),
                 data: Data(),
                 path: path,
+                mode: mode,
                 accessToken: accessToken
             )
         }
@@ -187,7 +248,7 @@ final class DropboxUploadManager {
         }
     }
 
-    private func finishUploadSession(sessionID: String, offset: Int, data: Data, path: String, accessToken: String) async throws -> String {
+    private func finishUploadSession(sessionID: String, offset: Int, data: Data, path: String, mode: UploadMode, accessToken: String) async throws -> String {
         let url = URL(string: "https://content.dropboxapi.com/2/files/upload_session/finish")!
 
         var request = URLRequest(url: url)
@@ -202,8 +263,8 @@ final class DropboxUploadManager {
             ],
             "commit": [
                 "path": path,
-                "mode": "add",
-                "autorename": true,
+                "mode": mode.apiValue,
+                "autorename": mode.autorename,
                 "mute": false
             ]
         ]
@@ -346,224 +407,6 @@ final class DropboxUploadManager {
         }
 
         return newPath
-    }
-
-    // MARK: - File Metadata
-
-    /// Fetch duration for a single file via get_metadata (fallback when list_folder doesn't include media_info)
-    func getFileDuration(path: String, accessToken: String) async -> TimeInterval? {
-        guard !accessToken.isEmpty else { return nil }
-
-        let url = URL(string: "https://api.dropboxapi.com/2/files/get_metadata")!
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-
-        let body: [String: Any] = [
-            "path": path,
-            "include_media_info": true
-        ]
-        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-
-        guard let (data, response) = try? await URLSession.shared.data(for: request),
-              let http = response as? HTTPURLResponse,
-              (200...299).contains(http.statusCode),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let mediaInfo = json["media_info"] as? [String: Any],
-              let tag = mediaInfo[".tag"] as? String, tag == "metadata",
-              let metadata = mediaInfo["metadata"] as? [String: Any],
-              let durRaw = metadata["duration"] else {
-            return nil
-        }
-        let durationMs = (durRaw as? NSNumber)?.doubleValue ?? 0
-        return durationMs / 1000.0
-    }
-
-    // MARK: - API Structs
-    
-    // Simple struct for recordings list
-    struct DropboxFileSimple {
-        let name: String
-        let pathDisplay: String
-        let clientModified: String
-        let size: UInt64
-        let duration: TimeInterval?
-    }
-
-    // MARK: - App State Syncing methods
-
-    /// Gets used and allocated space in bytes
-    func getSpaceUsage(accessToken: String) async throws -> (used: UInt64, allocated: UInt64) {
-        guard !accessToken.isEmpty else { throw DropboxError.invalidToken }
-        let url = URL(string: "https://api.dropboxapi.com/2/users/get_space_usage")!
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-
-        let (responseData, response) = try await URLSession.shared.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse,
-              (200...299).contains(httpResponse.statusCode),
-              let json = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
-              let used = json["used"] as? NSNumber,
-              let allocation = json["allocation"] as? [String: Any],
-              let allocated = allocation["allocated"] as? NSNumber else {
-            throw DropboxError.noData
-        }
-        
-        return (used: used.uint64Value, allocated: allocated.uint64Value)
-    }
-
-    /// List files in the NoCorny Tracer folder, handling pagination
-    func listFolder(path: String = "", accessToken: String) async throws -> [DropboxFileSimple] {
-        guard !accessToken.isEmpty else { throw DropboxError.invalidToken }
-
-        // Initial request
-        let listUrl = URL(string: "https://api.dropboxapi.com/2/files/list_folder")!
-        var request = URLRequest(url: listUrl)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-
-        let body: [String: Any] = [
-            "path": path,
-            "recursive": false,
-            "include_media_info": true
-        ]
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-
-        let (responseData, response) = try await URLSession.shared.data(for: request)
-        if let httpResponse = response as? HTTPURLResponse,
-           httpResponse.statusCode == 409 {
-            return []
-        }
-        guard let httpResponse = response as? HTTPURLResponse,
-              (200...299).contains(httpResponse.statusCode) else {
-            throw DropboxError.noData
-        }
-
-        guard let json = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
-              let entries = json["entries"] as? [[String: Any]] else {
-            return []
-        }
-
-        var allEntries = entries
-        var hasMore = (json["has_more"] as? Bool) ?? false
-        var cursor = json["cursor"] as? String
-
-        // Paginate with list_folder/continue
-        while hasMore, let cur = cursor {
-            let continueUrl = URL(string: "https://api.dropboxapi.com/2/files/list_folder/continue")!
-            var contRequest = URLRequest(url: continueUrl)
-            contRequest.httpMethod = "POST"
-            contRequest.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-            contRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            contRequest.httpBody = try JSONSerialization.data(withJSONObject: ["cursor": cur])
-
-            let (contData, contResponse) = try await URLSession.shared.data(for: contRequest)
-            guard let contHttp = contResponse as? HTTPURLResponse,
-                  (200...299).contains(contHttp.statusCode),
-                  let contJson = try? JSONSerialization.jsonObject(with: contData) as? [String: Any],
-                  let moreEntries = contJson["entries"] as? [[String: Any]] else {
-                break
-            }
-
-            allEntries.append(contentsOf: moreEntries)
-            hasMore = (contJson["has_more"] as? Bool) ?? false
-            cursor = contJson["cursor"] as? String
-        }
-
-        // Parse entries into files
-        var files: [DropboxFileSimple] = []
-        for entry in allEntries {
-            guard let name = entry["name"] as? String,
-                  let entryPath = entry["path_display"] as? String,
-                  let modified = entry["client_modified"] as? String else { continue }
-
-            if !entryPath.lowercased().hasSuffix(".mp4") { continue }
-
-            let size = (entry["size"] as? NSNumber)?.uint64Value ?? 0
-
-            var duration: TimeInterval?
-            if let mediaInfo = entry["media_info"] as? [String: Any],
-               let tag = mediaInfo[".tag"] as? String,
-               tag == "metadata",
-               let metadata = mediaInfo["metadata"] as? [String: Any],
-               let durRaw = metadata["duration"] {
-                let durationMs = (durRaw as? NSNumber)?.doubleValue ?? 0
-                duration = durationMs / 1000.0
-            }
-
-            files.append(DropboxFileSimple(name: name, pathDisplay: entryPath, clientModified: modified, size: size, duration: duration))
-        }
-        return files
-    }
-
-    /// Fetches all shared links dict (path_lower -> url), handling pagination
-    func listAllSharedLinks(accessToken: String) async throws -> [String: String] {
-        guard !accessToken.isEmpty else { throw DropboxError.invalidToken }
-        let url = URL(string: "https://api.dropboxapi.com/2/sharing/list_shared_links")!
-
-        var map: [String: String] = [:]
-        var cursor: String? = nil
-        var hasMore = true
-
-        while hasMore {
-            var request = URLRequest(url: url)
-            request.httpMethod = "POST"
-            request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-
-            var body: [String: Any] = [:]
-            if let cursor = cursor {
-                body["cursor"] = cursor
-            }
-            request.httpBody = try JSONSerialization.data(withJSONObject: body)
-
-            let (responseData, response) = try await URLSession.shared.data(for: request)
-            guard let httpResponse = response as? HTTPURLResponse,
-                  (200...299).contains(httpResponse.statusCode),
-                  let json = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
-                  let links = json["links"] as? [[String: Any]] else {
-                throw DropboxError.noData
-            }
-
-            for link in links {
-                if let path = link["path_lower"] as? String,
-                   let linkUrl = link["url"] as? String {
-                    map[path] = linkUrl
-                }
-            }
-
-            hasMore = (json["has_more"] as? Bool) ?? false
-            if hasMore {
-                cursor = json["cursor"] as? String
-                if cursor == nil { hasMore = false }
-            }
-        }
-
-        return map
-    }
-
-    /// Deletes a file at path
-    func deleteFile(path: String, accessToken: String) async throws {
-        guard !accessToken.isEmpty else { throw DropboxError.invalidToken }
-        let url = URL(string: "https://api.dropboxapi.com/2/files/delete_v2")!
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-
-        let body: [String: Any] = ["path": path]
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-
-        try await withRetry(taskName: "Delete") {
-            let (_, response) = try await URLSession.shared.data(for: request)
-            guard let httpResponse = response as? HTTPURLResponse,
-                  (200...299).contains(httpResponse.statusCode) else {
-                throw DropboxError.noData
-            }
-        }
     }
 
     /// Fetches a thumbnail for a file
