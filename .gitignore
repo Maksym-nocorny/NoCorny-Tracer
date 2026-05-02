@@ -16,6 +16,11 @@ Sources/NoCornyTracer/Secrets.swift
 ## Tooling debug output
 .playwright-mcp/
 
+## Browser test screenshots (Playwright MCP, computer-use, etc.)
+## Convention: agents save screenshots to screenshots/<descriptive>.png
+## so they don't litter the repo root and don't get committed by accident.
+screenshots/
+
 ## Per-user Claude Code config (machine-specific paths)
 .claude/settings.local.json
 

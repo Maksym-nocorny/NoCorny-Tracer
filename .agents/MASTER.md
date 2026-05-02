@@ -49,3 +49,8 @@ Every merged PR that changes app code **must** be followed by a GitHub release s
 - Appcast feed: `https://raw.githubusercontent.com/Maksym-nocorny/NoCorny-Tracer/main/appcast.xml`
 - Public key is in `Info.plist` as `SUPublicEDKey` — do not change it unless regenerating the key pair.
 - The private key lives in the macOS Keychain and is used by `scripts/release.sh` via Sparkle's `sign_update` tool.
+
+### Screenshots from browser tests
+When taking screenshots during a session — Playwright MCP, `computer-use`, manual diagnostic — **always save them under `screenshots/`** (e.g. `screenshots/dashboard-after-login.png`), never in the repo root or with default tool-generated paths. The folder is gitignored. Reason: previous sessions left ~40 ad-hoc PNGs scattered in the repo root that had to be cleaned up after the fact.
+
+For Playwright MCP specifically: pass `filename: "screenshots/<descriptive-name>.png"` to `browser_take_screenshot`. For other tools without a save-path arg, take the screenshot and immediately move/rename it under `screenshots/`.
