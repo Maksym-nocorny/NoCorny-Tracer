@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.11.0] - 2026-05-02
+### Changed
+- **AI naming now authenticates with your personal Tracer account, not a shared key.** Previously the app called Gemini through a Cloudflare Worker that accepted a single `APP_SECRET` extractable from any released DMG — meaning a leaked binary could burn through the project's Gemini billing. Calls now go through `https://tracer.nocorny.com/api/gemini/proxy` with a per-user bearer token issued at tracer.nocorny.com (revocable per user, traceable per user via `ai_events`). If you're not signed in to Tracer, AI naming is skipped gracefully and the recording falls back to a timestamp filename — sign in via Settings → Tracer Account to re-enable AI features.
+
+### Fixed
+- **AI title now stays in the spoken language even within Cyrillic.** The previous post-check compared scripts (Cyrillic vs Latin), so a Russian-narrated recording that got a Ukrainian title (both Cyrillic) silently passed. The check now distinguishes Russian / Ukrainian / English by language-specific letter markers (ї/є/ґ vs ы/э/ъ) and retries with an explicit per-language hint instead of just "Cyrillic". Fixes the case where saying "Раз, два, три" got titles like "Тестування AI неймінгу" instead of Russian.
+
 ## [3.10.1] - 2026-05-02
 ### Changed
 - **App icon redesigned to match the web brand**: replaces the old purple "scallop + N" mark with the same concentric-circle "rec dot" used on `tracer.nocorny.com` — squircle 1024×1024 with the brand `#3E0693 → #6B00DE` gradient and white dot-in-ring centered. Affects Dock, Finder, App Switcher, About panel, and the Permissions screen. Menu bar icon (status item) is intentionally unchanged. Source-of-truth lives in `assets/icon-source.svg`; rerun `bash scripts/generate_icons.sh` (uses `librsvg`) to regenerate all PNGs after edits.

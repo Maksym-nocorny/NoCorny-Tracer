@@ -11,7 +11,17 @@ final class AppState {
     let dropboxAuthManager = DropboxAuthManager()
     let dropboxUploadManager = DropboxUploadManager()
     let tracerAPIClient = TracerAPIClient()
-    let aiNamingService = AINamingService()
+    // The Gemini proxy authenticates with the signed-in user's Tracer token,
+    // so AINamingService needs a closure that can read the current token from
+    // tracerAPIClient. @ObservationIgnored + lazy lets us reference one stored
+    // property from another's initializer (otherwise @Observable's macro turns
+    // the property into a computed one and `lazy` won't apply).
+    @ObservationIgnored
+    lazy var aiNamingService: AINamingService = AINamingService(
+        proxyClient: GeminiProxyClient(
+            tokenProvider: { [weak self] in self?.tracerAPIClient.apiToken }
+        )
+    )
     let hotkeyManager = HotkeyManager()
     let cameraManager = CameraManager()
 

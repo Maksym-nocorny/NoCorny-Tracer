@@ -36,7 +36,16 @@ final class AINamingService {
 
     // MARK: - Configuration
 
-    private let proxyClient = GeminiProxyClient()
+    private let proxyClient: GeminiProxyClient
+
+    init(proxyClient: GeminiProxyClient) {
+        self.proxyClient = proxyClient
+    }
+
+    /// True when the underlying proxy is ready to make calls (i.e. the user is
+    /// signed in to Tracer and a bearer token is available). Surfaced so callers
+    /// can skip the whole AI pipeline up front and avoid pointless retries.
+    var isReady: Bool { proxyClient.isReady }
 
     // MARK: - Combined Subtitles + Name Generation
 
@@ -46,6 +55,20 @@ final class AINamingService {
     /// recording timeline so they sync perfectly with the unmodified video.
     func generateSubtitlesAndName(for videoURL: URL) async -> NamingResult {
         LogManager.shared.log("🤖 Combined: Starting for \(videoURL.lastPathComponent)")
+
+        // AI naming runs through tracer.nocorny.com with a per-user token. Without
+        // a Tracer account we have nothing to authenticate with, so skip the whole
+        // pipeline (audio extraction, frame capture, network) and let the caller
+        // fall back to a timestamp filename.
+        guard proxyClient.isReady else {
+            LogManager.shared.log("🤖 Combined: ⏭️  Skipping AI naming — not signed in to Tracer")
+            return NamingResult(
+                srt: nil, name: nil,
+                usage: .zero, model: "n/a",
+                latencyMs: 0, attempts: 0,
+                success: false, errorCode: "not_signed_in"
+            )
+        }
 
         var totalUsage = GeminiUsage.zero
         var totalLatencyMs = 0
@@ -218,26 +241,29 @@ final class AINamingService {
                     LogManager.shared.log("🤖 Combined: ⚠️ SRT still sparse after \(maxRetries) attempts — accepting partial result", type: .error)
                 }
 
-                // Language-script post-check: even with the explicit "write the name in the
+                // Language post-check: even with the explicit "write the name in the
                 // SAME language as the spoken audio" instruction in the prompt, Gemini
-                // occasionally returns an English name for a Cyrillic-narrated recording
-                // (the visual code/UI in the screenshots biases it). Retry once with an
-                // explicit script hint if the name's script doesn't match the SRT's.
-                let srtScript = dominantScript(parsed.srt)
-                let nameScript = dominantScript(cleanedName ?? parsed.name)
-                let scriptMismatch = (srtScript == .cyrillic && nameScript == .latin) ||
-                                     (srtScript == .latin && nameScript == .cyrillic)
-                if scriptMismatch && attempt < maxRetries {
-                    let scriptName = srtScript == .cyrillic ? "Cyrillic" : "Latin"
-                    let exampleLang = srtScript == .cyrillic ? "Russian or Ukrainian" : "English"
-                    LogManager.shared.log("🤖 Combined: ⚠️ Language mismatch — SRT is \(srtScript.rawValue), name \"\(cleanedName ?? "nil")\" is \(nameScript.rawValue). Retrying with \(scriptName) hint.", type: .error)
+                // sometimes returns the name in the wrong language. Two failure modes
+                // we see in production:
+                //   1. Russian/Ukrainian narration → English name (visual code in
+                //      screenshots biases it toward Latin script).
+                //   2. Russian narration → Ukrainian name (or vice versa) — within
+                //      the same Cyrillic script, so a script-only check misses it.
+                // Retry with an explicit per-language hint when the name's language
+                // doesn't match the SRT's.
+                let srtLanguage = dominantLanguage(parsed.srt)
+                let nameLanguage = dominantLanguage(cleanedName ?? parsed.name)
+                let languageMismatch = srtLanguage != nil && nameLanguage != nil && srtLanguage != nameLanguage
+                if languageMismatch && attempt < maxRetries {
+                    let lang = srtLanguage!
+                    LogManager.shared.log("🤖 Combined: ⚠️ Language mismatch — SRT is \(lang), name \"\(cleanedName ?? "nil")\" is \(nameLanguage ?? "unknown"). Retrying with \(lang) hint.", type: .error)
                     lastError = "language_mismatch"
-                    languageHint = "\n\nPRIOR ATTEMPT FAILED: the returned `name` was in the wrong script. The transcript is in \(scriptName) script (\(exampleLang)). The `name` MUST be written in \(scriptName) script. Do NOT translate to English."
+                    languageHint = "\n\nPRIOR ATTEMPT FAILED: the returned `name` was in the wrong language. The transcript is in \(lang). The `name` MUST be written in \(lang). Do NOT translate to English, Russian, Ukrainian, or any other language — write it in \(lang) only."
                     try? await Task.sleep(nanoseconds: delay)
                     delay *= 2
                     continue
                 }
-                if scriptMismatch {
+                if languageMismatch {
                     LogManager.shared.log("🤖 Combined: ⚠️ Language still mismatched after \(maxRetries) attempts — accepting result rather than losing the title", type: .error)
                 }
 
@@ -438,6 +464,51 @@ final class AINamingService {
         if latinRatio >= 0.85 { return .latin }
         if cyrillicRatio >= 0.85 { return .cyrillic }
         return .mixed
+    }
+
+    /// Best-effort dominant-language detection — finer-grained than `dominantScript`.
+    /// Within Cyrillic, distinguishes Russian vs Ukrainian by language-specific letter
+    /// markers (ї/є/ґ → Ukrainian; ы/э/ъ/ё → Russian); otherwise defaults to Russian
+    /// for unmarked Cyrillic. Latin always returns "English" — we don't try to tell
+    /// English apart from Spanish/French/etc.
+    ///
+    /// Returns nil for too-short or unclassifiable input. Used to detect cases like
+    /// Russian narration getting a Ukrainian title (both Cyrillic — `dominantScript`
+    /// flags them as a match even though the language is wrong).
+    func dominantLanguage(_ s: String) -> String? {
+        var latin = 0
+        var cyrillic = 0
+        var hasUkrainianMarker = false
+        var hasRussianMarker = false
+        for u in s.unicodeScalars {
+            let v = u.value
+            if (v >= 0x0041 && v <= 0x005A) || (v >= 0x0061 && v <= 0x007A) {
+                latin += 1
+            } else if (v >= 0x0400 && v <= 0x04FF) || (v >= 0x0500 && v <= 0x052F) {
+                cyrillic += 1
+                // Ukrainian-only letters: і І ї Ї є Є ґ Ґ
+                if v == 0x0456 || v == 0x0406 || v == 0x0457 || v == 0x0407
+                    || v == 0x0454 || v == 0x0404 || v == 0x0491 || v == 0x0490 {
+                    hasUkrainianMarker = true
+                }
+                // Russian-only letters: ы Ы э Э ъ Ъ ё Ё
+                if v == 0x044B || v == 0x042B || v == 0x044D || v == 0x042D
+                    || v == 0x044A || v == 0x042A || v == 0x0451 || v == 0x0401 {
+                    hasRussianMarker = true
+                }
+            }
+        }
+        let total = latin + cyrillic
+        guard total >= 5 else { return nil }
+        if cyrillic > latin {
+            if hasUkrainianMarker && !hasRussianMarker { return "Ukrainian" }
+            if hasRussianMarker && !hasUkrainianMarker { return "Russian" }
+            if hasUkrainianMarker { return "Ukrainian" }
+            // Cyrillic but no language-specific markers — default to Russian
+            // (more common globally; safer fallback than mis-tagging as Ukrainian).
+            return "Russian"
+        }
+        return "English"
     }
 
     private struct CombinedResponse {

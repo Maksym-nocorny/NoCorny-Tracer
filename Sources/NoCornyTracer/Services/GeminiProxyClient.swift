@@ -1,15 +1,25 @@
 import Foundation
 
-/// HTTP client that proxies Gemini API calls through the Cloudflare Worker.
-/// The real Gemini API key lives only on the Worker — the app never sees it.
+/// HTTP client that proxies Gemini API calls through the Tracer web backend.
+/// Auth is the per-user bearer token issued at tracer.nocorny.com — the real
+/// Gemini API key lives only on the server, so a leaked binary can't burn
+/// through the project's billing.
 final class GeminiProxyClient {
     private let baseURL: String
-    private let appSecret: String
+    private let tokenProvider: () -> String?
 
-    init(baseURL: String = AppSecrets.proxyBaseURL, appSecret: String = AppSecrets.appSecret) {
+    init(
+        baseURL: String = "https://tracer.nocorny.com/api/gemini",
+        tokenProvider: @escaping () -> String?
+    ) {
         self.baseURL = baseURL
-        self.appSecret = appSecret
+        self.tokenProvider = tokenProvider
     }
+
+    /// True when a Tracer bearer token is available. Callers should check this
+    /// before kicking off expensive prep work (audio extraction, frame capture)
+    /// to fail fast for signed-out users.
+    var isReady: Bool { tokenProvider() != nil }
 
     // MARK: - Generate Content
 
@@ -30,15 +40,20 @@ final class GeminiProxyClient {
         contents: [[String: Any]],
         generationConfig: [String: Any]? = nil
     ) async throws -> GeminiProxyResult {
-        let url = URL(string: "\(baseURL)/v1/models/\(model):generateContent")!
+        guard let token = tokenProvider() else {
+            throw ProxyError.notSignedIn
+        }
+
+        let url = URL(string: "\(baseURL)/proxy")!
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(appSecret, forHTTPHeaderField: "X-App-Secret")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.timeoutInterval = 120 // Gemini can be slow for large media
 
         var body: [String: Any] = [
+            "model": model,
             "contents": contents,
             "safetySettings": Self.defaultSafetySettings,
         ]
@@ -179,12 +194,15 @@ struct ModalityTokens: Equatable {
 // MARK: - Errors
 
 enum ProxyError: LocalizedError {
+    case notSignedIn
     case invalidResponse
     case serverError(status: Int, body: String)
     case noTextInResponse
 
     var errorDescription: String? {
         switch self {
+        case .notSignedIn:
+            return "Not signed in to Tracer — AI naming requires an account"
         case .invalidResponse:
             return "Invalid response from proxy"
         case .serverError(let status, let body):
