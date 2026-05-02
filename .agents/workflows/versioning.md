@@ -25,9 +25,9 @@ The first number is changed **only when explicitly requested** by the user.
 
 ### Important: Bundle ID & App Name Constraints
 As of version 3.0.0+, the application must use the following strict identifiers:
-- **Bundle ID**: `com.nocornytracer.mac.v3`
+- **Bundle ID**: `com.nocorny.tracer`
 - **App Name**: `"NoCorny Tracer"` (with a space)
 - **Warning**: Do not revert the Bundle ID to `.app` or change the filename formatting. Sparkle checks the exact Bundle ID match. If the identifier in the downloaded update does not perfectly match the running app, Sparkle will throw an `SUInvalidHostBundleIdentifierError` and refuse to install the update to protect against hijacking.
 
 > [!CAUTION]
-> **Strict Testing Rule:** If you want to make a build for tests, YOU STRICTLY HAVE to change the bundle identifier to a temporary new one only for tests to prevent conflict with the main installed application. Do NOT use `com.nocornytracer.mac.v3` for local testing.
+> **Strict Testing Rule:** If you want to make a build for tests, YOU STRICTLY HAVE to change the bundle identifier to a temporary new one only for tests to prevent conflict with the main installed application. Do NOT use `com.nocorny.tracer` for local testing.

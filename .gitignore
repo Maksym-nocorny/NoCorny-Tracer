@@ -12,3 +12,26 @@ Sources/NoCornyTracer/Secrets.swift
 ## macOS
 .DS_Store
 *.xcuserdata
+
+## Tooling debug output
+.playwright-mcp/
+
+## Per-user Claude Code config (machine-specific paths)
+.claude/settings.local.json
+
+## Ad-hoc audit / review screenshots in repo root
+/audit-*.png
+/404-*.png
+/svicha-*.png
+/*-fixed.png
+/landing-footer.png
+/footer-redesign.png
+/download-page.png
+/privacy-page.png
+/terms-page.png
+/views-feature-live.png
+/mobile-fixed.png
+/thumbnail-fixed-poster-visible.png
+
+## Misc archives
+*.zip

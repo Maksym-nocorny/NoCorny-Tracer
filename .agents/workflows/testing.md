@@ -7,19 +7,19 @@ To prevent conflicts with the production version of NoCorny Tracer installed on 
 
 ## 1. Changing the Bundle Identifier
 
-The primary Bundle ID is `com.nocornytracer.mac.v3`. For testing, change it to something like `com.nocornytracer.mac.test`.
+The primary Bundle ID is `com.nocorny.tracer`. For testing, change it to something like `com.nocorny.tracer.test`.
 
 ### Step A: Update `Info.plist`
 Modify `Sources/NoCornyTracer/Info.plist`:
 ```xml
 <key>CFBundleIdentifier</key>
-<string>com.nocornytracer.mac.test</string>
+<string>com.nocorny.tracer.test</string>
 ```
 
 ### Step B: Update `build_dmg.sh` (If creating a test DMG)
 If you are running the build script, update the `BUNDLE_ID` variable:
 ```bash
-BUNDLE_ID="com.nocornytracer.mac.test"
+BUNDLE_ID="com.nocorny.tracer.test"
 ```
 
 ---
@@ -49,8 +49,8 @@ If you want to test the full installer and installation flow:
 > Sparkle auto-updates will permanently break for your users if the Bundle ID changes inconsistently.
 
 Before running `./scripts/release.sh` for an official update, ensure you have:
-1.  Reverted `Info.plist` back to `com.nocornytracer.mac.v3`.
-2.  Reverted `scripts/build_dmg.sh` back to `com.nocornytracer.mac.v3`.
+1.  Reverted `Info.plist` back to `com.nocorny.tracer`.
+2.  Reverted `scripts/build_dmg.sh` back to `com.nocorny.tracer`.
 
 ---
 

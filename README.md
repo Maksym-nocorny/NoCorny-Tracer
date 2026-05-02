@@ -39,8 +39,8 @@ You can get the latest version of NoCorny Tracer from the Releases page.
 
 Explore the following documentation if you'd like to learn more about the app or to review our policies:
 
-- [Privacy Policy](./docs/PRIVACY_POLICY.md)
-- [Terms of Service](./docs/TERMS_OF_SERVICE.md)
+- [Privacy Policy](https://tracer.nocorny.com/privacy)
+- [Terms of Service](https://tracer.nocorny.com/terms)
 - [Changelog](./CHANGELOG.md)
 
 ---

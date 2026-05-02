@@ -55,5 +55,5 @@ If the app says "Update Error!" or "You're up to date!" while a new release exis
 To fix a severe macOS 26 Tahoe bug where the system would permanently hide the menu bar icon after repeated developer reinstallations, the app's fundamental definitions were updated in v3.0.0. **Do not change these values casually**, as doing so will cause Sparkle to permanently silently block all auto-updates to your users for security reasons (`SUInvalidHostBundleIdentifierError`).
 
 - **Exact App Name**: `"NoCorny Tracer"` (with a space).
-- **Exact Bundle ID**: `com.nocornytracer.mac.v3` (changed from `.mac` and `.app`).
+- **Exact Bundle ID**: `com.nocorny.tracer` (changed from `.mac` and `.app`).
 - **File Hierarchy Constraints**: Sparkle demands that the downloaded App Name, the Bundle ID, and the Ed25519 signature perfectly align with the currently running application, or it will refuse to install the update to protect against hijacking.
