@@ -9,8 +9,6 @@ Paste the output into Sources/NoCornyTracer/Secrets.swift.
 import os
 
 secrets = {
-    "proxyBaseURL": input("Enter proxyBaseURL: ").strip(),
-    "appSecret": input("Enter appSecret: ").strip(),
     "dropboxAppKey": input("Enter dropboxAppKey: ").strip(),
 }
 
