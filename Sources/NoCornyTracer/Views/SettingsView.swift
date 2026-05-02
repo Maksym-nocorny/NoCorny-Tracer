@@ -456,13 +456,13 @@ struct SettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
 
                 HStack(spacing: Theme.Spacing.lg) {
-                    Link("Privacy Policy", destination: URL(string: "https://maksym-nocorny.github.io/NoCorny-Tracer/privacy-policy")!)
+                    Link("Privacy Policy", destination: URL(string: "https://tracer.nocorny.com/privacy")!)
                         .font(Theme.Typography.body(11))
                         .onHover { inside in
                             if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
                         }
 
-                    Link("Terms of Service", destination: URL(string: "https://maksym-nocorny.github.io/NoCorny-Tracer/terms-of-service")!)
+                    Link("Terms of Service", destination: URL(string: "https://tracer.nocorny.com/terms")!)
                         .font(Theme.Typography.body(11))
                         .onHover { inside in
                             if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
