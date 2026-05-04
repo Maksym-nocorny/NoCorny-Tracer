@@ -1,5 +1,9 @@
 # Changelog
 
+## [3.12.1] - 2026-05-04
+### Changed
+- **App icon redesigned to Trace V1** — a smooth S-curve bezier trace with a radiant pink endpoint, purple→pink gradient stroke on near-black squircle background. Replaces the previous concentric-circle design. Affects Dock, Finder, App Switcher, About panel, and in-app icon. Menu bar icon is intentionally unchanged. Source in `assets/icon-source.svg`.
+
 ## [3.12.0] - 2026-05-02
 ### Changed
 - **Tracer API token now lives in the real macOS Keychain instead of an XOR-obfuscated file in Application Support.** Each Keychain item is created with a fresh ACL, so any external process that tries to read the token (malware, scripts, other apps) triggers a system "wants to use your confidential information" prompt — the user explicitly grants or denies. Existing installs auto-migrate on first launch: the file-based store is read once, values are copied into the Keychain, and `secrets.bin` + `key.bin` are deleted. No re-sign-in required.
