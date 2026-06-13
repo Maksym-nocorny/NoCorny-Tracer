@@ -494,12 +494,32 @@ final class AppState {
             do {
                 let videoPath = "\(resolvedFolder)/\(videoFilename)"
                 LogManager.shared.log("📤 Upload: Starting video upload → \(videoPath)")
-                let uploadedPath = try await dropboxUploadManager.upload(
-                    fileURL: fileURL,
-                    dropboxPath: videoPath,
-                    mode: .overwrite,
-                    accessToken: token
-                )
+                let uploadedPath: String
+                do {
+                    uploadedPath = try await dropboxUploadManager.upload(
+                        fileURL: fileURL,
+                        dropboxPath: videoPath,
+                        mode: .overwrite,
+                        accessToken: token
+                    )
+                } catch {
+                    // B1.9: a long upload can outlive the short-lived Dropbox token,
+                    // so a stale-token failure would otherwise be permanent. Refresh
+                    // once; only retry if we actually got a *different* token (i.e.
+                    // the old one had expired) — otherwise rethrow so genuine failures
+                    // still surface. NOTE: this re-uploads from the start; chunked
+                    // resume with a fresh token remains a future optimization.
+                    let refreshed = await dropboxAuthManager.refreshTokenIfNeeded() ?? token
+                    guard refreshed != token else { throw error }
+                    token = refreshed
+                    LogManager.shared.log("📤 Upload: token refreshed after failure — retrying once", type: .info)
+                    uploadedPath = try await dropboxUploadManager.upload(
+                        fileURL: fileURL,
+                        dropboxPath: videoPath,
+                        mode: .overwrite,
+                        accessToken: token
+                    )
+                }
                 LogManager.shared.log("📤 Upload: ✅ Uploaded → \(uploadedPath)")
 
                 let sharedURL = try await dropboxUploadManager.createSharedLink(
