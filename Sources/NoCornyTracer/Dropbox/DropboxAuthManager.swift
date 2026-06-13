@@ -42,6 +42,11 @@ final class DropboxAuthManager: NSObject {
 
     private var proxiedExpiresAt: Date?
 
+    /// The currently-running token refresh, if any. Concurrent callers await it
+    /// instead of each firing their own `/api/dropbox/access-token` request.
+    /// Main-actor-isolated, so no lock is needed to coordinate it.
+    @MainActor private var inFlightRefresh: Task<String?, Never>?
+
     override init() {
         super.init()
     }
@@ -87,32 +92,47 @@ final class DropboxAuthManager: NSObject {
 
     // MARK: - Token Refresh (proxied)
 
+    @MainActor
     func refreshTokenIfNeeded() async -> String? {
         if let current = accessToken,
            let expiry = proxiedExpiresAt,
            Date().addingTimeInterval(300) < expiry {
             return current
         }
+        // Coalesce concurrent refreshes: the recordings list fires one per visible
+        // thumbnail row, so without this they'd each hit the server in parallel
+        // (the old random 0–500ms sleep in DropboxThumbnailView was a band-aid for
+        // exactly this). Everything here is main-actor-isolated, so no lock needed.
+        if let existing = inFlightRefresh {
+            return await existing.value
+        }
+        let task = Task { [weak self] () -> String? in
+            await self?.performTokenRefresh() ?? nil
+        }
+        inFlightRefresh = task
+        let token = await task.value
+        inFlightRefresh = nil
+        return token
+    }
+
+    @MainActor
+    private func performTokenRefresh() async -> String? {
         guard let fetch = fetchProxiedToken else { return accessToken }
 
         switch await fetch() {
         case .success(let result):
-            await MainActor.run {
-                self.accessToken = result.token
-                self.proxiedExpiresAt = result.expiresAt
-                self.isProxied = true
-                self.isSignedIn = true
-            }
+            self.accessToken = result.token
+            self.proxiedExpiresAt = result.expiresAt
+            self.isProxied = true
+            self.isSignedIn = true
             return result.token
 
         case .authoritativeNegative:
             // Server definitively says Dropbox is not connected — tear down.
-            await MainActor.run {
-                self.isSignedIn = false
-                self.accessToken = nil
-                self.isProxied = false
-                self.proxiedExpiresAt = nil
-            }
+            self.isSignedIn = false
+            self.accessToken = nil
+            self.isProxied = false
+            self.proxiedExpiresAt = nil
             return nil
 
         case .transientFailure:

@@ -27,6 +27,12 @@ final class TracerAPIClient {
     /// Used to verify the callback URL came from our initiated flow.
     private var pendingBrowserState: String?
 
+    /// Invoked once when a Tracer API call returns HTTP 401, meaning the stored
+    /// token was revoked server-side. Lets `AppState` mirror the rest of a
+    /// sign-out (e.g. clear proxied Dropbox state) without wiping the local
+    /// recordings library. Set by `AppState`. Invoked on the main actor.
+    var onTokenRevoked: (@MainActor () -> Void)?
+
     init() {
         if let token = KeychainHelper.load(key: Self.tokenKey), !token.isEmpty {
             self.isSignedIn = true
@@ -159,6 +165,18 @@ final class TracerAPIClient {
         LogManager.shared.log("🔐 Tracer: Signed out")
     }
 
+    /// Called when any API call sees HTTP 401: the stored token has been revoked.
+    /// Drops the app to a signed-out state (so the UI prompts re-auth instead of
+    /// silently failing every call forever) and notifies `AppState`. Guarded by
+    /// `isSignedIn` so a burst of concurrent 401s only triggers one sign-out.
+    @MainActor
+    private func handleUnauthorized() {
+        guard isSignedIn else { return }
+        LogManager.shared.log("🔐 Tracer: token rejected (401) — signing out", type: .error)
+        signOut()
+        onTokenRevoked?()
+    }
+
     // MARK: - Refresh Profile
 
     /// Re-fetches the user's profile from /api/tokens/me and updates UI state.
@@ -171,6 +189,7 @@ final class TracerAPIClient {
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
+            if (response as? HTTPURLResponse)?.statusCode == 401 { handleUnauthorized(); return }
             guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return }
             let info = try JSONDecoder().decode(TokenInfo.self, from: data)
 
@@ -247,6 +266,7 @@ final class TracerAPIClient {
 
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
+            if (response as? HTTPURLResponse)?.statusCode == 401 { await handleUnauthorized(); return nil }
             guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
                 if let http = response as? HTTPURLResponse {
                     LogManager.shared.log("🌐 Tracer: initVideo failed with status \(http.statusCode)", type: .error)
@@ -304,6 +324,7 @@ final class TracerAPIClient {
 
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
+            if (response as? HTTPURLResponse)?.statusCode == 401 { await handleUnauthorized(); return nil }
             guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
                 if let http = response as? HTTPURLResponse {
                     LogManager.shared.log("🌐 Tracer: Register video failed with status \(http.statusCode)", type: .error)
@@ -362,6 +383,7 @@ final class TracerAPIClient {
             let (_, response) = try await URLSession.shared.data(for: request)
             if let http = response as? HTTPURLResponse {
                 LogManager.shared.log("🌐 Tracer: PATCH /api/videos/\(slug) → \(http.statusCode)")
+                if http.statusCode == 401 { await handleUnauthorized() }
             }
         } catch {
             LogManager.shared.log(error: error, message: "🌐 Tracer: updateVideo failed")
@@ -407,10 +429,17 @@ final class TracerAPIClient {
                 }
                 return .success(DropboxTokenResult(token: accessToken,
                                                     expiresAt: Self.parseISO8601(decoded.expiresAt)))
-            case 401, 403, 404:
-                return .authoritativeNegative
+            case 401:
+                // Tracer bearer was revoked — sign out rather than mistaking this
+                // for a Dropbox disconnect, and return transient so the local
+                // library is preserved (not wiped) on the way out.
+                await handleUnauthorized()
+                return .transientFailure
             default:
-                // 5xx / 429 / 408 / anything else — transient, retry later.
+                // 403 / 404 / 5xx / 429 / 408 are ambiguous (deploy blip, transient
+                // auth). The ONLY authoritative "Dropbox disconnected" signal is an
+                // HTTP-200 body with {connected:false}, handled above. Treat the
+                // rest as transient so a server hiccup never wipes the library.
                 return .transientFailure
             }
         } catch {
@@ -443,6 +472,7 @@ final class TracerAPIClient {
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         do {
             let (_, response) = try await URLSession.shared.data(for: request)
+            if (response as? HTTPURLResponse)?.statusCode == 401 { await handleUnauthorized(); return false }
             return (response as? HTTPURLResponse)?.statusCode == 200
         } catch {
             LogManager.shared.log(error: error, message: "🌐 Tracer: disconnect Dropbox failed")
@@ -472,6 +502,7 @@ final class TracerAPIClient {
 
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
+            if (response as? HTTPURLResponse)?.statusCode == 401 { await handleUnauthorized(); return nil }
             guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return nil }
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
@@ -494,6 +525,7 @@ final class TracerAPIClient {
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         do {
             let (_, response) = try await URLSession.shared.data(for: request)
+            if (response as? HTTPURLResponse)?.statusCode == 401 { await handleUnauthorized(); return false }
             return (response as? HTTPURLResponse)?.statusCode == 200
         } catch {
             LogManager.shared.log(error: error, message: "🌐 Tracer: delete video failed")

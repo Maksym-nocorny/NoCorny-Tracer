@@ -186,6 +186,14 @@ final class AppState {
             await self?.tracerAPIClient.disconnectDropbox()
         }
 
+        // Tracer rejected our token (HTTP 401) → the client already signed out.
+        // Mirror a manual sign-out's Dropbox teardown, but deliberately do NOT
+        // wipe the recordings library: the rows are still valid and will refresh
+        // once the user signs in again.
+        tracerAPIClient.onTokenRevoked = { [weak self] in
+            self?.dropboxAuthManager.clearProxiedState()
+        }
+
         // If the user is already signed in to Tracer at launch, try to pick up
         // their Dropbox connection from the server immediately. Run these
         // sequentially so the Dropbox-status check has a chance to wipe the
