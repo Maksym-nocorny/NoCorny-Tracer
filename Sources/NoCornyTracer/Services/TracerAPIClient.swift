@@ -379,21 +379,59 @@ final class TracerAPIClient {
 
     /// Fetches a short-lived Dropbox access token from the Tracer backend.
     /// Requires the user to be signed in to Tracer AND to have connected Dropbox
-    /// on tracer.nocorny.com. Returns nil if either is missing.
-    func fetchDropboxAccessToken() async -> DropboxProxyToken? {
-        guard let token = apiToken else { return nil }
+    /// on tracer.nocorny.com.
+    ///
+    /// Returns a tri-state so callers can tell a *definitive* "Dropbox is not
+    /// connected" (HTTP 200 `{connected:false}`, or 401/403/404) apart from a
+    /// transient failure (offline, timeout, 5xx, unparseable body). Only the
+    /// former is safe to treat as a disconnect; the latter must leave local
+    /// state untouched (see `AppState.syncDropboxFromTracer`).
+    func fetchDropboxAccessToken() async -> APIResult<DropboxTokenResult> {
+        // No Tracer token at all ⇒ definitively cannot obtain a Dropbox token.
+        guard let token = apiToken else { return .authoritativeNegative }
 
         var request = URLRequest(url: URL(string: "\(Self.baseURL)/api/dropbox/access-token")!)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
 
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return nil }
-            return try JSONDecoder().decode(DropboxProxyToken.self, from: data)
+            guard let http = response as? HTTPURLResponse else { return .transientFailure }
+            switch http.statusCode {
+            case 200:
+                guard let decoded = try? JSONDecoder().decode(DropboxProxyToken.self, from: data) else {
+                    // Server reachable but body unusable — do NOT destroy local state.
+                    return .transientFailure
+                }
+                guard decoded.connected, let accessToken = decoded.accessToken else {
+                    return .authoritativeNegative
+                }
+                return .success(DropboxTokenResult(token: accessToken,
+                                                    expiresAt: Self.parseISO8601(decoded.expiresAt)))
+            case 401, 403, 404:
+                return .authoritativeNegative
+            default:
+                // 5xx / 429 / 408 / anything else — transient, retry later.
+                return .transientFailure
+            }
         } catch {
             LogManager.shared.log(error: error, message: "🌐 Tracer: fetch Dropbox token failed")
-            return nil
+            return .transientFailure
         }
+    }
+
+    /// Parses an ISO-8601 timestamp accepting BOTH the fractional-seconds form
+    /// (JavaScript `Date.toISOString()` always emits `…123Z`) and the plain
+    /// form. A bare `ISO8601DateFormatter()` rejects fractional seconds, which
+    /// previously made every proxied token look already-expired and forced a
+    /// full server round-trip on every Dropbox operation.
+    static func parseISO8601(_ string: String?) -> Date? {
+        guard let string = string else { return nil }
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = fractional.date(from: string) { return date }
+        let plain = ISO8601DateFormatter()
+        plain.formatOptions = [.withInternetDateTime]
+        return plain.date(from: string)
     }
 
     /// Removes the user's Dropbox connection from the Tracer backend.

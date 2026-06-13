@@ -26,8 +26,9 @@ final class DropboxAuthManager: NSObject {
     var isProxied = false
 
     /// Async closure that fetches a fresh Dropbox access token from Tracer.
-    /// Set by `AppState` after construction. Returns nil if server says not connected.
-    var fetchProxiedToken: (() async -> (accessToken: String, expiresAt: Date?)?)?
+    /// Set by `AppState` after construction. Returns a tri-state so a transient
+    /// network failure is never mistaken for a real disconnect.
+    var fetchProxiedToken: (() async -> APIResult<DropboxTokenResult>)?
 
     /// Disconnects Dropbox on the backend (called by sign-out).
     var disconnectProxied: (() async -> Void)?
@@ -92,21 +93,35 @@ final class DropboxAuthManager: NSObject {
            Date().addingTimeInterval(300) < expiry {
             return current
         }
-        guard let fetch = fetchProxiedToken, let result = await fetch() else {
+        guard let fetch = fetchProxiedToken else { return accessToken }
+
+        switch await fetch() {
+        case .success(let result):
+            await MainActor.run {
+                self.accessToken = result.token
+                self.proxiedExpiresAt = result.expiresAt
+                self.isProxied = true
+                self.isSignedIn = true
+            }
+            return result.token
+
+        case .authoritativeNegative:
+            // Server definitively says Dropbox is not connected — tear down.
             await MainActor.run {
                 self.isSignedIn = false
                 self.accessToken = nil
                 self.isProxied = false
+                self.proxiedExpiresAt = nil
             }
             return nil
+
+        case .transientFailure:
+            // Could not reach/understand the server. Do NOT sign out on a network
+            // blip — keep existing state and just report no fresh token. If the
+            // current token is still within its validity window the caller can
+            // keep using it; otherwise it gets nil and treats it as a retryable miss.
+            return accessToken
         }
-        await MainActor.run {
-            self.accessToken = result.accessToken
-            self.proxiedExpiresAt = result.expiresAt
-            self.isProxied = true
-            self.isSignedIn = true
-        }
-        return result.accessToken
     }
 
     // MARK: - Account Info
@@ -117,7 +132,12 @@ final class DropboxAuthManager: NSObject {
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
 
         do {
-            let (data, _) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+                let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+                LogManager.shared.log("Dropbox get_current_account failed: HTTP \(code)", type: .error)
+                return
+            }
             if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
                 await MainActor.run {
                     self.isSignedIn = true
