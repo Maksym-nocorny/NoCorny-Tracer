@@ -97,9 +97,11 @@ struct MainView: View {
         .alert("Start at Login?", isPresented: $appState.showLaunchAtLoginPrompt) {
             Button("Yes, start at login") {
                 appState.launchAtLogin = true
+                appState.updateLaunchAtLogin()   // apply now; didSet only persisted the pref
             }
             Button("No thanks", role: .cancel) {
                 appState.launchAtLogin = false
+                appState.updateLaunchAtLogin()
             }
         } message: {
             Text("Would you like NoCorny Tracer to start automatically when you log in to your Mac?")

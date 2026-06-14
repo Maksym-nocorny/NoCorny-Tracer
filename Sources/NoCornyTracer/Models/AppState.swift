@@ -717,7 +717,16 @@ final class AppState {
     private func loadRecordings() {
         guard let data = UserDefaults.standard.data(forKey: recordingsKey),
               let decoded = try? JSONDecoder().decode([Recording].self, from: data) else { return }
-        recordings = decoded
+        // Any recording still marked .uploading is a leftover from a session that was
+        // killed mid-upload — there is no in-flight task for it now, so it would spin
+        // forever. Reconcile to .failed so the UI offers a retry instead.
+        recordings = decoded.map { rec in
+            guard rec.uploadStatus == .uploading else { return rec }
+            var r = rec
+            r.uploadStatus = .failed
+            r.uploadError = "Upload interrupted — tap to retry"
+            return r
+        }
     }
 
     // MARK: - History Management

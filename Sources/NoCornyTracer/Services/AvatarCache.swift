@@ -21,6 +21,8 @@ final class AvatarCache {
     }
 
     private var meta: Meta?
+    /// In-flight fetch, so sign-out can cancel it and we don't start duplicates.
+    private var fetchTask: Task<Void, Never>?
     private let cacheDir: URL
     private var metaFile: URL { cacheDir.appendingPathComponent("avatar.meta.json") }
     private var imageFile: URL { cacheDir.appendingPathComponent("avatar.jpg") }
@@ -55,10 +57,19 @@ final class AvatarCache {
             image = nil
         }
 
-        Task { await fetch(urlString: urlString, url: url) }
+        // De-duplicate: don't stack a second fetch on top of one already running.
+        guard fetchTask == nil else { return }
+        fetchTask = Task { [weak self] in
+            await self?.fetch(urlString: urlString, url: url)
+            self?.fetchTask = nil
+        }
     }
 
     func clear() {
+        // Cancel any in-flight fetch so it can't complete after sign-out and
+        // re-persist the previous user's avatar.
+        fetchTask?.cancel()
+        fetchTask = nil
         meta = nil
         image = nil
         try? FileManager.default.removeItem(at: metaFile)
@@ -67,7 +78,9 @@ final class AvatarCache {
 
     private func fetch(urlString: String, url: URL) async {
         var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
-        if meta?.url == urlString {
+        // Only send a conditional GET when we actually have the cached image to
+        // revalidate; otherwise a 304 would leave the avatar permanently blank.
+        if meta?.url == urlString, image != nil {
             if let etag = meta?.etag { req.addValue(etag, forHTTPHeaderField: "If-None-Match") }
             if let lm = meta?.lastModified { req.addValue(lm, forHTTPHeaderField: "If-Modified-Since") }
         }
@@ -76,6 +89,9 @@ final class AvatarCache {
               let http = response as? HTTPURLResponse else {
             return
         }
+
+        // Sign-out (or a new fetch) happened while we were awaiting — discard.
+        guard !Task.isCancelled else { return }
 
         if http.statusCode == 304 {
             // Not modified — bump fetchedAt so we don't revalidate on every open.

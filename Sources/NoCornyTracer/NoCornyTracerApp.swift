@@ -41,20 +41,8 @@ struct NoCornyTracerApp: App {
             )
                 .preferredColorScheme(appState.appTheme.colorScheme)
                 .tint(Theme.Colors.brandPurple)
-                .onReceive(NotificationCenter.default.publisher(for: .didReceiveURL)) { notification in
-                    guard let url = notification.object as? URL else { return }
-                    if url.scheme == "nocornytracer" {
-                        Task {
-                            await appState.tracerAPIClient.completeBrowserSignIn(url: url)
-                            if appState.tracerAPIClient.isSignedIn {
-                                await appState.syncDropboxFromTracer()
-                                await appState.reloadRecordingsFromTracer()
-                            }
-                        }
-                    }
-                    // Dropbox is now managed entirely on the web — the app no longer
-                    // listens for db-<key>:// callbacks.
-                }
+                // The nocornytracer:// sign-in callback is handled in AppDelegate
+                // (handleProcessURLEvent) so it works even when this window is closed.
                 .onChange(of: appState.isCameraEnabled) { _, newValue in
                     cameraWindowManager.updateVisibility(isEnabled: newValue, appState: appState)
                 }
@@ -343,6 +331,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return false
     }
 
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // If a recording is in progress, finalize it before quitting — otherwise the
+        // app exits with an unfinalized (moov-less, unplayable) file and the whole
+        // recording is lost. stopRecording() writes the file and persists the row,
+        // so it survives to be uploaded/retried on next launch.
+        guard let appState = AppState.shared, appState.recordingManager.isRecording else {
+            return .terminateNow
+        }
+        Task { @MainActor in
+            await appState.stopRecording()
+            NSApplication.shared.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+
     @objc private func toggleRecording() {
         guard let appState = AppState.shared else { return }
         Task { @MainActor in
@@ -387,6 +390,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard let urlString = event.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?.stringValue,
               let url = URL(string: urlString) else { return }
 
-        NotificationCenter.default.post(name: .didReceiveURL, object: url)
+        // Handle the Tracer sign-in callback HERE in the AppDelegate, which always
+        // exists — rather than only via a SwiftUI .onReceive on the main window's
+        // view, which isn't in the hierarchy when the window is closed (so the
+        // callback was silently dropped, leaving the user stuck mid-sign-in).
+        if url.scheme == "nocornytracer", let appState = AppState.shared {
+            Task { @MainActor in
+                await appState.tracerAPIClient.completeBrowserSignIn(url: url)
+                if appState.tracerAPIClient.isSignedIn {
+                    await appState.syncDropboxFromTracer()
+                    await appState.reloadRecordingsFromTracer()
+                }
+            }
+        }
     }
 }

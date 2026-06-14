@@ -84,16 +84,28 @@ final class PermissionsManager {
     }
 
     func requestCamera() {
-        AVCaptureDevice.requestAccess(for: .video) { _ in }
-        if !isCameraGranted {
+        // When the status is still undetermined, just show the system prompt — don't
+        // race it open System Settings off a stale `isCameraGranted`. Only jump to
+        // Settings once the user has already denied/restricted access (the prompt
+        // won't appear again, so Settings is the only path).
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .video) { _ in }
+        case .denied, .restricted:
             openSettings(path: "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera")
+        default:
+            break
         }
     }
 
     func requestMicrophone() {
-        AVCaptureDevice.requestAccess(for: .audio) { _ in }
-        if !isMicrophoneGranted {
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .audio) { _ in }
+        case .denied, .restricted:
             openSettings(path: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
+        default:
+            break
         }
     }
 

@@ -160,13 +160,20 @@ struct RecordingRowView: View {
     @State private var isLinkHovered = false
     @State private var isHovered = false
     @State private var showingDeleteAlert = false
-    @State private var uptime = Date()
+    // Drives the brief post-upload checkmark. Previously every row ran a perpetual
+    // 1 Hz Timer that re-rendered the whole list every second just to expire this —
+    // now it's a one-shot toggle scheduled only when an upload completes.
+    @State private var showCloudIcon = false
 
-    let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
-
-    private var showCloudIcon: Bool {
-        guard let completedAt = recording.uploadCompletedAt else { return false }
-        return Date().timeIntervalSince(completedAt) < 5
+    private func scheduleCloudIcon(_ completedAt: Date?) {
+        guard let completedAt else { showCloudIcon = false; return }
+        let remaining = 5 - Date().timeIntervalSince(completedAt)
+        guard remaining > 0 else { showCloudIcon = false; return }
+        showCloudIcon = true
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000))
+            showCloudIcon = false
+        }
     }
 
     var body: some View {
@@ -323,8 +330,9 @@ struct RecordingRowView: View {
         .onHover { hovering in
             isHovered = hovering
         }
-        .onReceive(timer) { input in
-            uptime = input
+        .onAppear { scheduleCloudIcon(recording.uploadCompletedAt) }
+        .onChange(of: recording.uploadCompletedAt) { _, newValue in
+            scheduleCloudIcon(newValue)
         }
         .background(.clear)
         .contentShape(Rectangle())

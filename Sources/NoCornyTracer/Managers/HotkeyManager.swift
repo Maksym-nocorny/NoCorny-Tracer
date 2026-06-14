@@ -62,7 +62,15 @@ final class HotkeyManager {
     private func handleKeyEventReturning(_ event: NSEvent) -> Bool {
         guard let appState = appState else { return false }
 
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        // Ignore auto-repeat: holding the combo down used to fire the action many
+        // times (e.g. starting several recordings in a row).
+        guard !event.isARepeat else { return false }
+
+        // Subtract Caps Lock so the shortcut still matches when Caps Lock is on
+        // (its flag is part of deviceIndependentFlagsMask and broke the equality check).
+        let flags = event.modifierFlags
+            .intersection(.deviceIndependentFlagsMask)
+            .subtracting(.capsLock)
 
         switch event.keyCode {
         case 15: // "R" key
