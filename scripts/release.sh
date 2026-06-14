@@ -82,13 +82,23 @@ fi
 echo ""
 echo "📝 Updating appcast.xml..."
 
-DOWNLOAD_URL="https://github.com/$GITHUB_REPO/releases/download/v$VERSION/$DMG_NAME.dmg"
-# RFC-822 requires English month/day abbreviations. Force the C locale so the
-# pubDate is correct regardless of the maintainer's environment locale.
-PUB_DATE=$(LC_ALL=C date -u '+%a, %d %b %Y %H:%M:%S %z')
+# Idempotency guard (B8.4): re-running release.sh for a version that already has an
+# <item> in the feed would otherwise sed-insert a SECOND duplicate <item> for it.
+# Keyed on the exact <sparkle:version> marker (unique per release). If present, skip
+# the insert so re-runs are a no-op on the appcast; the build/sign/instruction steps
+# above and below still run. To intentionally replace an item, delete its <item>
+# block from appcast.xml by hand and re-run.
+if grep -q "<sparkle:version>$VERSION</sparkle:version>" "$APPCAST"; then
+    echo "⚠️  appcast.xml already has an <item> for v$VERSION — skipping insert (re-run safe)."
+    echo "    To replace it, delete the existing <item> block for v$VERSION from appcast.xml and re-run."
+else
+    DOWNLOAD_URL="https://github.com/$GITHUB_REPO/releases/download/v$VERSION/$DMG_NAME.dmg"
+    # RFC-822 requires English month/day abbreviations. Force the C locale so the
+    # pubDate is correct regardless of the maintainer's environment locale.
+    PUB_DATE=$(LC_ALL=C date -u '+%a, %d %b %Y %H:%M:%S %z')
 
-# Insert new item AFTER <language>en</language>
-ITEM="    <item>\\
+    # Insert new item AFTER <language>en</language>
+    ITEM="    <item>\\
       <title>Version $VERSION</title>\\
       <pubDate>$PUB_DATE</pubDate>\\
       <sparkle:version>$VERSION</sparkle:version>\\
@@ -100,11 +110,12 @@ ITEM="    <item>\\
         type=\\\"application/octet-stream\\\"/>\\
     </item>"
 
-# Use sed to insert after <language>en</language>
-sed -i '' "s|<language>en</language>|<language>en</language>\\
+    # Use sed to insert after <language>en</language>
+    sed -i '' "s|<language>en</language>|<language>en</language>\\
 $ITEM|" "$APPCAST"
 
-echo "✅ appcast.xml updated"
+    echo "✅ appcast.xml updated"
+fi
 
 # === Step 4: Deploy (asset-first order) ===
 if [ "$PUBLISH" = "1" ]; then
