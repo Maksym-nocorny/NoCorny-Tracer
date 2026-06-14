@@ -56,7 +56,9 @@ private final class CameraOverlayWindow: NSPanel {
 
 /// Safety-net delegate: if AppKit ever moves the window via a code path
 /// that bypasses our `setFrameOrigin` / `setFrame` overrides, `windowDidMove`
-/// fires after the move and we re-clamp here.
+/// fires after the move and we re-clamp here. It also persists the latest
+/// (clamped) origin so the bubble can be restored across toggle off/on and
+/// across app launches.
 private final class CameraWindowDelegate: NSObject, NSWindowDelegate {
     func windowDidMove(_ notification: Notification) {
         guard let window = notification.object as? NSWindow else { return }
@@ -68,6 +70,9 @@ private final class CameraWindowDelegate: NSObject, NSWindowDelegate {
         let clampedY = max(visible.minY, min(origin.y, visible.maxY - size.height))
         if clampedX != origin.x || clampedY != origin.y {
             window.setFrameOrigin(NSPoint(x: clampedX, y: clampedY))
+            CameraWindowManager.saveOrigin(NSPoint(x: clampedX, y: clampedY))
+        } else {
+            CameraWindowManager.saveOrigin(origin)
         }
     }
 }
@@ -76,20 +81,25 @@ private final class CameraWindowDelegate: NSObject, NSWindowDelegate {
 @Observable
 final class CameraWindowManager {
     private var window: NSWindow?
-    private var appState: AppState?
     private var windowDelegate = CameraWindowDelegate()
 
-    func setup(appState: AppState) {
-        self.appState = appState
+    // Persisted bubble origin (survives toggle off/on and app relaunch).
+    // NSPoint isn't directly storable in UserDefaults, so x/y are kept as two Doubles.
+    private static let originXKey = "cameraBubbleOriginX"
+    private static let originYKey = "cameraBubbleOriginY"
 
-        // React to state changes
-        Task {
-            for await _ in NotificationCenter.default.notifications(named: UserDefaults.didChangeNotification) {
-                // It's checked inside the AppState's didSet, but we can also poll here or bind.
-                // An easier way is just to manually update when AppState calls it, but SwiftUI
-                // can also just observe it. We'll use a direct approach in NoCornyTracerApp.
-            }
-        }
+    static func saveOrigin(_ origin: NSPoint) {
+        let defaults = UserDefaults.standard
+        defaults.set(Double(origin.x), forKey: originXKey)
+        defaults.set(Double(origin.y), forKey: originYKey)
+    }
+
+    static func savedOrigin() -> NSPoint? {
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: originXKey) != nil,
+              defaults.object(forKey: originYKey) != nil else { return nil }
+        return NSPoint(x: defaults.double(forKey: originXKey),
+                       y: defaults.double(forKey: originYKey))
     }
 
     func updateVisibility(isEnabled: Bool, appState: AppState) {
@@ -120,8 +130,13 @@ final class CameraWindowManager {
             newWindow.isMovableByWindowBackground = true
             newWindow.delegate = windowDelegate
 
-            // Initial position (bottom left corner with padding)
-            if let screen = NSScreen.main {
+            // Restore the last position if we have one; otherwise fall back to the
+            // bottom-left corner default. setFrameOrigin re-clamps to the current
+            // screen's visibleFrame, so a stale/off-screen saved origin (e.g. a
+            // disconnected display) is self-correcting and never lands off-screen.
+            if let saved = Self.savedOrigin() {
+                newWindow.setFrameOrigin(saved)
+            } else if let screen = NSScreen.main {
                 let padding: CGFloat = 40
                 newWindow.setFrameOrigin(NSPoint(
                     x: screen.visibleFrame.minX + padding,
@@ -138,6 +153,11 @@ final class CameraWindowManager {
     }
 
     private func hideWindow() {
+        // Capture the final (already-clamped) origin before teardown so the next
+        // toggle-on restores it, even if no move fired this session.
+        if let origin = window?.frame.origin {
+            Self.saveOrigin(origin)
+        }
         window?.orderOut(nil)
         window = nil
     }
