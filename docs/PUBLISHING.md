@@ -32,8 +32,10 @@ The project uses a unified release script that handles both building the applica
 ### Run the Release Script
 Execute the following command in the project root:
 ```bash
-./release.sh
+bash scripts/release.sh
 ```
+> [!TIP]
+> Run `bash scripts/release.sh --publish` to have the script create the GitHub release **and** push `appcast.xml` for you in the correct (asset-first) order.
 
 **What this script does:**
 1.  **Builds the App**: Runs `swift build -c release`.
@@ -48,18 +50,13 @@ Execute the following command in the project root:
 
 ## 🚀 3. Deploying to GitHub
 
-Once the build is complete and `appcast.xml` is updated, you need to push the changes and create the release.
+Once the build is complete and `appcast.xml` is updated, you need to create the release **and then** push the changes.
 
-### Step A: Commit & Push
-Sync the repository so users' apps can see the updated `appcast.xml`.
-```bash
-git add appcast.xml CHANGELOG.md Sources/NoCornyTracer/Info.plist
-git commit -m "Release vX.X.X"
-git push origin main
-```
+> [!IMPORTANT]
+> Always **create the GitHub release (upload the DMG) BEFORE pushing `appcast.xml`**. If the feed is pushed first, Sparkle clients fetch it and download an asset that does not exist yet — a 404. The `raw.githubusercontent.com` cache (~5 min, see Troubleshooting) widens this window, so asset-first ordering is required.
 
-### Step B: Create GitHub Release
-Use the GitHub CLI (`gh`) or the web interface to create a new release.
+### Step A: Create GitHub Release (uploads the asset)
+Use the GitHub CLI (`gh`) or the web interface to create a new release with the DMG attached.
 
 **Via Command Line:**
 ```bash
@@ -73,6 +70,14 @@ gh release create vX.X.X "dist/NoCornyTracer-X.X.X.dmg" \
 2. Create a new tag (e.g., `v3.2.0`).
 3. Upload the `.dmg` file from the `dist/` folder.
 4. Publish the release.
+
+### Step B: Commit & Push the feed
+Now that the asset is live, sync the repository so users' apps can see the updated `appcast.xml`.
+```bash
+git add appcast.xml CHANGELOG.md Sources/NoCornyTracer/Info.plist
+git commit -m "Release vX.X.X"
+git push origin main
+```
 
 ---
 

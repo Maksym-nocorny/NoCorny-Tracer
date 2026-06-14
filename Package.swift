@@ -23,6 +23,14 @@ let package = Package(
                 .copy("Resources")
             ],
             linkerSettings: [
+                // Embed Info.plist into the executable's __TEXT,__info_plist section.
+                // NOTE: SwiftPM does NOT track this file as a build input, so editing
+                // Info.plist does not invalidate the cached binary — an incremental
+                // build can ship a STALE embedded plist (wrong CFBundleShortVersionString,
+                // missing LSMinimumSystemVersion, etc.). Release builds therefore clean
+                // the cached release binary before linking and assert the embedded
+                // version matches the source (see scripts/build_dmg.sh, Step 1).
+                // The path is relative to the package root; build scripts cd there first.
                 .unsafeFlags([
                     "-Xlinker", "-sectcreate",
                     "-Xlinker", "__TEXT",

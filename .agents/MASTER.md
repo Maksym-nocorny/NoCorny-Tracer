@@ -3,7 +3,7 @@
 You are working on **NoCorny Tracer**, a macOS menu bar app for screen + face-cam recording with Dropbox sync and AI-powered file naming.
 
 > **Web platform lives in a separate private repo.**
-> The companion site `tracer.nocorny.com` (Next.js) was split out on 2026-05-01 and is now at `Maksym-nocorny/nocorny-tracer-web` (private). Locally: `~/antigravity/nocorny-tracer-web/`. Deploy via `npx vercel --prod` from that directory — no Git integration in Vercel, deploys are manual via CLI.
+> The companion site `tracer.nocorny.com` (Next.js) was split out on 2026-05-01 and is now at `Maksym-nocorny/nocorny-tracer-web` (private). Locally: `~/Projects/nocorny-tracer-web/`. Deploy via `npx vercel --prod` from that directory — no Git integration in Vercel, deploys are manual via CLI.
 > This repo is for the **macOS Swift app only**. Do not re-introduce a `web/` directory here.
 
 ---
@@ -35,11 +35,13 @@ Read these files in order:
 - `Secrets.swift` is gitignored. If missing in a worktree, copy it from the main repo at `Sources/NoCornyTracer/Secrets.swift`.
 
 ### Every PR must include a GitHub Release
-Every merged PR that changes app code **must** be followed by a GitHub release so Sparkle auto-updates work. Steps after merging:
+Every merged PR that changes app code **must** be followed by a GitHub release so Sparkle auto-updates work. **Order matters: create the release (asset) BEFORE pushing `appcast.xml`**, or Sparkle clients hit a 404 on a feed that points at a missing asset. Steps after merging:
 1. Run `bash scripts/release.sh` — builds DMG, signs it, updates `appcast.xml`
-2. Commit and push `appcast.xml`: `git add appcast.xml && git commit -m "Release vX.X.X" && git push`
-3. Create GitHub release: `/opt/homebrew/bin/gh release create vX.X.X "dist/NoCornyTracer-X.X.X.dmg" --title "vX.X.X" --notes "See CHANGELOG.md"`
+2. Create GitHub release (uploads the asset): `/opt/homebrew/bin/gh release create vX.X.X "dist/NoCornyTracer-X.X.X.dmg" --title "vX.X.X" --notes "See CHANGELOG.md"`
+3. Commit and push `appcast.xml` (now the feed points at a live asset): `git add appcast.xml && git commit -m "Release vX.X.X" && git push`
 4. Users with the **same bundle ID** will auto-update via Sparkle. Breaking bundle ID changes require a fresh install.
+
+> Shortcut: `bash scripts/release.sh --publish` performs steps 2–3 in the correct asset-first order automatically.
 
 ### Bundle identifier
 - Current bundle ID: `com.nocorny.tracer`
