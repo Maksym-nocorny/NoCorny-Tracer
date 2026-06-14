@@ -136,9 +136,18 @@ final class LogManager {
         }
     }
     
+    private static let emailRegex = try? NSRegularExpression(
+        pattern: "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}", options: [])
+
     private func sanitize(_ message: String) -> String {
-        let homeDir = NSHomeDirectory()
-        return message.replacingOccurrences(of: homeDir, with: "/Users/[USER]")
+        var result = message.replacingOccurrences(of: NSHomeDirectory(), with: "/Users/[USER]")
+        // Redact email addresses so user PII never lands in the plaintext diagnostic
+        // log (e.g. "Signed in as alice@example.com").
+        if let regex = Self.emailRegex {
+            let range = NSRange(result.startIndex..., in: result)
+            result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "[EMAIL]")
+        }
+        return result
     }
     
     private func getMachineModel() -> String {

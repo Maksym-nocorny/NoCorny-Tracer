@@ -390,7 +390,14 @@ final class DropboxUploadManager {
     // MARK: - Shared Links
 
     /// Creates a shared link for a file. Returns the shared URL string.
-    func createSharedLink(path: String, accessToken: String) async throws -> String {
+    ///
+    /// `visibility` is "public" by default because the Tracer web player streams the
+    /// file via this shared link (a non-public link wouldn't render for viewers).
+    /// Exposed as a parameter so visibility can be tightened in one place once the
+    /// web side switches to authenticated streaming — that change must be coordinated
+    /// with nocorny-tracer-web first, so this is parameterization only (no behavior
+    /// change here).
+    func createSharedLink(path: String, accessToken: String, visibility: String = "public") async throws -> String {
         let url = URL(string: "https://api.dropboxapi.com/2/sharing/create_shared_link_with_settings")!
 
         var request = URLRequest(url: url)
@@ -401,8 +408,8 @@ final class DropboxUploadManager {
         let body: [String: Any] = [
             "path": path,
             "settings": [
-                "requested_visibility": "public",
-                "audience": "public",
+                "requested_visibility": visibility,
+                "audience": visibility,
                 "access": "viewer"
             ]
         ]

@@ -123,21 +123,29 @@ final class TracerAPIClient {
     /// URL is received. Validates `state` and exchanges the token via `signIn(token:)`.
     @MainActor
     func completeBrowserSignIn(url: URL) async {
+        // A callback is only valid for a flow WE initiated: require a pending state
+        // that the callback matches. Without this, ANY nocornytracer://auth/callback?token=…
+        // URL (e.g. opened by a malicious web page) was accepted and could silently
+        // sign the app into an attacker's account — a login-CSRF / forced account switch.
+        guard let expected = pendingBrowserState else {
+            self.errorMessage = "Unexpected sign-in callback — start sign-in from the app"
+            return
+        }
+        // One-shot: consume the pending state regardless of outcome so a replay can't reuse it.
+        pendingBrowserState = nil
+
         guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
               let items = components.queryItems else {
             self.errorMessage = "Invalid callback URL"
             return
         }
-        let token = items.first(where: { $0.name == "token" })?.value
         let state = items.first(where: { $0.name == "state" })?.value
-
-        if let expected = self.pendingBrowserState, state != expected {
+        guard state == expected else {
             self.errorMessage = "Authorization state mismatch"
             return
         }
-        self.pendingBrowserState = nil
 
-        guard let token = token, !token.isEmpty else {
+        guard let token = items.first(where: { $0.name == "token" })?.value, !token.isEmpty else {
             if let err = items.first(where: { $0.name == "error" })?.value, !err.isEmpty {
                 self.errorMessage = err
             } else {
