@@ -8,6 +8,10 @@ final class DropboxUploadManager {
         case uploadFailed(String)
         case noData
         case fileError(String)
+        /// A non-success HTTP response with its status code, optional parsed
+        /// `Retry-After` hint (seconds) and response body. Lets `withRetry`
+        /// classify retryable vs permanent failures without string-parsing.
+        case httpError(status: Int, retryAfter: TimeInterval?, body: String)
 
         var errorDescription: String? {
             switch self {
@@ -15,6 +19,7 @@ final class DropboxUploadManager {
             case .uploadFailed(let msg): return "Upload failed: \(msg)"
             case .noData: return "No data received from server"
             case .fileError(let msg): return "File operation failed: \(msg)"
+            case .httpError(let status, _, let body): return "HTTP \(status): \(body)"
             }
         }
     }
@@ -43,8 +48,12 @@ final class DropboxUploadManager {
         }
     }
 
-    /// Maximum file size for simple upload (150MB)
-    private let simpleUploadLimit = 150 * 1024 * 1024
+    /// Files at or below this size use the cheap single-request `files/upload`
+    /// path; anything larger streams from disk in chunks via the session path so
+    /// we never hold the whole file in memory (and never re-hold it across
+    /// retries). Dropbox permits simple upload up to 150MB, but routing large
+    /// files through the streaming path bounds memory to roughly `chunkSize`.
+    private let simpleUploadLimit = 16 * 1024 * 1024
     /// Chunk size for session uploads (50MB)
     private let chunkSize = 50 * 1024 * 1024
 
@@ -131,7 +140,11 @@ final class DropboxUploadManager {
             let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
             let body = String(data: responseData, encoding: .utf8) ?? ""
             LogManager.shared.log("Dropbox simpleUpload Error: HTTP \(statusCode) - \(body)", type: .error)
-            throw DropboxError.uploadFailed("HTTP \(statusCode): \(body)")
+            throw DropboxError.httpError(
+                status: statusCode,
+                retryAfter: Self.retryAfter(from: response, body: responseData),
+                body: body
+            )
         }
 
         guard let json = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
@@ -213,10 +226,19 @@ final class DropboxUploadManager {
         let (responseData, response) = try await URLSession.shared.data(for: request)
 
         guard let httpResponse = response as? HTTPURLResponse,
-              (200...299).contains(httpResponse.statusCode),
-              let json = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
+              (200...299).contains(httpResponse.statusCode) else {
+            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+            let body = String(data: responseData, encoding: .utf8) ?? ""
+            throw DropboxError.httpError(
+                status: statusCode,
+                retryAfter: Self.retryAfter(from: response, body: responseData),
+                body: "Failed to start upload session: \(body)"
+            )
+        }
+
+        guard let json = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
               let sessionID = json["session_id"] as? String else {
-            throw DropboxError.uploadFailed("Failed to start upload session")
+            throw DropboxError.noData
         }
 
         return sessionID
@@ -240,11 +262,17 @@ final class DropboxUploadManager {
         try setDropboxAPIArg(request: &request, arguments: apiArg)
         request.httpBody = data
 
-        let (_, response) = try await URLSession.shared.data(for: request)
+        let (responseData, response) = try await URLSession.shared.data(for: request)
 
         guard let httpResponse = response as? HTTPURLResponse,
               (200...299).contains(httpResponse.statusCode) else {
-            throw DropboxError.uploadFailed("Failed to append upload session chunk")
+            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+            let body = String(data: responseData, encoding: .utf8) ?? ""
+            throw DropboxError.httpError(
+                status: statusCode,
+                retryAfter: Self.retryAfter(from: response, body: responseData),
+                body: "Failed to append upload session chunk: \(body)"
+            )
         }
     }
 
@@ -274,10 +302,19 @@ final class DropboxUploadManager {
         let (responseData, response) = try await URLSession.shared.data(for: request)
 
         guard let httpResponse = response as? HTTPURLResponse,
-              (200...299).contains(httpResponse.statusCode),
-              let json = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
+              (200...299).contains(httpResponse.statusCode) else {
+            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+            let body = String(data: responseData, encoding: .utf8) ?? ""
+            throw DropboxError.httpError(
+                status: statusCode,
+                retryAfter: Self.retryAfter(from: response, body: responseData),
+                body: "Failed to finish upload session: \(body)"
+            )
+        }
+
+        guard let json = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
               let pathDisplay = json["path_display"] as? String else {
-            throw DropboxError.uploadFailed("Failed to finish upload session")
+            throw DropboxError.noData
         }
 
         return pathDisplay
@@ -285,7 +322,13 @@ final class DropboxUploadManager {
 
     // MARK: - Retry Logic
 
-    private func withRetry<T>(taskName: String = "Operation", attempts: Int = 3, delay: UInt64 = 1_000_000_000, operation: @escaping () async throws -> T) async throws -> T {
+    /// Upper bound on any single inter-attempt wait, including a server-supplied
+    /// `Retry-After`, so a buggy/hostile huge value can't stall the upload Task.
+    private static let maxRetryDelay: TimeInterval = 60
+    /// Base backoff (seconds) for retryable failures with no `Retry-After`.
+    private static let baseRetryDelay: TimeInterval = 1
+
+    private func withRetry<T>(taskName: String = "Operation", attempts: Int = 3, operation: @escaping () async throws -> T) async throws -> T {
         var lastError: Error?
         for attempt in 1...attempts {
             do {
@@ -293,12 +336,55 @@ final class DropboxUploadManager {
             } catch {
                 lastError = error
                 LogManager.shared.log(error: error, message: "⚠️ \(taskName) Attempt \(attempt) failed")
+
+                // Classify: permanent 4xx (except 408 timeout / 429 rate-limit)
+                // are not retryable — fail fast instead of sleeping and retrying.
+                if case let DropboxError.httpError(status, _, _) = error,
+                   (400...499).contains(status), status != 408, status != 429 {
+                    throw error
+                }
+
                 if attempt < attempts {
-                    try await Task.sleep(nanoseconds: delay)
+                    let seconds = Self.retryDelaySeconds(for: error, attempt: attempt)
+                    try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
                 }
             }
         }
         throw lastError ?? DropboxError.uploadFailed("\(taskName) failed after \(attempts) attempts")
+    }
+
+    /// Computes how long to wait before the next attempt: honor a server
+    /// `Retry-After` (e.g. on 429) capped at `maxRetryDelay`, otherwise use
+    /// exponential backoff so successive transient failures don't hammer the
+    /// server.
+    private static func retryDelaySeconds(for error: Error, attempt: Int) -> TimeInterval {
+        let backoff = baseRetryDelay * pow(2, Double(attempt - 1))
+        if case let DropboxError.httpError(_, retryAfter, _) = error, let retryAfter {
+            return min(max(retryAfter, backoff), maxRetryDelay)
+        }
+        return min(backoff, maxRetryDelay)
+    }
+
+    /// Parses a `Retry-After` hint (in seconds) from an HTTP response header or
+    /// a Dropbox JSON `retry_after` field. Returns nil if absent/unparseable.
+    private static func retryAfter(from response: URLResponse?, body: Data?) -> TimeInterval? {
+        if let http = response as? HTTPURLResponse,
+           let header = http.value(forHTTPHeaderField: "Retry-After"),
+           let seconds = TimeInterval(header.trimmingCharacters(in: .whitespaces)) {
+            return seconds
+        }
+        // Dropbox sometimes returns { "error": { "retry_after": N } } on 429.
+        if let body,
+           let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any] {
+            if let errorObj = json["error"] as? [String: Any],
+               let seconds = errorObj["retry_after"] as? Double {
+                return seconds
+            }
+            if let seconds = json["retry_after"] as? Double {
+                return seconds
+            }
+        }
+        return nil
     }
 
     // MARK: - Shared Links
@@ -340,7 +426,11 @@ final class DropboxUploadManager {
 
             let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
             let bodyStr = String(data: responseData, encoding: .utf8) ?? ""
-            throw DropboxError.uploadFailed("Failed to create shared link: HTTP \(statusCode): \(bodyStr)")
+            throw DropboxError.httpError(
+                status: statusCode,
+                retryAfter: Self.retryAfter(from: response, body: responseData),
+                body: "Failed to create shared link: \(bodyStr)"
+            )
         }
     }
 
@@ -429,7 +519,13 @@ final class DropboxUploadManager {
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse,
                   (200...299).contains(httpResponse.statusCode) else {
-                throw DropboxError.noData
+                let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+                let body = String(data: data, encoding: .utf8) ?? ""
+                throw DropboxError.httpError(
+                    status: statusCode,
+                    retryAfter: Self.retryAfter(from: response, body: data),
+                    body: body
+                )
             }
             return data
         }

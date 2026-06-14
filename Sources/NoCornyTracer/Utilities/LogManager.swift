@@ -10,7 +10,11 @@ final class LogManager {
     private let logFileURL: URL
     private let maxLogSize: Int64 = 2 * 1024 * 1024 // 2MB
     private let logQueue = DispatchQueue(label: "com.nocorny.tracer.logging", qos: .background)
-    
+    /// Minimum interval between rotation checks on the write path (avoids a stat per line).
+    private let rotationCheckInterval: TimeInterval = 60
+    /// Timestamp of the last rotation check. Only read/written on `logQueue`.
+    private var lastRotationCheck = Date.distantPast
+
     var lastLogs: [String] = []
     
     private init() {
@@ -86,15 +90,30 @@ final class LogManager {
     }
     
     private func appendToFile(_ line: String) {
-        let data = (line + "\n").data(using: .utf8)!
+        guard let data = (line + "\n").data(using: .utf8) else { return }
         if FileManager.default.fileExists(atPath: logFileURL.path) {
-            if let fileHandle = try? FileHandle(forWritingTo: logFileURL) {
-                fileHandle.seekToEndOfFile()
-                fileHandle.write(data)
-                fileHandle.closeFile()
+            do {
+                let fileHandle = try FileHandle(forWritingTo: logFileURL)
+                defer { try? fileHandle.close() }
+                try fileHandle.seekToEnd()
+                try fileHandle.write(contentsOf: data)
+            } catch {
+                // Never recurse back into self.log() — write directly to the OSLog
+                // sink so a persistently failing disk (e.g. disk-full) cannot crash
+                // or infinite-loop the logger.
+                logger.error("LogManager appendToFile failed: \(error.localizedDescription, privacy: .public)")
             }
         } else {
             try? data.write(to: logFileURL)
+        }
+
+        // Periodically rotate from the serial write path so an always-running
+        // menu bar app's log can't grow unbounded between launches. Throttled so
+        // we don't stat the file on every line.
+        let now = Date()
+        if now.timeIntervalSince(lastRotationCheck) >= rotationCheckInterval {
+            lastRotationCheck = now
+            rotateLogsIfNeeded()
         }
     }
     
