@@ -16,7 +16,6 @@ final class VideoWriter {
     private var assetWriter: AVAssetWriter?
     private var videoInput: AVAssetWriterInput?
     private var audioInput: AVAssetWriterInput?
-    private var pixelBufferAdaptor: AVAssetWriterInputPixelBufferAdaptor?
 
     // MARK: - Timing
     private var isFirstFrame = true
@@ -56,6 +55,11 @@ final class VideoWriter {
 
         let writer = try AVAssetWriter(outputURL: outputURL, fileType: .mp4)
 
+        // Write periodic movie fragments so a crash / power loss / force-quit leaves
+        // a playable file instead of a moov-less, totally unreadable .mp4. The moov
+        // atom is otherwise only written at finishWriting.
+        writer.movieFragmentInterval = CMTime(seconds: 5, preferredTimescale: 1)
+
         // Video input settings — H.264 at 1080p
         let videoSettings: [String: Any] = [
             AVVideoCodecKey: AVVideoCodecType.h264,
@@ -71,17 +75,6 @@ final class VideoWriter {
 
         let vInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
         vInput.expectsMediaDataInRealTime = true
-
-        // Pixel buffer adaptor for frame conversion
-        let sourcePixelBufferAttributes: [String: Any] = [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-            kCVPixelBufferWidthKey as String: videoWidth,
-            kCVPixelBufferHeightKey as String: videoHeight,
-        ]
-        let adaptor = AVAssetWriterInputPixelBufferAdaptor(
-            assetWriterInput: vInput,
-            sourcePixelBufferAttributes: sourcePixelBufferAttributes
-        )
 
         if writer.canAdd(vInput) {
             writer.add(vInput)
@@ -105,11 +98,17 @@ final class VideoWriter {
         self.assetWriter = writer
         self.videoInput = vInput
         self.audioInput = aInput
-        self.pixelBufferAdaptor = adaptor
         self.isFirstFrame = true
         self.isWriting = true
 
-        writer.startWriting()
+        // startWriting() returns false (and sets writer.status = .failed) when the
+        // file can't be created — disk full, permission/sandbox problem, bad dir.
+        // Ignoring it used to let the whole session record into a dead writer and
+        // be lost silently at stop. Surface it as a throw instead.
+        guard writer.startWriting() else {
+            self.isWriting = false
+            throw writer.error ?? VideoWriterError.failedToStart
+        }
     }
     
     func pause() {
@@ -130,7 +129,10 @@ final class VideoWriter {
 
     func appendVideoBuffer(_ sampleBuffer: CMSampleBuffer) {
         writingQueue.sync {
-            guard isWriting,
+            // Pause gating lives here (on writingQueue) instead of being read from
+            // the capture thread off `RecordingManager.isPaused` — that was an
+            // unsynchronized cross-thread Bool read (a data race).
+            guard isWriting, !isPaused,
                   let writer = assetWriter,
                   writer.status == .writing,
                   let videoInput = videoInput,
@@ -167,7 +169,7 @@ final class VideoWriter {
 
     func appendAudioBuffer(_ sampleBuffer: CMSampleBuffer) {
         writingQueue.sync {
-            guard isWriting,
+            guard isWriting, !isPaused,
                   let writer = assetWriter,
                   writer.status == .writing,
                   let audioInput = audioInput,
@@ -228,9 +230,16 @@ final class VideoWriter {
     func stopWriting() async -> URL? {
         guard isWriting, let writer = assetWriter else { return nil }
 
-        isWriting = false
-        videoInput?.markAsFinished()
-        audioInput?.markAsFinished()
+        // Flip the flag and mark inputs finished ON the writing queue, serialized
+        // with in-flight appendVideo/AudioBuffer calls. Doing it on the caller's
+        // thread used to race a tap callback that had already passed the guard,
+        // making it append to an already-finished input → uncatchable NSException
+        // crash at the exact moment a recording is saved.
+        writingQueue.sync {
+            isWriting = false
+            videoInput?.markAsFinished()
+            audioInput?.markAsFinished()
+        }
 
         return await withCheckedContinuation { continuation in
             writer.finishWriting {
@@ -241,6 +250,29 @@ final class VideoWriter {
                     continuation.resume(returning: nil)
                 }
             }
+        }
+    }
+
+    /// Cancels an in-progress write and removes the partial file. Used by
+    /// RecordingManager's start-failure rollback so a half-open writer (and its
+    /// stranded partial .mp4) doesn't leak when audio/screen setup throws.
+    func cancelWriting() {
+        writingQueue.sync {
+            isWriting = false
+            if let writer = assetWriter, writer.status == .writing {
+                writer.cancelWriting()
+            }
+        }
+        try? FileManager.default.removeItem(at: outputURL)
+    }
+}
+
+enum VideoWriterError: LocalizedError {
+    case failedToStart
+
+    var errorDescription: String? {
+        switch self {
+        case .failedToStart: return "Failed to start the video writer (disk full or unwritable location)"
         }
     }
 }
