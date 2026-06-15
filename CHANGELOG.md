@@ -1,5 +1,22 @@
 # Changelog
 
+## [3.13.0] - 2026-06-15
+### Fixed
+- **Recordings no longer vanish when the internet drops.** A brief Wi-Fi loss, timeout, or server hiccup used to be mistaken for "Dropbox disconnected" and could wipe your whole local recordings library. The app now clears the library only when the server explicitly says Dropbox was disconnected — never on a transient network error.
+- **Recording reliability:** a failed start no longer leaves screen capture stuck running with no way to stop it; the writer is checked so a recording can't silently fail to a dead file; a mid-recording stream failure (display unplugged, permission revoked) now stops cleanly instead of "recording" a frozen screen; and a crash or power loss now leaves a playable file instead of an unreadable one.
+- **Quitting during a recording** finalizes and keeps it instead of losing it, and a recording interrupted mid-upload is offered for retry on next launch instead of spinning forever.
+- **AI naming** is more robust on long recordings and unusual transcripts (better size handling, response parsing, and retry logic).
+- **Camera & permissions:** smoother camera on/off, the camera bubble remembers its position, and permission prompts no longer fight with System Settings.
+- **Sign-in callback** now works even when the app window is closed.
+
+### Changed / Important
+- **Security:** the browser sign-in callback is rejected unless the app actually started a sign-in (prevents a malicious page from switching your account); the API token is stored more robustly in the Keychain; and email addresses are kept out of the diagnostic log.
+- **Distribution:** release builds are now universal (Intel + Apple Silicon) and the release pipeline is hardened (correct publish order, optional notarization).
+
+## [3.12.1] - 2026-05-04
+### Changed
+- Updated the app icon to the new "Trace V1" design.
+
 ## [3.12.0] - 2026-05-02
 ### Changed
 - **Tracer API token now lives in the real macOS Keychain instead of an XOR-obfuscated file in Application Support.** Each Keychain item is created with a fresh ACL, so any external process that tries to read the token (malware, scripts, other apps) triggers a system "wants to use your confidential information" prompt — the user explicitly grants or denies. Existing installs auto-migrate on first launch: the file-based store is read once, values are copied into the Keychain, and `secrets.bin` + `key.bin` are deleted. No re-sign-in required.

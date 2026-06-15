@@ -1,11 +1,29 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
   <defs>
-    <linearGradient id="brand" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#3E0693"/>
-      <stop offset="1" stop-color="#6B00DE"/>
+    <linearGradient id="bg" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1c1c20"/>
+      <stop offset="1" stop-color="#0a0a0c"/>
     </linearGradient>
+    <linearGradient id="trace" x1="153.6" y1="716.8" x2="870.4" y2="204.8" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#5A2EAB" stop-opacity="0"/>
+      <stop offset="0.18" stop-color="#7842D6" stop-opacity="0.9"/>
+      <stop offset="0.65" stop-color="#A852FF"/>
+      <stop offset="1" stop-color="#FF4F8E"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="870.4" cy="204.8" r="100" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FF4F8E" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#FF4F8E" stop-opacity="0"/>
+    </radialGradient>
+    <clipPath id="squircle">
+      <rect width="1024" height="1024" rx="230" ry="230"/>
+    </clipPath>
   </defs>
-  <rect x="0" y="0" width="1024" height="1024" rx="230" ry="230" fill="url(#brand)"/>
-  <circle cx="512" cy="512" r="240" fill="none" stroke="#FFFFFF" stroke-width="48" opacity="0.5"/>
-  <circle cx="512" cy="512" r="144" fill="#FFFFFF"/>
+  <g clip-path="url(#squircle)">
+    <rect width="1024" height="1024" fill="url(#bg)"/>
+    <path d="M 153.6,716.8 Q 460.8,819.2 563.2,512 T 870.4,204.8" stroke="#23232a" stroke-width="6" fill="none"/>
+    <circle cx="870.4" cy="204.8" r="100" fill="url(#glow)"/>
+    <path d="M 153.6,716.8 Q 460.8,819.2 563.2,512 T 870.4,204.8" stroke="url(#trace)" stroke-width="67" stroke-linecap="round" fill="none"/>
+    <circle cx="870.4" cy="204.8" r="46" fill="#FF4F8E"/>
+    <circle cx="854" cy="189" r="15" fill="#ffffff" opacity="0.6"/>
+  </g>
 </svg>
