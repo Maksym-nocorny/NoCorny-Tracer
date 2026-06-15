@@ -25,6 +25,17 @@ final class RecordingManager {
     private var durationTimer: Timer?
     private var recordingStartTime: Date?
 
+    /// Set synchronously before the first await in startRecording so a double
+    /// trigger during the async start can't launch a second concurrent capture.
+    private var isStarting = false
+    /// Guards togglePause against re-entrancy across its 0.5s resume sleep.
+    private var isTogglingPause = false
+
+    /// Optional hook fired when a recording is force-stopped because the screen
+    /// stream failed mid-capture. Lets AppState surface the failure / keep the
+    /// partial file. Set by the owner.
+    var onInterrupted: ((Recording?) -> Void)?
+
     // MARK: - Start Recording
 
     @MainActor
@@ -35,7 +46,12 @@ final class RecordingManager {
         videoHeight: Int = 1080,
         fps: Int = 30
     ) async throws {
-        guard !isRecording else { return }
+        // Reentrancy guard: isRecording is only set true after several awaits, so a
+        // double trigger within that window used to start two concurrent captures +
+        // writers and leak the first. isStarting closes the window synchronously.
+        guard !isRecording, !isStarting else { return }
+        isStarting = true
+        defer { isStarting = false }
 
         // Request permissions
         let hasPermission = await screenRecorder.requestPermission()
@@ -51,36 +67,60 @@ final class RecordingManager {
         let outputURL = AppState.recordingsDirectory.appendingPathComponent(fileName)
         currentFileURL = outputURL
 
-        // Start screen capture first — returns the actual output size (matched to display aspect ratio)
-        let actualSize = try await screenRecorder.startCapture(width: videoWidth, height: videoHeight, fps: fps)
+        do {
+            // Start screen capture first — returns the actual output size (matched to display aspect ratio)
+            let actualSize = try await screenRecorder.startCapture(width: videoWidth, height: videoHeight, fps: fps)
 
-        // Create video writer sized to the capture output so frames aren't letterboxed
-        let writer = VideoWriter(
-            outputURL: outputURL,
-            videoWidth: actualSize.width,
-            videoHeight: actualSize.height,
-            fps: fps
-        )
-        try writer.startWriting()
-        videoWriter = writer
+            // Create video writer sized to the capture output so frames aren't letterboxed
+            let writer = VideoWriter(
+                outputURL: outputURL,
+                videoWidth: actualSize.width,
+                videoHeight: actualSize.height,
+                fps: fps
+            )
+            try writer.startWriting()
+            videoWriter = writer
 
-        // Setup screen capture callbacks — check isPaused to actually pause recording
-        screenRecorder.onVideoSampleBuffer = { [weak self, weak writer] sampleBuffer in
-            guard let self = self, !self.isPaused else { return }
-            writer?.appendVideoBuffer(sampleBuffer)
-        }
-
-        // Start microphone if enabled
-        if microphoneEnabled {
-            audioCaptureManager.refreshDevices()
-            if let deviceID = microphoneDeviceID {
-                audioCaptureManager.selectDevice(id: deviceID)
+            // Pause gating now lives inside VideoWriter (on its writing queue), so the
+            // callbacks just forward — no unsynchronized cross-thread isPaused read.
+            screenRecorder.onVideoSampleBuffer = { [weak writer] sampleBuffer in
+                writer?.appendVideoBuffer(sampleBuffer)
             }
-            audioCaptureManager.onAudioSampleBuffer = { [weak self, weak writer] sampleBuffer in
-                guard let self = self, !self.isPaused else { return }
-                writer?.appendAudioBuffer(sampleBuffer)
+            // If ScreenCaptureKit kills the stream mid-recording (display unplugged,
+            // permission revoked), stop instead of "recording" a frozen stream.
+            screenRecorder.onStreamError = { [weak self] error in
+                Task { @MainActor in
+                    guard let self, self.isRecording else { return }
+                    LogManager.shared.log("🔴 Recording: screen stream error — stopping. \(error.localizedDescription)", type: .error)
+                    let interrupted = await self.stopRecording(playSound: false)
+                    self.onInterrupted?(interrupted)
+                }
             }
-            try audioCaptureManager.startCapture()
+
+            // Start microphone if enabled
+            if microphoneEnabled {
+                audioCaptureManager.refreshDevices()
+                if let deviceID = microphoneDeviceID {
+                    audioCaptureManager.selectDevice(id: deviceID)
+                }
+                audioCaptureManager.onAudioSampleBuffer = { [weak writer] sampleBuffer in
+                    writer?.appendAudioBuffer(sampleBuffer)
+                }
+                try audioCaptureManager.startCapture()
+            }
+        } catch {
+            // Rollback a partially-started recording: otherwise a running SCStream,
+            // an open writer, and a stranded partial .mp4 leak with no way to stop
+            // them (isRecording was never set, so the UI shows "Start").
+            await screenRecorder.stopCapture()
+            audioCaptureManager.stopCapture()
+            screenRecorder.onVideoSampleBuffer = nil
+            screenRecorder.onStreamError = nil
+            audioCaptureManager.onAudioSampleBuffer = nil
+            videoWriter?.cancelWriting()
+            videoWriter = nil
+            currentFileURL = nil
+            throw error
         }
 
         // Start duration timer
@@ -91,7 +131,7 @@ final class RecordingManager {
         lastStartTime = Date()
         recordingStartTime = lastStartTime
         startTimer()
-        
+
         LogManager.shared.log("🔴 Recording Actually Started", type: .info)
     }
 
@@ -111,7 +151,18 @@ final class RecordingManager {
 
         // Finalize file
         guard let outputURL = await videoWriter?.stopWriting() else {
+            // Writer produced no file (disk full / encode error). Reset ALL state and
+            // remove any corrupt partial, so we don't leave a phantom recording or
+            // strand isPaused=true (which would drop the next recording's first frames).
+            if let url = currentFileURL { try? FileManager.default.removeItem(at: url) }
             isRecording = false
+            isPaused = false
+            recordingDuration = 0
+            accumulatedDuration = 0
+            lastStartTime = nil
+            videoWriter = nil
+            currentFileURL = nil
+            LogManager.shared.log("🔴 Recording: stop failed — writer produced no file; partial removed", type: .error)
             return nil
         }
 
@@ -152,18 +203,27 @@ final class RecordingManager {
 
     // MARK: - Pause / Resume
 
+    @MainActor
     func togglePause() async {
+        // Run on the main actor (it mutates the same timing state as start/stop and
+        // installs the duration Timer on RunLoop.main — both were previously done off
+        // the main thread). Guard re-entrancy across the 0.5s resume sleep so two fast
+        // taps can't double-toggle into a desynced state with a leaked timer.
+        guard isRecording, !isTogglingPause else { return }
+        isTogglingPause = true
+        defer { isTogglingPause = false }
+
         // Play pause/resume sound first
         SoundManager.shared.play(.pause)
-        
+
         // If we are currently paused, we are about to resume.
         // Wait 1.0 second so the sound doesn't get recorded.
         if isPaused {
             try? await Task.sleep(nanoseconds: 500_000_000)
         }
-        
+
         isPaused.toggle()
-        
+
         if isPaused {
             // Pausing: save current segment duration
             if let start = lastStartTime {

@@ -34,6 +34,12 @@ final class AINamingService {
     /// If ≥95% of the audio is below skipSilenceThresholdDBFS, skip transcription entirely.
     static let skipSilenceCoverage: Float = 0.95
 
+    /// Max size of the base64-ENCODED inline payload (audio + frames) we send in a single
+    /// Gemini request. Gemini's inline-data cap is ~20 MB; base64 inflates raw bytes by ~4/3,
+    /// so a raw guard alone lets long recordings sail past the encoded limit and fail at the
+    /// proxy. 18 MB leaves headroom for the prompt + JSON overhead under the ~20 MB ceiling.
+    static let maxInlineRequestBytes = 18_000_000
+
     // MARK: - Configuration
 
     private let proxyClient: GeminiProxyClient
@@ -143,18 +149,37 @@ final class AINamingService {
         }
         let sizeKB = audioData.count / 1024
         LogManager.shared.log("🤖 Combined: Audio for Gemini: \(sizeKB)KB (mapping segments: \(mapping.count), speedup: \(speedupFactor)×)")
-        guard audioData.count < 20_000_000 else {
-            LogManager.shared.log("🤖 Combined: ❌ Audio too large (\(audioData.count / 1_000_000)MB > 20MB)", type: .error)
-            let fb = await generateNameImageOnly(for: videoURL)
-            return NamingResult(srt: nil, name: fb.name, usage: fb.usage, model: fb.model, latencyMs: fb.latencyMs, attempts: fb.attempts, success: fb.name != nil, errorCode: fb.errorCode ?? "audio_too_large")
-        }
 
         // Step 5: extract frames (no transcript yet — equispaced).
-        let frames = await extractFrames(from: videoURL, subtitles: nil)
+        var frames = await extractFrames(from: videoURL)
         if frames.isEmpty {
             LogManager.shared.log("🤖 Combined: ⚠️ No frames extracted — proceeding with audio only", type: .error)
         } else {
             LogManager.shared.log("🤖 Combined: Extracted \(frames.count) frames")
+        }
+
+        // Step 5.5: budget the ENCODED inline payload. Base64 inflates raw bytes by ~4/3
+        // (ceil division `(n+2)/3*4`), so guard on the encoded size of audio + every frame,
+        // not the raw audio bytes. When over budget, degrade gracefully: drop frames first
+        // (the SRT — the real value of a long recording — is preserved), and only fall back
+        // to image-only naming if audio ALONE still won't fit.
+        func base64Size(_ rawBytes: Int) -> Int { (rawBytes + 2) / 3 * 4 }
+        let audioBase64Bytes = base64Size(audioData.count)
+        var framesBase64Bytes = frames.reduce(0) { $0 + base64Size($1.count) }
+        LogManager.shared.log("🤖 Combined: Payload budget — audio b64=\(audioBase64Bytes / 1024)KB, frames b64=\(framesBase64Bytes / 1024)KB, budget=\(Self.maxInlineRequestBytes / 1_000_000)MB")
+
+        if audioBase64Bytes + framesBase64Bytes >= Self.maxInlineRequestBytes {
+            if audioBase64Bytes < Self.maxInlineRequestBytes && !frames.isEmpty {
+                LogManager.shared.log("🤖 Combined: ⚠️ Encoded payload over budget — dropping frames to fit audio-only", type: .error)
+                frames = []
+                framesBase64Bytes = 0
+            }
+            // Audio alone still over budget → no degradation left, fall back to image-only.
+            if audioBase64Bytes + framesBase64Bytes >= Self.maxInlineRequestBytes {
+                LogManager.shared.log("🤖 Combined: ❌ Audio alone exceeds encoded budget (\(audioBase64Bytes / 1_000_000)MB b64) — falling back to image-only naming", type: .error)
+                let fb = await generateNameImageOnly(for: videoURL)
+                return NamingResult(srt: nil, name: fb.name, usage: fb.usage, model: fb.model, latencyMs: fb.latencyMs, attempts: fb.attempts, success: fb.name != nil, errorCode: fb.errorCode ?? "audio_too_large")
+            }
         }
 
         // Step 6: combined Gemini call.
@@ -183,6 +208,14 @@ final class AINamingService {
         // didn't match the SRT script — empty string for the first attempt.
         var languageHint: String = ""
 
+        // Best acceptable result seen so far. A later retry that throws (network drop,
+        // proxy error) must NOT discard a perfectly good earlier attempt — we fall back to
+        // this instead of returning nil. The latest acceptable attempt overwrites the
+        // previous one. restoreSrtTimestamps is computed once at store time and reused.
+        var bestName: String? = nil
+        var bestRestoredSrt: String? = nil
+        var haveAcceptable = false
+
         for attempt in 1...maxRetries {
             do {
                 LogManager.shared.log("🤖 Combined: Calling Gemini proxy (attempt \(attempt)/\(maxRetries))...")
@@ -209,12 +242,29 @@ final class AINamingService {
                         delay *= 2
                         continue
                     }
+                    if haveAcceptable {
+                        return NamingResult(srt: bestRestoredSrt, name: bestName, usage: totalUsage, model: observedModel, latencyMs: totalLatencyMs, attempts: totalAttempts, success: true, errorCode: lastError)
+                    }
                     return NamingResult(srt: nil, name: nil, usage: totalUsage, model: observedModel, latencyMs: totalLatencyMs, attempts: totalAttempts, success: false, errorCode: lastError)
                 }
 
                 let cleanedName = cleanupName(parsed.name)
                 let srtPreview = parsed.srt.prefix(120).replacingOccurrences(of: "\n", with: "⏎")
                 LogManager.shared.log("🤖 Combined: Raw SRT (\(parsed.srt.count) chars) preview: \(srtPreview)")
+
+                // Restore the SRT timestamps once for this attempt so it can be stored as the
+                // best result (and reused at the success return) without recomputing.
+                let restoredSrt = restoreSrtTimestamps(parsed.srt, mapping: mapping, speedupFactor: speedupFactor, originalDuration: analysis.totalDuration)
+
+                // Keep this attempt as the best acceptable result if it carries a usable name
+                // or a real (non-NO_SPEECH) SRT. Overwrite so the latest acceptable wins. This
+                // is what the catch/parse-fail fallbacks return when a later retry throws,
+                // rather than throwing away a perfectly good earlier attempt.
+                if cleanedName != nil || restoredSrt != nil {
+                    bestName = cleanedName
+                    bestRestoredSrt = restoredSrt
+                    haveAcceptable = true
+                }
 
                 // Sparseness guard: Gemini occasionally returns one tiny segment for a multi-minute
                 // recording even when audio clearly has speech throughout. Detect this and retry —
@@ -251,9 +301,14 @@ final class AINamingService {
                 //      the same Cyrillic script, so a script-only check misses it.
                 // Retry with an explicit per-language hint when the name's language
                 // doesn't match the SRT's.
-                let srtLanguage = dominantLanguage(parsed.srt)
+                // A NO_SPEECH transcript carries no spoken language, so the name is
+                // unconstrained-by-audio (English fallback or whatever the visuals warrant) —
+                // never trigger the language-mismatch retry for it. dominantLanguage would
+                // otherwise classify the literal "NO_SPEECH" sentinel as English and force a
+                // wasteful extra network round-trip.
+                let srtLanguage = isExplicitNoSpeech ? nil : dominantLanguage(parsed.srt)
                 let nameLanguage = dominantLanguage(cleanedName ?? parsed.name)
-                let languageMismatch = srtLanguage != nil && nameLanguage != nil && srtLanguage != nameLanguage
+                let languageMismatch = !isExplicitNoSpeech && srtLanguage != nil && nameLanguage != nil && srtLanguage != nameLanguage
                 if languageMismatch && attempt < maxRetries {
                     let lang = srtLanguage!
                     LogManager.shared.log("🤖 Combined: ⚠️ Language mismatch — SRT is \(lang), name \"\(cleanedName ?? "nil")\" is \(nameLanguage ?? "unknown"). Retrying with \(lang) hint.", type: .error)
@@ -267,8 +322,7 @@ final class AINamingService {
                     LogManager.shared.log("🤖 Combined: ⚠️ Language still mismatched after \(maxRetries) attempts — accepting result rather than losing the title", type: .error)
                 }
 
-                let restoredSrt = restoreSrtTimestamps(parsed.srt, mapping: mapping, speedupFactor: speedupFactor, originalDuration: analysis.totalDuration)
-
+                // restoredSrt was already computed above (and stored as the best result).
                 LogManager.shared.log("🤖 Combined: ✅ Name: \"\(cleanedName ?? "nil")\", restored SRT length: \(restoredSrt?.count ?? 0)")
                 return NamingResult(srt: restoredSrt, name: cleanedName, usage: totalUsage, model: observedModel, latencyMs: totalLatencyMs, attempts: totalAttempts, success: true, errorCode: nil)
 
@@ -282,11 +336,21 @@ final class AINamingService {
                     delay *= 2
                     continue
                 }
+                // A later attempt threw, but if an earlier attempt produced an acceptable
+                // result, return it rather than discarding good work. Mark success:true but
+                // keep errorCode = lastError so telemetry still records that retries failed.
+                if haveAcceptable {
+                    LogManager.shared.log("🤖 Combined: ⚠️ Attempt \(attempt) failed (\(errorString)) — returning best earlier result \"\(bestName ?? "nil")\"", type: .error)
+                    return NamingResult(srt: bestRestoredSrt, name: bestName, usage: totalUsage, model: observedModel, latencyMs: totalLatencyMs, attempts: totalAttempts, success: true, errorCode: lastError)
+                }
                 LogManager.shared.log("🤖 Combined: ❌ All \(maxRetries) attempts failed. Last error: \(errorString)", type: .error)
                 return NamingResult(srt: nil, name: nil, usage: totalUsage, model: observedModel, latencyMs: totalLatencyMs, attempts: totalAttempts, success: false, errorCode: lastError)
             }
         }
 
+        if haveAcceptable {
+            return NamingResult(srt: bestRestoredSrt, name: bestName, usage: totalUsage, model: observedModel, latencyMs: totalLatencyMs, attempts: totalAttempts, success: true, errorCode: lastError)
+        }
         return NamingResult(srt: nil, name: nil, usage: totalUsage, model: observedModel, latencyMs: totalLatencyMs, attempts: totalAttempts, success: false, errorCode: lastError)
     }
 
@@ -308,7 +372,7 @@ final class AINamingService {
         var observedModel = "gemini-2.5-flash-lite"
         var lastError: String? = nil
 
-        let frames = await extractFrames(from: videoURL, subtitles: nil)
+        let frames = await extractFrames(from: videoURL)
         guard !frames.isEmpty else {
             LogManager.shared.log("🤖 Naming (image-only): ❌ No frames", type: .error)
             return ImageOnlyResult(name: nil, usage: totalUsage, model: observedModel, latencyMs: 0, attempts: 0, errorCode: "no_frames")
@@ -420,15 +484,41 @@ final class AINamingService {
         """
     }
 
+    /// Maximum length of a cleaned name. The prompt targets a 4-8 word filename; 80 chars
+    /// gives generous slack while keeping the user-visible title from ballooning if Gemini
+    /// returns a whole sentence.
+    private static let maxNameLength = 80
+
     private func cleanupName(_ raw: String) -> String? {
-        let cleaned = raw
+        // 1) Strip control characters (newlines, tabs, etc. become nothing here — runs are
+        //    handled by the whitespace collapse below, but stray control chars are removed).
+        var s = String(raw.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) })
+        // 2) Collapse all whitespace runs (including any remaining tabs/newlines) to one space.
+        s = s.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+        // 3) Drop quotes and remap path-hostile characters.
+        s = s
             .replacingOccurrences(of: "\"", with: "")
-            .replacingOccurrences(of: ".mp4", with: "")
-            .replacingOccurrences(of: ".mov", with: "")
             .replacingOccurrences(of: "/", with: "-")
             .replacingOccurrences(of: ":", with: "-")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return cleaned.isEmpty ? nil : cleaned
+        // 4) Strip a real trailing .mp4/.mov extension only (anchored, case-insensitive) —
+        //    never a mid-string ".mov" that is part of a legitimate name.
+        s = s.replacingOccurrences(of: #"(?i)\.(mp4|mov)$"#, with: "", options: .regularExpression)
+        s = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !s.isEmpty else { return nil }
+
+        // 5) Enforce the length cap, truncating at the last word boundary ≤ maxNameLength.
+        //    Falls back to a hard cut if there is no boundary (e.g. one very long token).
+        if s.count > Self.maxNameLength {
+            let cap = s.index(s.startIndex, offsetBy: Self.maxNameLength)
+            let head = s[..<cap]
+            if let lastSpace = head.lastIndex(of: " ") {
+                let truncated = head[..<lastSpace].trimmingCharacters(in: .whitespaces)
+                s = truncated.isEmpty ? String(head) : truncated
+            } else {
+                s = String(head)
+            }
+        }
+        return s.isEmpty ? nil : s
     }
 
     // MARK: - Language Detection
@@ -971,7 +1061,14 @@ final class AINamingService {
             var text = nstext.substring(with: NSRange(location: textStart, length: textEnd - textStart))
             // Strip leading numeric index if the next entry starts with one.
             text = text.replacingOccurrences(of: #"^\s*\d+\s*$"#, with: "", options: .regularExpression)
-            text = text.replacingOccurrences(of: #"\s*\d+\s*$"#, with: "", options: .regularExpression)
+            // Strip the trailing entry-index that belongs to the NEXT cue — but only when
+            // there actually IS a next cue, and only a digit run that stands alone after
+            // whitespace (or is the entire slice). This preserves meaningful trailing digits
+            // like "port 8080" or "error code 500" — especially in the final cue, which has
+            // no following index to remove.
+            if i + 1 < matches.count {
+                text = text.replacingOccurrences(of: #"(?:^|\s)\d{1,4}\s*$"#, with: "", options: .regularExpression)
+            }
             text = text
                 .replacingOccurrences(of: "\\n", with: " ")
                 .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
@@ -1072,6 +1169,22 @@ final class AINamingService {
                 totalChars += s.count
             }
         }
+
+        // Capture any residual text after the last terminal-punctuation match — a trailing
+        // fragment with no closing "." / "!" / "?" would otherwise be silently dropped (the
+        // regex only matches up to the last terminator). Append it so its characters are
+        // counted and it gets a proportional time slice.
+        if let lastMatch = matches.last {
+            let lastMatchEnd = lastMatch.range.location + lastMatch.range.length
+            if lastMatchEnd < nstext.length {
+                let tail = nstext.substring(from: lastMatchEnd).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !tail.isEmpty {
+                    sentences.append(tail)
+                    totalChars += tail.count
+                }
+            }
+        }
+
         guard sentences.count >= 2, totalChars > 0 else { return [seg] }
 
         let totalDuration = seg.end - seg.start
@@ -1207,6 +1320,19 @@ final class AINamingService {
                             return
                         }
                     } else {
+                        // copyNextSampleBuffer returned nil. This is EITHER true EOF OR a mid-stream
+                        // reader failure (e.g. a corrupt/truncated source). Treat a .failed reader as
+                        // an error — finalizing here would write a SILENTLY TRUNCATED file and report
+                        // success, so Gemini would transcribe a fragment. Only .reading / .completed /
+                        // .cancelled count as a normal end-of-stream.
+                        if reader.status == .failed {
+                            LogManager.shared.log("🤖 Subtitles: ❌ Audio reader failed mid-stream: \(reader.error?.localizedDescription ?? "unknown") — discarding partial audio", type: .error)
+                            writerInput.markAsFinished()
+                            writer.cancelWriting()
+                            try? FileManager.default.removeItem(at: outputURL)
+                            continuation.resume(returning: nil)
+                            return
+                        }
                         writerInput.markAsFinished()
                         writer.finishWriting {
                             if writer.status == .completed {
@@ -1227,13 +1353,13 @@ final class AINamingService {
 
     /// Extracts frames at evenly spaced timestamps. 1024×1024 max resolution: still readable
     /// for code/UI screenshots, ~55% fewer image tokens than 1568.
-    private func extractFrames(from videoURL: URL, subtitles: String?) async -> [Data] {
+    private func extractFrames(from videoURL: URL) async -> [Data] {
         let asset = AVAsset(url: videoURL)
         let durationSeconds = CMTimeGetSeconds(asset.duration)
 
         guard durationSeconds > 0 else { return [] }
 
-        let timestamps = pickTimestamps(duration: durationSeconds, subtitles: subtitles)
+        let timestamps = pickTimestamps(duration: durationSeconds)
         guard !timestamps.isEmpty else { return [] }
         LogManager.shared.log("🤖 AI Naming: Picked \(timestamps.count) timestamps: \(timestamps.map { String(format: "%.1f", $0) }.joined(separator: ", "))s")
 
@@ -1293,7 +1419,7 @@ final class AINamingService {
         let text: String
     }
 
-    private func pickTimestamps(duration: Double, subtitles: String?) -> [Double] {
+    private func pickTimestamps(duration: Double) -> [Double] {
         guard duration > 0 else { return [] }
 
         if duration < 1 {
@@ -1307,40 +1433,7 @@ final class AINamingService {
             equispaced[0] = min(equispaced[0], 0.5)
         }
 
-        guard let srt = subtitles, !srt.isEmpty else {
-            return equispaced
-        }
-
-        let segments = parseSrt(srt)
-        let paragraphStarts = paragraphStartTimes(from: segments)
-
-        guard paragraphStarts.count >= n else {
-            return equispaced
-        }
-
-        let snapWindow = 8.0
-        var picked: [Double] = []
-        var usedParagraphIdx: Set<Int> = []
-
-        for target in equispaced {
-            var bestIdx: Int?
-            var bestDist = snapWindow + 0.001
-            for (idx, pStart) in paragraphStarts.enumerated() where !usedParagraphIdx.contains(idx) {
-                let dist = abs(pStart - target)
-                if dist <= snapWindow && dist < bestDist {
-                    bestDist = dist
-                    bestIdx = idx
-                }
-            }
-            if let idx = bestIdx {
-                picked.append(paragraphStarts[idx])
-                usedParagraphIdx.insert(idx)
-            } else {
-                picked.append(target)
-            }
-        }
-
-        return picked.sorted()
+        return equispaced
     }
 
     // MARK: - SRT Parsing
@@ -1407,28 +1500,6 @@ final class AINamingService {
         msStr = String(msStr.prefix(3))
         let ms = Double(msStr) ?? 0
         return h * 3600 + m * 60 + s + ms / 1000
-    }
-
-    private func paragraphStartTimes(from segments: [SrtSegment]) -> [Double] {
-        guard !segments.isEmpty else { return [] }
-        let gapThreshold = 1.5
-        let sentenceTerminators: Set<Character> = [".", "!", "?"]
-
-        var starts: [Double] = [segments[0].start]
-        for i in 1..<segments.count {
-            let prev = segments[i - 1]
-            let curr = segments[i]
-            let gap = curr.start - prev.end
-            let endsSentence: Bool = {
-                let trimmed = prev.text.trimmingCharacters(in: .whitespaces)
-                guard let last = trimmed.last else { return false }
-                return sentenceTerminators.contains(last)
-            }()
-            if gap > gapThreshold || endsSentence {
-                starts.append(curr.start)
-            }
-        }
-        return starts
     }
 
     // MARK: - Perceptual Hash Dedup

@@ -2,14 +2,23 @@
 """Generate XOR-obfuscated byte arrays for Secrets.swift.
 
 Usage:
-    python3 scripts/obfuscate_secrets.py
+    python3 scripts/obfuscate_secrets.py [dropboxAppKey]
+
+If dropboxAppKey is passed as an argument it is used directly (scriptable);
+otherwise the script prompts for it interactively. Quote the argument if it
+contains shell-special characters.
 
 Paste the output into Sources/NoCornyTracer/Secrets.swift.
 """
 import os
+import sys
+
+# Honor a command-line argument when provided, else fall back to the prompt.
+# An explicitly-passed empty string ("") is treated as the (empty) value, not a prompt.
+dropbox_app_key = sys.argv[1] if len(sys.argv) > 1 else input("Enter dropboxAppKey: ").strip()
 
 secrets = {
-    "dropboxAppKey": input("Enter dropboxAppKey: ").strip(),
+    "dropboxAppKey": dropbox_app_key,
 }
 
 key = list(os.urandom(64))

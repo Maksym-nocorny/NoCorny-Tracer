@@ -27,6 +27,12 @@ final class TracerAPIClient {
     /// Used to verify the callback URL came from our initiated flow.
     private var pendingBrowserState: String?
 
+    /// Invoked once when a Tracer API call returns HTTP 401, meaning the stored
+    /// token was revoked server-side. Lets `AppState` mirror the rest of a
+    /// sign-out (e.g. clear proxied Dropbox state) without wiping the local
+    /// recordings library. Set by `AppState`. Invoked on the main actor.
+    var onTokenRevoked: (@MainActor () -> Void)?
+
     init() {
         if let token = KeychainHelper.load(key: Self.tokenKey), !token.isEmpty {
             self.isSignedIn = true
@@ -117,21 +123,29 @@ final class TracerAPIClient {
     /// URL is received. Validates `state` and exchanges the token via `signIn(token:)`.
     @MainActor
     func completeBrowserSignIn(url: URL) async {
+        // A callback is only valid for a flow WE initiated: require a pending state
+        // that the callback matches. Without this, ANY nocornytracer://auth/callback?token=…
+        // URL (e.g. opened by a malicious web page) was accepted and could silently
+        // sign the app into an attacker's account — a login-CSRF / forced account switch.
+        guard let expected = pendingBrowserState else {
+            self.errorMessage = "Unexpected sign-in callback — start sign-in from the app"
+            return
+        }
+        // One-shot: consume the pending state regardless of outcome so a replay can't reuse it.
+        pendingBrowserState = nil
+
         guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
               let items = components.queryItems else {
             self.errorMessage = "Invalid callback URL"
             return
         }
-        let token = items.first(where: { $0.name == "token" })?.value
         let state = items.first(where: { $0.name == "state" })?.value
-
-        if let expected = self.pendingBrowserState, state != expected {
+        guard state == expected else {
             self.errorMessage = "Authorization state mismatch"
             return
         }
-        self.pendingBrowserState = nil
 
-        guard let token = token, !token.isEmpty else {
+        guard let token = items.first(where: { $0.name == "token" })?.value, !token.isEmpty else {
             if let err = items.first(where: { $0.name == "error" })?.value, !err.isEmpty {
                 self.errorMessage = err
             } else {
@@ -159,6 +173,18 @@ final class TracerAPIClient {
         LogManager.shared.log("🔐 Tracer: Signed out")
     }
 
+    /// Called when any API call sees HTTP 401: the stored token has been revoked.
+    /// Drops the app to a signed-out state (so the UI prompts re-auth instead of
+    /// silently failing every call forever) and notifies `AppState`. Guarded by
+    /// `isSignedIn` so a burst of concurrent 401s only triggers one sign-out.
+    @MainActor
+    private func handleUnauthorized() {
+        guard isSignedIn else { return }
+        LogManager.shared.log("🔐 Tracer: token rejected (401) — signing out", type: .error)
+        signOut()
+        onTokenRevoked?()
+    }
+
     // MARK: - Refresh Profile
 
     /// Re-fetches the user's profile from /api/tokens/me and updates UI state.
@@ -171,6 +197,7 @@ final class TracerAPIClient {
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
+            if (response as? HTTPURLResponse)?.statusCode == 401 { handleUnauthorized(); return }
             guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return }
             let info = try JSONDecoder().decode(TokenInfo.self, from: data)
 
@@ -247,6 +274,7 @@ final class TracerAPIClient {
 
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
+            if (response as? HTTPURLResponse)?.statusCode == 401 { await handleUnauthorized(); return nil }
             guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
                 if let http = response as? HTTPURLResponse {
                     LogManager.shared.log("🌐 Tracer: initVideo failed with status \(http.statusCode)", type: .error)
@@ -304,6 +332,7 @@ final class TracerAPIClient {
 
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
+            if (response as? HTTPURLResponse)?.statusCode == 401 { await handleUnauthorized(); return nil }
             guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
                 if let http = response as? HTTPURLResponse {
                     LogManager.shared.log("🌐 Tracer: Register video failed with status \(http.statusCode)", type: .error)
@@ -362,6 +391,7 @@ final class TracerAPIClient {
             let (_, response) = try await URLSession.shared.data(for: request)
             if let http = response as? HTTPURLResponse {
                 LogManager.shared.log("🌐 Tracer: PATCH /api/videos/\(slug) → \(http.statusCode)")
+                if http.statusCode == 401 { await handleUnauthorized() }
             }
         } catch {
             LogManager.shared.log(error: error, message: "🌐 Tracer: updateVideo failed")
@@ -379,21 +409,66 @@ final class TracerAPIClient {
 
     /// Fetches a short-lived Dropbox access token from the Tracer backend.
     /// Requires the user to be signed in to Tracer AND to have connected Dropbox
-    /// on tracer.nocorny.com. Returns nil if either is missing.
-    func fetchDropboxAccessToken() async -> DropboxProxyToken? {
-        guard let token = apiToken else { return nil }
+    /// on tracer.nocorny.com.
+    ///
+    /// Returns a tri-state so callers can tell a *definitive* "Dropbox is not
+    /// connected" (HTTP 200 `{connected:false}`, or 401/403/404) apart from a
+    /// transient failure (offline, timeout, 5xx, unparseable body). Only the
+    /// former is safe to treat as a disconnect; the latter must leave local
+    /// state untouched (see `AppState.syncDropboxFromTracer`).
+    func fetchDropboxAccessToken() async -> APIResult<DropboxTokenResult> {
+        // No Tracer token at all ⇒ definitively cannot obtain a Dropbox token.
+        guard let token = apiToken else { return .authoritativeNegative }
 
         var request = URLRequest(url: URL(string: "\(Self.baseURL)/api/dropbox/access-token")!)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
 
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return nil }
-            return try JSONDecoder().decode(DropboxProxyToken.self, from: data)
+            guard let http = response as? HTTPURLResponse else { return .transientFailure }
+            switch http.statusCode {
+            case 200:
+                guard let decoded = try? JSONDecoder().decode(DropboxProxyToken.self, from: data) else {
+                    // Server reachable but body unusable — do NOT destroy local state.
+                    return .transientFailure
+                }
+                guard decoded.connected, let accessToken = decoded.accessToken else {
+                    return .authoritativeNegative
+                }
+                return .success(DropboxTokenResult(token: accessToken,
+                                                    expiresAt: Self.parseISO8601(decoded.expiresAt)))
+            case 401:
+                // Tracer bearer was revoked — sign out rather than mistaking this
+                // for a Dropbox disconnect, and return transient so the local
+                // library is preserved (not wiped) on the way out.
+                await handleUnauthorized()
+                return .transientFailure
+            default:
+                // 403 / 404 / 5xx / 429 / 408 are ambiguous (deploy blip, transient
+                // auth). The ONLY authoritative "Dropbox disconnected" signal is an
+                // HTTP-200 body with {connected:false}, handled above. Treat the
+                // rest as transient so a server hiccup never wipes the library.
+                return .transientFailure
+            }
         } catch {
             LogManager.shared.log(error: error, message: "🌐 Tracer: fetch Dropbox token failed")
-            return nil
+            return .transientFailure
         }
+    }
+
+    /// Parses an ISO-8601 timestamp accepting BOTH the fractional-seconds form
+    /// (JavaScript `Date.toISOString()` always emits `…123Z`) and the plain
+    /// form. A bare `ISO8601DateFormatter()` rejects fractional seconds, which
+    /// previously made every proxied token look already-expired and forced a
+    /// full server round-trip on every Dropbox operation.
+    static func parseISO8601(_ string: String?) -> Date? {
+        guard let string = string else { return nil }
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = fractional.date(from: string) { return date }
+        let plain = ISO8601DateFormatter()
+        plain.formatOptions = [.withInternetDateTime]
+        return plain.date(from: string)
     }
 
     /// Removes the user's Dropbox connection from the Tracer backend.
@@ -405,6 +480,7 @@ final class TracerAPIClient {
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         do {
             let (_, response) = try await URLSession.shared.data(for: request)
+            if (response as? HTTPURLResponse)?.statusCode == 401 { await handleUnauthorized(); return false }
             return (response as? HTTPURLResponse)?.statusCode == 200
         } catch {
             LogManager.shared.log(error: error, message: "🌐 Tracer: disconnect Dropbox failed")
@@ -434,6 +510,7 @@ final class TracerAPIClient {
 
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
+            if (response as? HTTPURLResponse)?.statusCode == 401 { await handleUnauthorized(); return nil }
             guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return nil }
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
@@ -456,6 +533,7 @@ final class TracerAPIClient {
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         do {
             let (_, response) = try await URLSession.shared.data(for: request)
+            if (response as? HTTPURLResponse)?.statusCode == 401 { await handleUnauthorized(); return false }
             return (response as? HTTPURLResponse)?.statusCode == 200
         } catch {
             LogManager.shared.log(error: error, message: "🌐 Tracer: delete video failed")

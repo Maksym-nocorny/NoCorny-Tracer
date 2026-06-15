@@ -27,27 +27,38 @@ enum KeychainHelper {
             throw KeychainError.dataConversionFailed
         }
 
-        // SecItemAdd would fail with errSecDuplicateItem if the entry already
-        // exists; delete-then-add is simpler than branching on update vs add.
-        let deleteQuery: [String: Any] = [
+        let identityQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: key,
         ]
-        SecItemDelete(deleteQuery as CFDictionary)
 
-        let attributes: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: key,
-            kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
-        ]
-        let status = SecItemAdd(attributes as CFDictionary, nil)
-        guard status == errSecSuccess else {
-            let message = SecCopyErrorMessageString(status, nil) as String? ?? "n/a"
-            LogManager.shared.log("🔐 Keychain save(\(key)): FAILED status=\(status) — \(message)")
-            throw KeychainError.unhandledStatus(status)
+        // Atomic: update an existing item in place first. The old delete-then-add
+        // had a window where the item was deleted and the add then failed (locked
+        // keychain, ACL denial) — losing the only copy of the token.
+        let updateStatus = SecItemUpdate(
+            identityQuery as CFDictionary,
+            [
+                kSecValueData as String: data,
+                kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
+            ] as CFDictionary
+        )
+        if updateStatus == errSecSuccess { return }
+        guard updateStatus == errSecItemNotFound else {
+            let message = SecCopyErrorMessageString(updateStatus, nil) as String? ?? "n/a"
+            LogManager.shared.log("🔐 Keychain save(\(key)): UPDATE FAILED status=\(updateStatus) — \(message)")
+            throw KeychainError.unhandledStatus(updateStatus)
+        }
+
+        // No existing item — add a fresh one.
+        var addAttributes = identityQuery
+        addAttributes[kSecValueData as String] = data
+        addAttributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        let addStatus = SecItemAdd(addAttributes as CFDictionary, nil)
+        guard addStatus == errSecSuccess else {
+            let message = SecCopyErrorMessageString(addStatus, nil) as String? ?? "n/a"
+            LogManager.shared.log("🔐 Keychain save(\(key)): ADD FAILED status=\(addStatus) — \(message)")
+            throw KeychainError.unhandledStatus(addStatus)
         }
     }
 
@@ -119,10 +130,23 @@ enum KeychainHelper {
             return
         }
 
+        var allSaved = true
         for (k, v) in dict {
-            try? save(key: k, value: v)
+            do {
+                try save(key: k, value: v)
+            } catch {
+                allSaved = false
+            }
         }
 
+        // Only delete the legacy file once EVERY value is safely in the Keychain.
+        // Deleting unconditionally used to destroy the only copy of the token when a
+        // save failed (e.g. keychain locked at early launch). migrationDone is
+        // per-process, so a failed run retries on the next launch.
+        guard allSaved else {
+            LogManager.shared.log("🔐 Keychain: legacy migration incomplete — keeping legacy file for next-launch retry", type: .error)
+            return
+        }
         try? FileManager.default.removeItem(at: secretsFile)
         try? FileManager.default.removeItem(at: keyFile)
     }

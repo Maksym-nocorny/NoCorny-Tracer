@@ -196,8 +196,12 @@ struct PulsingModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .opacity(isActive ? (isPulsing ? 0.3 : 1.0) : 1.0)
-            .animation(isActive ? .easeInOut(duration: 0.8).repeatForever() : .default, value: isPulsing)
-            .onAppear { isPulsing = true }
+            .opacity(isActive && isPulsing ? 0.3 : 1.0)
+            .animation(isActive ? .easeInOut(duration: 0.8).repeatForever(autoreverses: true) : .default, value: isPulsing)
+            .onAppear { isPulsing = isActive }
+            // Re-arm the repeating animation when isActive flips back on. Previously
+            // the pulse only started in onAppear, so after a pause→resume (isActive
+            // false→true) the dot stayed frozen.
+            .onChange(of: isActive) { _, active in isPulsing = active }
     }
 }

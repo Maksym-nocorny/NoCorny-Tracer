@@ -77,10 +77,33 @@ final class GeminiProxyClient {
 
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let candidates = json["candidates"] as? [[String: Any]],
-              let firstCandidate = candidates.first,
-              let content = firstCandidate["content"] as? [String: Any],
-              let parts = content["parts"] as? [[String: Any]],
-              let text = parts.first?["text"] as? String else {
+              let firstCandidate = candidates.first else {
+            throw ProxyError.noTextInResponse
+        }
+
+        // Concatenate the text of ALL parts (Gemini can split a single response across
+        // multiple text parts, and parts.first alone silently drops the rest). Non-text
+        // parts (e.g. inlineData) are skipped. Joining with "" keeps the single-part
+        // happy path byte-identical — JSON-mode responses are contiguous, not line-delimited.
+        let content = firstCandidate["content"] as? [String: Any]
+        let parts = content?["parts"] as? [[String: Any]]
+        let text = (parts ?? [])
+            .compactMap { $0["text"] as? String }
+            .joined()
+
+        // Empty text means Gemini returned no usable content. Distinguish a deliberate
+        // block (SAFETY / RECITATION / promptFeedback.blockReason) from a generic empty
+        // response so telemetry and the retry loop see a specific, actionable error.
+        if text.isEmpty {
+            let blockedReasons: Set<String> = ["SAFETY", "RECITATION", "PROHIBITED_CONTENT", "BLOCKLIST"]
+            if let finishReason = firstCandidate["finishReason"] as? String,
+               blockedReasons.contains(finishReason) {
+                throw ProxyError.blocked(reason: finishReason)
+            }
+            if let promptFeedback = json["promptFeedback"] as? [String: Any],
+               let blockReason = promptFeedback["blockReason"] as? String {
+                throw ProxyError.blocked(reason: blockReason)
+            }
             throw ProxyError.noTextInResponse
         }
 
@@ -198,6 +221,7 @@ enum ProxyError: LocalizedError {
     case invalidResponse
     case serverError(status: Int, body: String)
     case noTextInResponse
+    case blocked(reason: String)
 
     var errorDescription: String? {
         switch self {
@@ -209,6 +233,8 @@ enum ProxyError: LocalizedError {
             return "Proxy error (\(status)): \(body)"
         case .noTextInResponse:
             return "No text in Gemini response"
+        case .blocked(let reason):
+            return "Gemini blocked the response (\(reason))"
         }
     }
 }

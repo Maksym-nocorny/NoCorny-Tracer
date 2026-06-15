@@ -16,8 +16,18 @@ final class ScreenRecorder: NSObject {
     private var stream: SCStream?
     private var streamOutput: StreamOutput?
 
+    /// Serial queue for SCStream sample delivery. A concurrent queue let two frame
+    /// callbacks run simultaneously and reach the writer out of PTS order; a serial
+    /// queue guarantees ordered, one-at-a-time delivery.
+    private let sampleHandlerQueue = DispatchQueue(label: "com.nocorny.tracer.screenrecorder.samples", qos: .userInitiated)
+
     // Callback for video frames
     var onVideoSampleBuffer: ((CMSampleBuffer) -> Void)?
+
+    /// Fired when ScreenCaptureKit kills the stream mid-recording (display
+    /// disconnected, permission revoked, WindowServer hiccup). Without this the
+    /// app kept "recording" a dead stream: video frozen, audio still accumulating.
+    var onStreamError: ((Error) -> Void)?
 
     // MARK: - Permission & Discovery
 
@@ -53,6 +63,11 @@ final class ScreenRecorder: NSObject {
     @MainActor
     @discardableResult
     func startCapture(width: Int = 1920, height: Int = 1080, fps: Int = 30) async throws -> (width: Int, height: Int) {
+        // Refuse to start a second capture over a live one — that used to overwrite
+        // `stream`/`streamOutput` and leak the first still-running SCStream.
+        guard !isCapturing, stream == nil else {
+            throw ScreenRecorderError.captureAlreadyRunning
+        }
         guard let display = selectedDisplay else {
             throw ScreenRecorderError.noDisplaySelected
         }
@@ -80,11 +95,14 @@ final class ScreenRecorder: NSObject {
         output.onVideoSampleBuffer = { [weak self] sampleBuffer in
             self?.onVideoSampleBuffer?(sampleBuffer)
         }
+        output.onStreamError = { [weak self] error in
+            self?.onStreamError?(error)
+        }
         streamOutput = output
 
         // Create and start stream
         let captureStream = SCStream(filter: filter, configuration: config, delegate: output)
-        try captureStream.addStreamOutput(output, type: .screen, sampleHandlerQueue: .global(qos: .userInitiated))
+        try captureStream.addStreamOutput(output, type: .screen, sampleHandlerQueue: sampleHandlerQueue)
 
         try await captureStream.startCapture()
         stream = captureStream
@@ -127,6 +145,7 @@ enum ScreenRecorderError: LocalizedError {
 private final class StreamOutput: NSObject, SCStreamOutput, SCStreamDelegate {
 
     var onVideoSampleBuffer: ((CMSampleBuffer) -> Void)?
+    var onStreamError: ((Error) -> Void)?
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .screen else { return }
@@ -144,5 +163,6 @@ private final class StreamOutput: NSObject, SCStreamOutput, SCStreamDelegate {
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         print("Stream stopped with error: \(error)")
+        onStreamError?(error)
     }
 }

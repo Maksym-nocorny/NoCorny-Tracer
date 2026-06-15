@@ -170,11 +170,11 @@ final class AppState {
         // Wire up proxied Dropbox: the DropboxAuthManager asks Tracer for a fresh
         // access token, and "Connect Dropbox" opens the web settings page.
         dropboxAuthManager.fetchProxiedToken = { [weak self] in
-            guard let self = self,
-                  let result = await self.tracerAPIClient.fetchDropboxAccessToken(),
-                  result.connected, let token = result.accessToken else { return nil }
-            let expiresAt = result.expiresAt.flatMap { ISO8601DateFormatter().date(from: $0) }
-            return (token, expiresAt)
+            // self == nil means the app is tearing down — report transient so no
+            // state gets destroyed. Otherwise pass the typed result straight
+            // through (parsing + connected/expiry handling live in the client).
+            guard let self = self else { return .transientFailure }
+            return await self.tracerAPIClient.fetchDropboxAccessToken()
         }
         dropboxAuthManager.openWebDropboxSettings = { [weak self] in
             self?.openTracerSettings()
@@ -184,6 +184,14 @@ final class AppState {
         }
         dropboxAuthManager.disconnectProxied = { [weak self] in
             await self?.tracerAPIClient.disconnectDropbox()
+        }
+
+        // Tracer rejected our token (HTTP 401) → the client already signed out.
+        // Mirror a manual sign-out's Dropbox teardown, but deliberately do NOT
+        // wipe the recordings library: the rows are still valid and will refresh
+        // once the user signs in again.
+        tracerAPIClient.onTokenRevoked = { [weak self] in
+            self?.dropboxAuthManager.clearProxiedState()
         }
 
         // If the user is already signed in to Tracer at launch, try to pick up
@@ -486,12 +494,32 @@ final class AppState {
             do {
                 let videoPath = "\(resolvedFolder)/\(videoFilename)"
                 LogManager.shared.log("📤 Upload: Starting video upload → \(videoPath)")
-                let uploadedPath = try await dropboxUploadManager.upload(
-                    fileURL: fileURL,
-                    dropboxPath: videoPath,
-                    mode: .overwrite,
-                    accessToken: token
-                )
+                let uploadedPath: String
+                do {
+                    uploadedPath = try await dropboxUploadManager.upload(
+                        fileURL: fileURL,
+                        dropboxPath: videoPath,
+                        mode: .overwrite,
+                        accessToken: token
+                    )
+                } catch {
+                    // B1.9: a long upload can outlive the short-lived Dropbox token,
+                    // so a stale-token failure would otherwise be permanent. Refresh
+                    // once; only retry if we actually got a *different* token (i.e.
+                    // the old one had expired) — otherwise rethrow so genuine failures
+                    // still surface. NOTE: this re-uploads from the start; chunked
+                    // resume with a fresh token remains a future optimization.
+                    let refreshed = await dropboxAuthManager.refreshTokenIfNeeded() ?? token
+                    guard refreshed != token else { throw error }
+                    token = refreshed
+                    LogManager.shared.log("📤 Upload: token refreshed after failure — retrying once", type: .info)
+                    uploadedPath = try await dropboxUploadManager.upload(
+                        fileURL: fileURL,
+                        dropboxPath: videoPath,
+                        mode: .overwrite,
+                        accessToken: token
+                    )
+                }
                 LogManager.shared.log("📤 Upload: ✅ Uploaded → \(uploadedPath)")
 
                 let sharedURL = try await dropboxUploadManager.createSharedLink(
@@ -538,6 +566,17 @@ final class AppState {
             if let thumb = thumbnailShareURL {
                 updateRecording(id: id) {
                     $0.thumbnailURL = thumb
+                }
+            }
+        } else {
+            // Upload preconditions not met (auto-upload off, or signed out). A
+            // fresh recording is still `.notUploaded` here so nothing changes,
+            // but a `retryUpload` already flipped the status to `.uploading` —
+            // reset it so the row doesn't spin forever with no upload running.
+            updateRecording(id: id) {
+                if $0.uploadStatus == .uploading {
+                    $0.uploadStatus = .failed
+                    $0.uploadError = "Upload skipped — sign in to Tracer/Dropbox and enable auto-upload"
                 }
             }
         }
@@ -678,7 +717,16 @@ final class AppState {
     private func loadRecordings() {
         guard let data = UserDefaults.standard.data(forKey: recordingsKey),
               let decoded = try? JSONDecoder().decode([Recording].self, from: data) else { return }
-        recordings = decoded
+        // Any recording still marked .uploading is a leftover from a session that was
+        // killed mid-upload — there is no in-flight task for it now, so it would spin
+        // forever. Reconcile to .failed so the UI offers a retry instead.
+        recordings = decoded.map { rec in
+            guard rec.uploadStatus == .uploading else { return rec }
+            var r = rec
+            r.uploadStatus = .failed
+            r.uploadError = "Upload interrupted — tap to retry"
+            return r
+        }
     }
 
     // MARK: - History Management
@@ -696,6 +744,17 @@ final class AppState {
             let ok = await tracerAPIClient.deleteVideo(slug: slug)
             LogManager.shared.log(ok ? "🗑️ Tracer: deleted \(slug)" : "❌ Tracer: delete \(slug) failed",
                                   type: ok ? .info : .error)
+            guard ok else {
+                // Server delete failed — the video still lives on the server and in
+                // Dropbox. Keep the local entry visible (don't orphan the file
+                // invisibly) and surface the failure so the user can retry.
+                await MainActor.run {
+                    if let idx = self.recordings.firstIndex(where: { $0.id == recording.id }) {
+                        self.recordings[idx].uploadError = "Delete failed — still on server, tap to retry"
+                    }
+                }
+                return
+            }
         }
 
         // 2. Delete local file if it still exists (in-flight upload, etc.)
@@ -766,35 +825,45 @@ final class AppState {
         let wasSignedIn = dropboxAuthManager.isSignedIn
         let isInitialSync = !hasCompletedInitialDropboxSync
 
-        guard let result = await tracerAPIClient.fetchDropboxAccessToken(),
-              result.connected, let token = result.accessToken else {
-            dropboxAuthManager.clearProxiedState()
-            // Server says Dropbox is gone. The web hard-deletes video rows on
-            // disconnect, so the incremental `?since=` sync would never notice
-            // them disappear — we have to wipe the local cache ourselves.
+        switch await tracerAPIClient.fetchDropboxAccessToken() {
+        case .transientFailure:
+            // We could not reach or understand the server (offline, timeout, 5xx,
+            // unparseable body). This is NOT a disconnect. Treating it as one used
+            // to wipe the entire local library on a mere Wi-Fi blip. Leave all
+            // local state untouched and try again on the next tick.
+            LogManager.shared.log("🌐 Tracer: Dropbox status unreachable — keeping local state", type: .info)
+            return
+
+        case .authoritativeNegative:
+            // Server definitively says Dropbox is gone. The web hard-deletes video
+            // rows on disconnect, so the incremental `?since=` sync would never
+            // notice them disappear — we have to wipe the local cache ourselves.
             // Includes the launch-after-disconnect case: in-memory `isSignedIn`
             // is false fresh out of init(), but `recordings`/quota/cursor were
             // restored from disk and need cleaning.
+            dropboxAuthManager.clearProxiedState()
             if hasLocalDropboxLibraryState() {
                 resetTracerLibraryState()
             }
             hasCompletedInitialDropboxSync = true
             return
-        }
-        let expiresAt = result.expiresAt.flatMap { ISO8601DateFormatter().date(from: $0) }
-        await dropboxAuthManager.applyProxiedToken(accessToken: token, expiresAt: expiresAt)
-        hasCompletedInitialDropboxSync = true
 
-        // Fresh connection (or account switch) detected mid-session — pull the
-        // new account's library so the Recordings tab populates immediately,
-        // and surface the success sheet. Suppress on the initial launch sync,
-        // where wasSignedIn is always false simply because DropboxAuthManager
-        // doesn't persist isSignedIn across launches. We gate by a session
-        // flag (not a parameter) because launch fires concurrent syncs from
-        // both the init Task and didBecomeActive — either can win the race.
-        if !wasSignedIn && !isInitialSync {
-            dropboxAuthManager.showConnectionConfirmation = true
-            await reloadRecordingsFromTracer()
+        case .success(let tokenResult):
+            await dropboxAuthManager.applyProxiedToken(accessToken: tokenResult.token,
+                                                       expiresAt: tokenResult.expiresAt)
+            hasCompletedInitialDropboxSync = true
+
+            // Fresh connection (or account switch) detected mid-session — pull the
+            // new account's library so the Recordings tab populates immediately,
+            // and surface the success sheet. Suppress on the initial launch sync,
+            // where wasSignedIn is always false simply because DropboxAuthManager
+            // doesn't persist isSignedIn across launches. We gate by a session
+            // flag (not a parameter) because launch fires concurrent syncs from
+            // both the init Task and didBecomeActive — either can win the race.
+            if !wasSignedIn && !isInitialSync {
+                dropboxAuthManager.showConnectionConfirmation = true
+                await reloadRecordingsFromTracer()
+            }
         }
     }
 
@@ -829,12 +898,21 @@ final class AppState {
                     working.remove(at: idx)
                     continue
                 }
-                // Preserve fields the server doesn't know about (in-flight status,
-                // local fileURL, the local UUID).
+                // Don't clobber a recording that is still uploading locally: the
+                // server row exists (created at init in "uploading") but may not
+                // yet carry the final path / shared URL / title, and overwriting
+                // would null out fields the client just set mid-upload.
+                if working[idx].uploadStatus == .uploading {
+                    continue
+                }
+                // Preserve fields the server doesn't know about (local fileURL, the
+                // local UUID). Nil-coalesce so a transiently-empty server value
+                // never erases good local data. fileSize is guarded against the
+                // UInt64(Int64) trap on a negative value.
                 working[idx].dropboxPath = v.dropboxPath
-                working[idx].dropboxSharedURL = v.dropboxSharedUrl
+                working[idx].dropboxSharedURL = v.dropboxSharedUrl ?? working[idx].dropboxSharedURL
                 working[idx].duration = v.duration ?? working[idx].duration
-                working[idx].fileSize = v.fileSize.map { UInt64($0) } ?? working[idx].fileSize
+                working[idx].fileSize = v.fileSize.flatMap { $0 >= 0 ? UInt64($0) : nil } ?? working[idx].fileSize
                 working[idx].thumbnailURL = v.thumbnailUrl ?? working[idx].thumbnailURL
                 working[idx].aiGeneratedName = v.title
                 working[idx].tracerURL = "https://tracer.nocorny.com/v/\(v.slug)"
@@ -854,7 +932,7 @@ final class AppState {
                 rec.tracerSlug = v.slug
                 rec.tracerURL = "https://tracer.nocorny.com/v/\(v.slug)"
                 rec.thumbnailURL = v.thumbnailUrl
-                rec.fileSize = v.fileSize.map { UInt64($0) }
+                rec.fileSize = v.fileSize.flatMap { $0 >= 0 ? UInt64($0) : nil }
                 working.append(rec)
             }
         }
