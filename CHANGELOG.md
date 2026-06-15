@@ -15,7 +15,7 @@
 
 ## [3.12.1] - 2026-05-04
 ### Changed
-- Updated the app icon to the new "Trace V1" design.
+- **App icon redesigned to Trace V1** — a smooth S-curve bezier trace with a radiant pink endpoint, purple→pink gradient stroke on near-black squircle background. Replaces the previous concentric-circle design. Affects Dock, Finder, App Switcher, About panel, and in-app icon. Menu bar icon is intentionally unchanged. Source in `assets/icon-source.svg`.
 
 ## [3.12.0] - 2026-05-02
 ### Changed
