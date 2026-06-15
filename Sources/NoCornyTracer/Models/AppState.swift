@@ -318,19 +318,29 @@ final class AppState {
 
     // MARK: - Recording Lifecycle
 
+    /// Pre-roll / warm-up window before the recording timeline begins. The capture engine (screen
+    /// + mic) runs for this whole window while the writer stays "disarmed" and discards everything,
+    /// then arms at the end (see RecordingManager). It serves two purposes: (1) the "Hero" start
+    /// sound (peak < −50 dBFS by ~0.74s) plays and is discarded instead of being captured, and
+    /// (2) the mic's voice-processing unit fully spins up during it, so the first words spoken
+    /// aren't clipped. The UI timer / saved duration are measured from lastStartTime, set when the
+    /// writer arms, so they're unaffected.
+    private static let startSoundMaskDelay: UInt64 = 650_000_000  // 0.65s
+
     func startRecording() async throws {
-        // Play start sound immediately on button click
+        // Play start sound immediately on button click.
         SoundManager.shared.play(.start)
 
-        // Wait 1.0 second to allow UI/popovers to hide AND sound to finish before recording starts
-        try? await Task.sleep(nanoseconds: 1_000_000_000)
-        
+        // The recording engine warms up during the mask delay and only "arms" (starts keeping
+        // frames) once it elapses — keeping the start sound out of the recording AND ensuring the
+        // mic is already capturing when recording begins. See RecordingManager.startRecording.
         try await recordingManager.startRecording(
             microphoneEnabled: isMicrophoneEnabled,
             microphoneDeviceID: selectedMicrophoneID,
             videoWidth: videoResolution.width,
             videoHeight: videoResolution.height,
-            fps: videoFrameRate.rawValue
+            fps: videoFrameRate.rawValue,
+            startMaskDelay: Self.startSoundMaskDelay
         )
     }
 

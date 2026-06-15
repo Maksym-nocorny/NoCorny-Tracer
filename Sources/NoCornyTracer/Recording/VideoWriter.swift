@@ -18,10 +18,15 @@ final class VideoWriter {
     private var audioInput: AVAssetWriterInput?
 
     // MARK: - Timing
-    private var isFirstFrame = true
+    /// False during the pre-roll warm-up, true once the recording timeline begins (see `arm()`).
+    /// Buffers received while disarmed are discarded — this is the warm-up window that lets the
+    /// start sound finish AND the mic's voice-processing unit fully spin up before recording, so
+    /// the first words spoken aren't clipped.
+    private var armed = false
+    private var sessionStarted = false
     private var sessionStartTime: CMTime = .zero
     private var isWriting = false
-    
+
     private var ptsOffset: CMTime = .zero
     private var lastSourcePTS: CMTime = .zero
     private var isPaused = false
@@ -98,7 +103,8 @@ final class VideoWriter {
         self.assetWriter = writer
         self.videoInput = vInput
         self.audioInput = aInput
-        self.isFirstFrame = true
+        self.armed = false
+        self.sessionStarted = false
         self.isWriting = true
 
         // startWriting() returns false (and sets writer.status = .failed) when the
@@ -127,12 +133,20 @@ final class VideoWriter {
 
     // MARK: - Appending Buffers
 
+    /// Begins the recording timeline. Buffers received before this — the pre-roll warm-up that
+    /// lets the start sound finish and the microphone's voice-processing unit fully spin up — are
+    /// discarded, so the recording starts cleanly with the mic already capturing (no clipped first
+    /// words). The first video frame after arming anchors the session; audio is kept from there.
+    func arm() {
+        writingQueue.async { self.armed = true }
+    }
+
     func appendVideoBuffer(_ sampleBuffer: CMSampleBuffer) {
         writingQueue.sync {
             // Pause gating lives here (on writingQueue) instead of being read from
             // the capture thread off `RecordingManager.isPaused` — that was an
             // unsynchronized cross-thread Bool read (a data race).
-            guard isWriting, !isPaused,
+            guard isWriting, !isPaused, armed,
                   let writer = assetWriter,
                   writer.status == .writing,
                   let videoInput = videoInput,
@@ -140,13 +154,14 @@ final class VideoWriter {
 
             let originalPTS = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
 
-            if isFirstFrame {
+            // The first frame after arming anchors the session timeline.
+            if !sessionStarted {
                 sessionStartTime = originalPTS
                 writer.startSession(atSourceTime: originalPTS)
-                isFirstFrame = false
+                sessionStarted = true
                 lastSourcePTS = originalPTS
             }
-            
+
             if needsResumeAdjustment {
                 let gap = originalPTS - lastSourcePTS
                 // We want the next segment to start immediately after the last segment
@@ -157,9 +172,9 @@ final class VideoWriter {
                 }
                 needsResumeAdjustment = false
             }
-            
+
             lastSourcePTS = originalPTS
-            
+
             if let reStamped = reStamp(sampleBuffer, offset: ptsOffset) {
                 videoInput.append(reStamped)
             }
@@ -169,15 +184,15 @@ final class VideoWriter {
 
     func appendAudioBuffer(_ sampleBuffer: CMSampleBuffer) {
         writingQueue.sync {
-            guard isWriting, !isPaused,
+            guard isWriting, !isPaused, armed, sessionStarted,
                   let writer = assetWriter,
                   writer.status == .writing,
                   let audioInput = audioInput,
-                  audioInput.isReadyForMoreMediaData,
-                  !isFirstFrame else { return } // Don't append audio before session starts
+                  audioInput.isReadyForMoreMediaData else { return }
 
             let originalPTS = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-            
+            guard originalPTS >= sessionStartTime else { return }  // drop audio before the video anchor
+
             if needsResumeAdjustment {
                 let gap = originalPTS - lastSourcePTS
                 // Audio has 1024 samples per buffer usually, or smaller. 

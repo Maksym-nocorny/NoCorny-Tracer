@@ -84,6 +84,16 @@ private struct MainWindowHost: View {
                 appDelegate.updaterController = updaterController
                 appDelegate.reopenMainWindow = { openWindow(id: "main") }
                 cameraWindowManager.updateVisibility(isEnabled: appState.isCameraEnabled, appState: appState)
+
+                // Opt the main window out of Cocoa state restoration. With
+                // NSQuitAlwaysKeepsWindows enabled, quitting while the window is closed would
+                // otherwise relaunch the app with no window — so MainWindowHost never appears,
+                // the `reopenMainWindow` bridge stays nil, and the menu-bar / Dock click can't
+                // summon the window. Disabling restoration makes the app reliably relaunch with
+                // the window present and the bridge initialized.
+                DispatchQueue.main.async {
+                    NSApp.windows.first(where: { $0.title == "NoCorny Tracer" })?.isRestorable = false
+                }
             }
     }
 }
@@ -310,18 +320,30 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func showMainWindow() {
         NSApp.activate(ignoringOtherApps: true)
 
-        // If a main window already exists, focus it. Deminiaturize first if it
-        // was collapsed to the Dock — makeKeyAndOrderFront alone won't expand.
-        if let window = NSApp.windows.first(where: { $0.title == "NoCorny Tracer" }) {
-            if window.isMiniaturized {
-                window.deminiaturize(nil)
-            }
-            window.makeKeyAndOrderFront(nil)
-            return
-        }
-
-        // Otherwise ask SwiftUI to reopen the Scene via its environment handle.
+        // Always ask SwiftUI to present the "main" Window scene. For a `Window` scene this
+        // recreates it if the user closed it, or brings it forward if it was ordered-out
+        // (e.g. hidden during recording). Previously we returned early after
+        // makeKeyAndOrderFront on a lingering, content-less NSWindow that AppKit keeps in
+        // NSApp.windows after a SwiftUI close — so the scene never actually reopened and the
+        // menu-bar / Dock click appeared to do nothing.
         reopenMainWindow?()
+
+        // Raise / un-miniaturize the resulting window once SwiftUI has (re)created it. A
+        // miniaturized window won't expand from openWindow alone, so deminiaturize here.
+        DispatchQueue.main.async { [weak self] in
+            self?.raiseMainWindow()
+        }
+    }
+
+    /// Brings the main window to the front, expanding it if it was collapsed to the Dock.
+    private func raiseMainWindow() {
+        guard let window = NSApp.windows.first(where: {
+            $0.title == "NoCorny Tracer" && $0.canBecomeKey
+        }) else { return }
+        if window.isMiniaturized {
+            window.deminiaturize(nil)
+        }
+        window.makeKeyAndOrderFront(nil)
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {

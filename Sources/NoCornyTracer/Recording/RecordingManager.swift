@@ -44,7 +44,8 @@ final class RecordingManager {
         microphoneDeviceID: String?,
         videoWidth: Int = 1920,
         videoHeight: Int = 1080,
-        fps: Int = 30
+        fps: Int = 30,
+        startMaskDelay: UInt64 = 0
     ) async throws {
         // Reentrancy guard: isRecording is only set true after several awaits, so a
         // double trigger within that window used to start two concurrent captures +
@@ -71,7 +72,7 @@ final class RecordingManager {
             // Start screen capture first — returns the actual output size (matched to display aspect ratio)
             let actualSize = try await screenRecorder.startCapture(width: videoWidth, height: videoHeight, fps: fps)
 
-            // Create video writer sized to the capture output so frames aren't letterboxed
+            // Create video writer sized to the capture output so frames aren't letterboxed.
             let writer = VideoWriter(
                 outputURL: outputURL,
                 videoWidth: actualSize.width,
@@ -122,6 +123,15 @@ final class RecordingManager {
             currentFileURL = nil
             throw error
         }
+
+        // Pre-roll: screen capture and the mic are now running, but the writer is NOT armed yet,
+        // so everything captured so far — the start sound and the mic's voice-processing warm-up —
+        // is discarded. Wait for the sound to finish and the mic to fully spin up, THEN arm, so the
+        // recording begins with the microphone already capturing and the first words aren't clipped.
+        if startMaskDelay > 0 {
+            try? await Task.sleep(nanoseconds: startMaskDelay)
+        }
+        videoWriter?.arm()
 
         // Start duration timer
         isRecording = true
@@ -217,9 +227,9 @@ final class RecordingManager {
         SoundManager.shared.play(.pause)
 
         // If we are currently paused, we are about to resume.
-        // Wait 1.0 second so the sound doesn't get recorded.
+        // The "Tink" resume sound is audibly over by ~0.05s; 0.15s masks it before capture resumes.
         if isPaused {
-            try? await Task.sleep(nanoseconds: 500_000_000)
+            try? await Task.sleep(nanoseconds: 150_000_000)
         }
 
         isPaused.toggle()

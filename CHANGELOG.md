@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.13.1] - 2026-06-15
+### Fixed
+- **The microphone no longer misses the first words.** The start sound and the mic's noise-cancellation now warm up *before* the recording timeline begins, so whatever you say right after the start chime is captured from the first syllable instead of being clipped. Audio and video also begin together — no more offset between the two tracks at the start of the file.
+- **The app window reliably reopens.** Clicking the menu-bar or Dock icon now always brings the window back after you've closed it — previously a closed window could leave the icon doing nothing — and the app relaunches with its window present instead of getting stuck with no way to summon it.
+
+### Changed
+- **Snappier start and resume.** The pre-recording delay is tuned to the real length of the start sound (1.0s → 0.65s) and the pause→resume delay is shortened (0.5s → 0.15s), so recording begins and resumes faster while still keeping the notification sounds out of the recording.
+
 ## [3.13.0] - 2026-06-15
 ### Fixed
 - **Recordings no longer vanish when the internet drops.** A brief Wi-Fi loss, timeout, or server hiccup used to be mistaken for "Dropbox disconnected" and could wipe your whole local recordings library. The app now clears the library only when the server explicitly says Dropbox was disconnected — never on a transient network error.
