@@ -12,6 +12,8 @@ mkdir -p "$PROJECT_DIR/dist"
 rm -rf "$PROJECT_DIR/dist/"*
 
 VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$PROJECT_DIR/Sources/NoCornyTracer/Info.plist")
+# Resolved after the build via `swift build --show-bin-path` (see Step 1). For a
+# multi-arch build SwiftPM emits to .build/apple/Products/Release, NOT .build/release.
 BUILD_DIR="$PROJECT_DIR/.build/release"
 APP_BUNDLE="$PROJECT_DIR/dist/$APP_NAME.app"
 DMG_DIR="$PROJECT_DIR/dist"
@@ -23,12 +25,15 @@ echo "🔨 Building $APP_NAME v$VERSION..."
 # === Step 1: Build release binary ===
 cd "$PROJECT_DIR"
 # Build a universal (arm64 + x86_64) binary so Intel Macs can run the app.
-# SwiftPM emits a fat binary directly at .build/release/$BINARY_NAME.
-# Note: Info.plist is a link-time input (-sectcreate in Package.swift) that SwiftPM
-# does NOT track, so a clean release link is needed to pick up plist edits. We remove
-# only the cached executable (NOT all of .build — that would wipe the Sparkle
-# artifacts and create-dmg cache) to force the sectcreate to re-run.
-rm -f "$PROJECT_DIR/.build/release/$BINARY_NAME"
+# IMPORTANT: a multi-arch build uses SwiftPM's Xcode build system, which emits the
+# fat binary + resource bundle + Sparkle.framework under .build/apple/Products/Release
+# — NOT the single-arch .build/release path. Resolve the real location with
+# --show-bin-path so every downstream copy/sign step looks in the right place.
+# Info.plist is a link-time input (-sectcreate in Package.swift) that SwiftPM does NOT
+# track, so we remove only the cached executable (NOT all of .build — that would wipe
+# the Sparkle artifacts and create-dmg cache) to force the sectcreate to re-run.
+BUILD_DIR="$(swift build -c release --arch arm64 --arch x86_64 --show-bin-path 2>/dev/null)"
+rm -f "$BUILD_DIR/$BINARY_NAME"
 swift build -c release --arch arm64 --arch x86_64 2>&1
 
 echo "✅ Build complete"
