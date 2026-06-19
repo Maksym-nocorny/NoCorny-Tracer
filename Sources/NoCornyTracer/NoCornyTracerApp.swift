@@ -8,6 +8,7 @@ struct NoCornyTracerApp: App {
 
     @State private var appState = AppState()
     @State private var cameraWindowManager = CameraWindowManager()
+    @State private var noiseSuggestionWindowManager = NoiseSuggestionWindowManager()
     @State private var permissionsManager: PermissionsManager
 
     // Sparkle auto-updater
@@ -37,6 +38,7 @@ struct NoCornyTracerApp: App {
                 updaterController: updaterController,
                 permissionsManager: permissionsManager,
                 cameraWindowManager: cameraWindowManager,
+                noiseSuggestionWindowManager: noiseSuggestionWindowManager,
                 appDelegate: appDelegate
             )
                 .preferredColorScheme(appState.appTheme.colorScheme)
@@ -74,6 +76,7 @@ private struct MainWindowHost: View {
     let updaterController: SPUStandardUpdaterController
     @Bindable var permissionsManager: PermissionsManager
     let cameraWindowManager: CameraWindowManager
+    let noiseSuggestionWindowManager: NoiseSuggestionWindowManager
     let appDelegate: AppDelegate
 
     @Environment(\.openWindow) private var openWindow
@@ -84,6 +87,11 @@ private struct MainWindowHost: View {
                 appDelegate.updaterController = updaterController
                 appDelegate.reopenMainWindow = { openWindow(id: "main") }
                 cameraWindowManager.updateVisibility(isEnabled: appState.isCameraEnabled, appState: appState)
+                // Route toast presentation through a closure so it works while the main window is
+                // hidden during recording (see AppState.presentNoiseSuggestion).
+                appState.presentNoiseSuggestion = { show in
+                    noiseSuggestionWindowManager.update(show: show, appState: appState)
+                }
 
                 // Opt the main window out of Cocoa state restoration. With
                 // NSQuitAlwaysKeepsWindows enabled, quitting while the window is closed would

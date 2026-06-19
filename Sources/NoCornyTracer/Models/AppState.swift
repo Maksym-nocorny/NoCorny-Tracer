@@ -65,6 +65,13 @@ final class AppState {
 
     var selectedMicrophoneID: String?
     var isMicrophoneEnabled: Bool = true
+    /// When off (default), the mic is captured raw for maximum fidelity. When on, Apple Voice
+    /// Processing (Voice Isolation, AGC off) suppresses background noise at the cost of some quality.
+    var reduceBackgroundNoise: Bool = false {
+        didSet {
+            UserDefaults.standard.set(reduceBackgroundNoise, forKey: "reduceBackgroundNoise")
+        }
+    }
     var appTheme: AppTheme = .light {
         didSet {
             UserDefaults.standard.set(appTheme.rawValue, forKey: "appTheme")
@@ -108,9 +115,21 @@ final class AppState {
     private static let dropboxUsedSpaceKey = "dropboxUsedSpace"
     private static let dropboxAllocatedSpaceKey = "dropboxAllocatedSpace"
     private static let lastTracerSyncAtKey = "lastTracerSyncAt"
+    private static let noiseSuggestionDismissedKey = "noiseSuggestionDismissedForever"
 
     /// Set to true on first launch to show a dialog asking about launch at login
     var showLaunchAtLoginPrompt = false
+
+    /// Tracks whether the floating "noisy environment" suggestion toast is currently shown.
+    /// Transient; guards against re-presenting while already visible.
+    private(set) var showNoiseSuggestion = false
+    /// Once the user picks "Don't suggest again", we never show the suggestion toast again.
+    private var noiseSuggestionDismissedForever = false
+    /// Presents/hides the floating suggestion toast. Set by the app scene's window host. Driven via
+    /// a closure (not SwiftUI `.onChange`) because the toast must appear DURING recording, when the
+    /// main window is hidden and its view graph can't be relied on to observe state changes.
+    @ObservationIgnored
+    var presentNoiseSuggestion: ((Bool) -> Void)?
 
     /// Polls Tracer for the current Dropbox connection state. Lets the macOS app
     /// notice within ~60s when the user disconnects (or switches accounts) on the
@@ -128,6 +147,8 @@ final class AppState {
             self.appTheme = theme
         }
         self.launchAtLogin = UserDefaults.standard.bool(forKey: "launchAtLogin")
+        self.reduceBackgroundNoise = UserDefaults.standard.bool(forKey: "reduceBackgroundNoise")
+        self.noiseSuggestionDismissedForever = UserDefaults.standard.bool(forKey: Self.noiseSuggestionDismissedKey)
         self.isCameraEnabled = UserDefaults.standard.bool(forKey: "isCameraEnabled")
         self.selectedCameraDeviceID = UserDefaults.standard.string(forKey: "selectedCameraDeviceID")
         if let resRaw = UserDefaults.standard.string(forKey: "videoResolution"),
@@ -166,6 +187,16 @@ final class AppState {
 
         // Set shared reference for AppDelegate access
         AppState.shared = self
+
+        // When the mic detects a noisy room mid-recording (and noise reduction is off), surface
+        // the suggestion toast — unless the user has permanently dismissed it.
+        recordingManager.audioCaptureManager.onEnvironmentNoisy = { [weak self] in
+            guard let self else { return }
+            guard !self.noiseSuggestionDismissedForever, !self.reduceBackgroundNoise else { return }
+            guard !self.showNoiseSuggestion else { return }
+            self.showNoiseSuggestion = true
+            self.presentNoiseSuggestion?(true)
+        }
 
         // Wire up proxied Dropbox: the DropboxAuthManager asks Tracer for a fresh
         // access token, and "Connect Dropbox" opens the web settings page.
@@ -316,6 +347,27 @@ final class AppState {
         }
     }
 
+    // MARK: - Noise Suggestion
+
+    /// User accepted the "noisy environment" suggestion. Enabling persists and takes effect on the
+    /// NEXT recording — voice processing can't be hot-swapped on a live engine without an audio gap.
+    func enableNoiseReductionFromSuggestion() {
+        reduceBackgroundNoise = true
+        showNoiseSuggestion = false
+        presentNoiseSuggestion?(false)
+        LogManager.shared.log("🎤 Audio: user enabled noise reduction from suggestion (applies next recording)")
+    }
+
+    /// Dismiss the suggestion toast. When `forever` is true, never show it again.
+    func dismissNoiseSuggestion(forever: Bool) {
+        showNoiseSuggestion = false
+        presentNoiseSuggestion?(false)
+        if forever {
+            noiseSuggestionDismissedForever = true
+            UserDefaults.standard.set(true, forKey: Self.noiseSuggestionDismissedKey)
+        }
+    }
+
     // MARK: - Recording Lifecycle
 
     /// Pre-roll / warm-up window before the recording timeline begins. The capture engine (screen
@@ -337,6 +389,7 @@ final class AppState {
         try await recordingManager.startRecording(
             microphoneEnabled: isMicrophoneEnabled,
             microphoneDeviceID: selectedMicrophoneID,
+            reduceBackgroundNoise: reduceBackgroundNoise,
             videoWidth: videoResolution.width,
             videoHeight: videoResolution.height,
             fps: videoFrameRate.rawValue,

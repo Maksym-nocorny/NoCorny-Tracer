@@ -42,6 +42,7 @@ final class RecordingManager {
     func startRecording(
         microphoneEnabled: Bool,
         microphoneDeviceID: String?,
+        reduceBackgroundNoise: Bool = false,
         videoWidth: Int = 1920,
         videoHeight: Int = 1080,
         fps: Int = 30,
@@ -107,7 +108,7 @@ final class RecordingManager {
                 audioCaptureManager.onAudioSampleBuffer = { [weak writer] sampleBuffer in
                     writer?.appendAudioBuffer(sampleBuffer)
                 }
-                try audioCaptureManager.startCapture()
+                try audioCaptureManager.startCapture(reduceBackgroundNoise: reduceBackgroundNoise)
             }
         } catch {
             // Rollback a partially-started recording: otherwise a running SCStream,

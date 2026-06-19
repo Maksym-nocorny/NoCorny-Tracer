@@ -372,6 +372,16 @@ struct SettingsView: View {
                     )
                 }
 
+                VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+                    Toggle("Reduce background noise", isOn: $appState.reduceBackgroundNoise)
+                        .controlSize(.small)
+                        .font(Theme.Typography.body(12))
+                    Text("Off = highest quality. On filters background noise but slightly processes your voice.")
+                        .font(Theme.Typography.body(10, weight: .light))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
                 HStack {
                     Text("Camera")
                         .font(Theme.Typography.body(12))

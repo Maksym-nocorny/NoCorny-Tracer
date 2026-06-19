@@ -85,7 +85,7 @@ final class VideoWriter {
             writer.add(vInput)
         }
 
-        // Audio input settings — AAC at 48kHz stereo
+        // Audio input settings — AAC at 48kHz mono, 128 kbps
         let audioSettings: [String: Any] = [
             AVFormatIDKey: kAudioFormatMPEG4AAC,
             AVSampleRateKey: 48000,

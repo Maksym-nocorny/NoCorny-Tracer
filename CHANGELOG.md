@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.14.0] - 2026-06-19
+### Fixed
+- **Much cleaner microphone audio.** Recordings no longer sound "over-compressed" or noisy. Previously the mic was always run through Apple's call-style voice processing (with automatic gain control), which pumped the volume and added artifacts. The mic is now captured at full fidelity by default — the way it sounds in apps like Telegram.
+
+### Added
+- **"Reduce background noise" toggle** (Settings → Input Devices, off by default). Turn it on when recording in a noisy room to filter out background TV, music, and distant voices — at the cost of slightly processed voice. It also enables the system Voice Isolation option in Control Center's Mic Mode for Tracer.
+- **Noisy-environment suggestion.** If a recording starts in a noticeably noisy room (with noise reduction off), a small floating card now offers to turn on noise reduction for your next recordings. It can be dismissed for good.
+
 ## [3.13.1] - 2026-06-15
 ### Fixed
 - **The microphone no longer misses the first words.** The start sound and the mic's noise-cancellation now warm up *before* the recording timeline begins, so whatever you say right after the start chime is captured from the first syllable instead of being clipped. Audio and video also begin together — no more offset between the two tracks at the start of the file.
