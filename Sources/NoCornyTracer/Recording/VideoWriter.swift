@@ -32,6 +32,22 @@ final class VideoWriter {
     private var isPaused = false
     private var needsResumeAdjustment = false
 
+    /// Fired once (on the writing queue) when an append discovers the writer died
+    /// mid-recording. CoreMedia's periodic fragment flush can fail spontaneously
+    /// (seen in the wild as MovieHeaderMaker err -16341), flipping the writer to
+    /// .failed — after which every buffer is silently dropped by the append guards.
+    /// Set by RecordingManager before capture callbacks are attached.
+    var onFailure: ((Error?) -> Void)?
+    private var failureReported = false
+
+    /// Under system-wide GPU load (kernel IOSurface storms) a realtime source can
+    /// emit a buffer with a non-increasing timestamp. append() accepts it, but the
+    /// writer's background fragment flush then fails on it and kills the whole
+    /// writer — so track per-input PTS and drop such buffers at the door.
+    private var lastVideoPTS: CMTime = .invalid
+    private var lastAudioPTS: CMTime = .invalid
+    private var outOfOrderDrops = 0
+
 
     // MARK: - Thread Safety
     private let writingQueue = DispatchQueue(label: "com.nocorny.tracer.videowriter", qos: .userInitiated)
@@ -147,12 +163,21 @@ final class VideoWriter {
             // the capture thread off `RecordingManager.isPaused` — that was an
             // unsynchronized cross-thread Bool read (a data race).
             guard isWriting, !isPaused, armed,
-                  let writer = assetWriter,
-                  writer.status == .writing,
-                  let videoInput = videoInput,
+                  let writer = assetWriter else { return }
+            guard writer.status == .writing else {
+                reportFailureIfNeeded(writer)
+                return
+            }
+            guard let videoInput = videoInput,
                   videoInput.isReadyForMoreMediaData else { return }
 
             let originalPTS = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+
+            if lastVideoPTS.isValid, originalPTS <= lastVideoPTS {
+                noteOutOfOrderDrop(track: "video", pts: originalPTS, last: lastVideoPTS)
+                return
+            }
+            lastVideoPTS = originalPTS
 
             // The first frame after arming anchors the session timeline.
             if !sessionStarted {
@@ -185,13 +210,22 @@ final class VideoWriter {
     func appendAudioBuffer(_ sampleBuffer: CMSampleBuffer) {
         writingQueue.sync {
             guard isWriting, !isPaused, armed, sessionStarted,
-                  let writer = assetWriter,
-                  writer.status == .writing,
-                  let audioInput = audioInput,
+                  let writer = assetWriter else { return }
+            guard writer.status == .writing else {
+                reportFailureIfNeeded(writer)
+                return
+            }
+            guard let audioInput = audioInput,
                   audioInput.isReadyForMoreMediaData else { return }
 
             let originalPTS = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
             guard originalPTS >= sessionStartTime else { return }  // drop audio before the video anchor
+
+            if lastAudioPTS.isValid, originalPTS <= lastAudioPTS {
+                noteOutOfOrderDrop(track: "audio", pts: originalPTS, last: lastAudioPTS)
+                return
+            }
+            lastAudioPTS = originalPTS
 
             if needsResumeAdjustment {
                 let gap = originalPTS - lastSourcePTS
@@ -212,6 +246,34 @@ final class VideoWriter {
         }
     }
     
+    /// Reports a mid-recording writer death to the owner, once. Runs on writingQueue.
+    private func reportFailureIfNeeded(_ writer: AVAssetWriter) {
+        guard writer.status == .failed, !failureReported else { return }
+        failureReported = true
+        onFailure?(writer.error)
+    }
+
+    /// Counts dropped non-monotonic buffers; logs the first so a recording that
+    /// coincides with a system graphics storm leaves a diagnosable trace.
+    private func noteOutOfOrderDrop(track: String, pts: CMTime, last: CMTime) {
+        outOfOrderDrops += 1
+        if outOfOrderDrops == 1 {
+            LogManager.shared.log("⚠️ Writer: dropped out-of-order \(track) buffer (pts \(pts.seconds)s ≤ last \(last.seconds)s) — realtime timing glitch", type: .error)
+        }
+    }
+
+    /// Formats an AVAssetWriter error including the underlying OSStatus — the part
+    /// that actually identifies CoreMedia failures (AVFoundation wraps them all in
+    /// the generic -11800 "unknown error").
+    static func describeError(_ error: Error?) -> String {
+        guard let error = error as NSError? else { return "no error object" }
+        var text = "\(error.domain) \(error.code): \(error.localizedDescription)"
+        if let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError {
+            text += " — underlying \(underlying.domain) \(underlying.code)"
+        }
+        return text
+    }
+
     private func reStamp(_ sampleBuffer: CMSampleBuffer, offset: CMTime) -> CMSampleBuffer? {
         guard offset.value != 0 else { return sampleBuffer }
         
@@ -250,10 +312,15 @@ final class VideoWriter {
         // thread used to race a tap callback that had already passed the guard,
         // making it append to an already-finished input → uncatchable NSException
         // crash at the exact moment a recording is saved.
+        var totalDrops = 0
         writingQueue.sync {
             isWriting = false
             videoInput?.markAsFinished()
             audioInput?.markAsFinished()
+            totalDrops = outOfOrderDrops
+        }
+        if totalDrops > 0 {
+            LogManager.shared.log("⚠️ Writer: dropped \(totalDrops) out-of-order buffer(s) this recording", type: .info)
         }
 
         return await withCheckedContinuation { continuation in
@@ -261,7 +328,9 @@ final class VideoWriter {
                 if writer.status == .completed {
                     continuation.resume(returning: self.outputURL)
                 } else {
-                    print("Asset writer finished with error: \(writer.error?.localizedDescription ?? "unknown")")
+                    // print() goes nowhere for a Finder-launched app — log the real
+                    // error (with underlying OSStatus) where it can be diagnosed.
+                    LogManager.shared.log("🔴 Writer: finishWriting failed — \(Self.describeError(writer.error))", type: .error)
                     continuation.resume(returning: nil)
                 }
             }

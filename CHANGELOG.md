@@ -1,5 +1,11 @@
 # Changelog
 
+## [3.14.1] - 2026-07-07
+### Fixed
+- **Recordings are no longer lost when the video writer dies mid-recording.** macOS's media engine can spontaneously kill the file writer during a recording (seen twice on 2026-07-07 as internal CoreMedia error -16341 during the periodic fragment flush). Previously the app kept "recording" into the dead writer, then deleted the partial file at stop — losing the whole take. Now the failure is detected within a frame, the playable part of the file (written in 5-second fragments) is salvaged and uploaded through the normal pipeline, and a new recording starts automatically so nothing after the failure is lost either.
+- **Writer errors are now diagnosable.** The real CoreMedia error (domain, code, underlying OSStatus) is written to the app log on any writer failure — previously it went to stdout, which is discarded for a Finder-launched app.
+- **Glitched frame timestamps no longer reach the writer.** Both writer deaths coincided with kernel-level graphics-surface churn (source unidentified); under such conditions a capture source can emit a buffer with a non-increasing timestamp — the writer accepts it, but its background fragment flush later chokes on it and kills the file. Such buffers are now dropped at the door and counted in the log.
+
 ## [3.14.0] - 2026-06-19
 ### Fixed
 - **Much cleaner microphone audio.** Recordings no longer sound "over-compressed" or noisy. Previously the mic was always run through Apple's call-style voice processing (with automatic gain control), which pumped the volume and added artifacts. The mic is now captured at full fidelity by default — the way it sounds in apps like Telegram.

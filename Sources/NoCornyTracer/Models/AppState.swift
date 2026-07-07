@@ -198,6 +198,13 @@ final class AppState {
             self.presentNoiseSuggestion?(true)
         }
 
+        // A writer that dies mid-recording (spontaneous CoreMedia fragment-flush
+        // failure) silently drops every further frame. Stop right away, ship the
+        // salvaged playable part through the normal pipeline, and restart.
+        recordingManager.onWriterFailed = { [weak self] in
+            Task { @MainActor in await self?.recoverFromWriterFailure() }
+        }
+
         // Wire up proxied Dropbox: the DropboxAuthManager asks Tracer for a fresh
         // access token, and "Connect Dropbox" opens the web settings page.
         dropboxAuthManager.fetchProxiedToken = { [weak self] in
@@ -399,6 +406,7 @@ final class AppState {
 
     /// Abort recording: stops and discards the file without saving or uploading
     func abortRecording() async {
+        writerFailureRestarts = 0
         guard let recording = await recordingManager.stopRecording(playSound: false) else { return }
         
         // Play abort sound
@@ -410,6 +418,7 @@ final class AppState {
     }
 
     func stopRecording() async {
+        writerFailureRestarts = 0
         guard let recording = await recordingManager.stopRecording() else { return }
         let newRecording = recording
 
@@ -419,6 +428,31 @@ final class AppState {
         // Process everything in the background (non-blocking)
         let recordingID = newRecording.id
         Task { await self.processRecording(id: recordingID) }
+    }
+
+    /// Consecutive automatic restarts after mid-recording writer deaths. Reset when
+    /// a session ends normally; caps the failure → restart loop.
+    private var writerFailureRestarts = 0
+
+    /// The writer died mid-recording: everything appended from now on would be
+    /// silently dropped. Stop immediately (salvaging the playable partial into the
+    /// normal upload pipeline) and restart so the user keeps recording.
+    private func recoverFromWriterFailure() async {
+        guard recordingManager.isRecording else { return }
+        if let salvaged = await recordingManager.stopRecording(playSound: false) {
+            recordings.insert(salvaged, at: 0)
+            saveRecordings()
+            let recordingID = salvaged.id
+            Task { await self.processRecording(id: recordingID) }
+        }
+        // Don't loop forever if the writer dies again right after restarting (e.g.
+        // an ongoing system-wide graphics storm) — give up audibly instead.
+        guard writerFailureRestarts < 2 else {
+            SoundManager.shared.play(.abort)
+            return
+        }
+        writerFailureRestarts += 1
+        try? await startRecording()
     }
 
     /// Background processing: init → open browser → parallel video+thumb upload →

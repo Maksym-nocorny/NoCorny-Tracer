@@ -36,6 +36,12 @@ final class RecordingManager {
     /// partial file. Set by the owner.
     var onInterrupted: ((Recording?) -> Void)?
 
+    /// Optional hook fired when the writer dies mid-recording (CoreMedia's periodic
+    /// fragment flush can fail spontaneously — e.g. MovieHeaderMaker err -16341 —
+    /// after which every frame is silently dropped). The owner should stop the
+    /// recording (stopRecording salvages the playable partial) and may restart.
+    var onWriterFailed: (() -> Void)?
+
     // MARK: - Start Recording
 
     @MainActor
@@ -82,6 +88,16 @@ final class RecordingManager {
             )
             try writer.startWriting()
             videoWriter = writer
+
+            // A writer that dies mid-recording would otherwise keep "recording"
+            // while silently dropping every frame until the user hits stop.
+            writer.onFailure = { [weak self, weak writer] error in
+                LogManager.shared.log("🔴 Recording: writer failed mid-recording — \(VideoWriter.describeError(error))", type: .error)
+                Task { @MainActor in
+                    guard let self, self.isRecording, self.videoWriter === writer else { return }
+                    self.onWriterFailed?()
+                }
+            }
 
             // Pause gating now lives inside VideoWriter (on its writing queue), so the
             // callbacks just forward — no unsynchronized cross-thread isPaused read.
@@ -162,10 +178,14 @@ final class RecordingManager {
 
         // Finalize file
         guard let outputURL = await videoWriter?.stopWriting() else {
-            // Writer produced no file (disk full / encode error). Reset ALL state and
-            // remove any corrupt partial, so we don't leave a phantom recording or
-            // strand isPaused=true (which would drop the next recording's first frames).
-            if let url = currentFileURL { try? FileManager.default.removeItem(at: url) }
+            // Writer produced no file (mid-recording CoreMedia failure / disk full /
+            // encode error). Reset ALL state so we don't leave a phantom recording or
+            // strand isPaused=true (which would drop the next recording's first frames)
+            // — but do NOT delete the partial: the file is written in 5s movie
+            // fragments precisely so a dead writer still leaves a playable recording
+            // up to the last flush. Try to salvage it.
+            let partialURL = currentFileURL
+            let startedAt = recordingStartTime
             isRecording = false
             isPaused = false
             recordingDuration = 0
@@ -173,8 +193,7 @@ final class RecordingManager {
             lastStartTime = nil
             videoWriter = nil
             currentFileURL = nil
-            LogManager.shared.log("🔴 Recording: stop failed — writer produced no file; partial removed", type: .error)
-            return nil
+            return await salvagePartialRecording(at: partialURL, startedAt: startedAt)
         }
 
         let finalDuration = lastStartTime != nil ? accumulatedDuration + Date().timeIntervalSince(lastStartTime!) : accumulatedDuration
@@ -209,6 +228,37 @@ final class RecordingManager {
             SoundManager.shared.play(.stop)
         }
 
+        return recording
+    }
+
+    // MARK: - Salvage
+
+    /// Probes the partial .mp4 a dead writer left behind. Thanks to the periodic
+    /// movie fragments it is normally playable up to the last ~5s flush — return it
+    /// as a regular Recording so the normal pipeline uploads it instead of losing
+    /// the take. Returns nil (keeping the file on disk) if it can't be read.
+    private func salvagePartialRecording(at url: URL?, startedAt: Date?) async -> Recording? {
+        guard let url, FileManager.default.fileExists(atPath: url.path) else {
+            LogManager.shared.log("🔴 Recording: stop failed — writer produced no file", type: .error)
+            return nil
+        }
+        // Without precise timing, a fragmented file's duration reads from the (near-
+        // empty) initial moov instead of scanning the moof fragments.
+        let asset = AVURLAsset(url: url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
+        guard let duration = try? await asset.load(.duration).seconds,
+              duration.isFinite, duration > 0.5,
+              let videoTracks = try? await asset.loadTracks(withMediaType: .video),
+              !videoTracks.isEmpty else {
+            LogManager.shared.log("🔴 Recording: stop failed — partial unreadable, kept at \(url.lastPathComponent)", type: .error)
+            return nil
+        }
+
+        var recording = Recording(fileURL: url, createdAt: startedAt ?? Date(), duration: duration)
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+           let size = attrs[.size] as? NSNumber {
+            recording.fileSize = size.uint64Value
+        }
+        LogManager.shared.log("🔴 Recording: writer died mid-recording — salvaged \(Int(duration))s partial \(url.lastPathComponent)", type: .error)
         return recording
     }
 
