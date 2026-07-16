@@ -71,7 +71,7 @@ struct RecordingsListView: View {
                     .padding(.vertical, Theme.Spacing.xxxl)
                 } else {
                     ZStack(alignment: .bottom) {
-                        ScrollView(.vertical, showsIndicators: false) {
+                        ScrollView(.vertical) {
                             LazyVStack(spacing: Theme.Spacing.xs) {
                                 ForEach(appState.recordings) { recording in
                                     RecordingRowView(appState: appState, recording: recording)
@@ -79,6 +79,9 @@ struct RecordingsListView: View {
                             }
                             .padding(.bottom, Theme.Spacing.xxl)
                         }
+                        // See SettingsView for why this is .never — `showsIndicators: false`
+                        // is equivalent to .hidden and gets overridden the same way.
+                        .scrollIndicators(.never)
 
                         // Bottom fade to indicate more content
                         LinearGradient(

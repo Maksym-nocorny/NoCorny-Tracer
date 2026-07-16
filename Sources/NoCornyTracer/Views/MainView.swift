@@ -184,7 +184,8 @@ struct MainView: View {
             .padding(.horizontal, Theme.Spacing.xl)
             .padding(.vertical, Theme.Spacing.lg)
         }
-        .scrollIndicators(.hidden)
+        // See SettingsView for why this is .never rather than .hidden.
+        .scrollIndicators(.never)
     }
 
     // MARK: - Recordings Tab

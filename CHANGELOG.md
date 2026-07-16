@@ -1,5 +1,9 @@
 # Changelog
 
+## [3.14.4] - 2026-07-16
+### Fixed
+- **The vertical scrollbar is now actually gone.** 3.14.3 asked the system to hide it, but that request is only advisory — whenever scroll bars are persistent (a mouse is connected, or "Show scroll bars: Always" is set in System Settings), macOS put a full-height scrollbar back on the Settings, Recorder, and Recordings tabs. The scrollbars are now removed outright, so they never appear regardless of that setting.
+
 ## [3.14.3] - 2026-07-16
 ### Changed
 - **The window can no longer be stretched sideways.** Its width is now locked to the layout it was designed for — dragging the left or right edge (or clicking the green zoom button) no longer widens it. The height is still freely resizable.

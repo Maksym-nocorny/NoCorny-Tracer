@@ -35,7 +35,10 @@ struct SettingsView: View {
             .padding(.horizontal, Theme.Spacing.xl)
             .padding(.vertical, Theme.Spacing.lg)
         }
-        .scrollIndicators(.hidden)
+        // .never, not .hidden: .hidden is only a request the system overrides when
+        // scroll bars are persistent (a mouse connected, or "Show scroll bars: Always"),
+        // which puts a legacy scroller back on screen. .never actually removes it.
+        .scrollIndicators(.never)
         .background(Theme.Colors.backgroundPrimary)
         .customDropdownOverlay(activeDropdownID: $activeDropdownID)
         .sheet(isPresented: Binding(
