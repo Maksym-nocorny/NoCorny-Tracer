@@ -36,10 +36,13 @@ final class RecordingManager {
     /// partial file. Set by the owner.
     var onInterrupted: ((Recording?) -> Void)?
 
-    /// Optional hook fired when the writer dies mid-recording (CoreMedia's periodic
-    /// fragment flush can fail spontaneously — e.g. MovieHeaderMaker err -16341 —
-    /// after which every frame is silently dropped). The owner should stop the
-    /// recording (stopRecording salvages the playable partial) and may restart.
+    /// Optional hook fired when the writer dies mid-recording. This is now a rare,
+    /// defensive path: the periodic movie-fragment flush that used to fail with
+    /// MovieHeaderMaker err -16341 (and killed recordings mid-take) has been removed
+    /// (see VideoWriter.startWriting), so a live writer should no longer flip to
+    /// .failed on its own. If it still dies for another reason (disk full, encoder
+    /// malfunction), the owner stops the recording — stopRecording attempts a
+    /// best-effort salvage of whatever finalized — and may restart.
     var onWriterFailed: (() -> Void)?
 
     // MARK: - Start Recording
@@ -178,12 +181,13 @@ final class RecordingManager {
 
         // Finalize file
         guard let outputURL = await videoWriter?.stopWriting() else {
-            // Writer produced no file (mid-recording CoreMedia failure / disk full /
-            // encode error). Reset ALL state so we don't leave a phantom recording or
-            // strand isPaused=true (which would drop the next recording's first frames)
-            // — but do NOT delete the partial: the file is written in 5s movie
-            // fragments precisely so a dead writer still leaves a playable recording
-            // up to the last flush. Try to salvage it.
+            // Writer produced no file (disk full / encode error / a rare writer death
+            // now that the periodic fragment flush is gone). Reset ALL state so we
+            // don't leave a phantom recording or strand isPaused=true (which would drop
+            // the next recording's first frames) — but do NOT delete the partial: try a
+            // best-effort salvage first. Without movie fragments an interrupted file is
+            // usually unreadable (no moov), so this typically returns nil, but a file
+            // that did finalize enough to play is still recovered rather than dropped.
             let partialURL = currentFileURL
             let startedAt = recordingStartTime
             isRecording = false
@@ -233,17 +237,18 @@ final class RecordingManager {
 
     // MARK: - Salvage
 
-    /// Probes the partial .mp4 a dead writer left behind. Thanks to the periodic
-    /// movie fragments it is normally playable up to the last ~5s flush — return it
-    /// as a regular Recording so the normal pipeline uploads it instead of losing
-    /// the take. Returns nil (keeping the file on disk) if it can't be read.
+    /// Best-effort probe of the partial .mp4 a dead writer left behind. If it happens
+    /// to be readable (finalized enough to have a duration and a video track), return
+    /// it as a regular Recording so the normal pipeline uploads it instead of losing
+    /// the take. Returns nil (keeping the file on disk) if it can't be read — the
+    /// common case for a non-fragmented file interrupted before finishWriting.
     private func salvagePartialRecording(at url: URL?, startedAt: Date?) async -> Recording? {
         guard let url, FileManager.default.fileExists(atPath: url.path) else {
             LogManager.shared.log("🔴 Recording: stop failed — writer produced no file", type: .error)
             return nil
         }
-        // Without precise timing, a fragmented file's duration reads from the (near-
-        // empty) initial moov instead of scanning the moof fragments.
+        // Ask for precise timing so the duration is scanned from the media rather than
+        // trusted from a possibly-incomplete header.
         let asset = AVURLAsset(url: url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
         guard let duration = try? await asset.load(.duration).seconds,
               duration.isFinite, duration > 0.5,

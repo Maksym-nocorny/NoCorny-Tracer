@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.14.2] - 2026-07-16
+### Fixed
+- **Recordings no longer restart themselves mid-take.** macOS was spontaneously killing the video file writer partway through a recording (internal CoreMedia error -16341), and the app responded by salvaging the partial and automatically starting a *new* recording — so a single take could break into several pieces and the recorder appeared to restart on its own (seen four times in one session on 2026-07-15). The root cause was the periodic "movie fragment" flush the writer performed every 5 seconds for crash-safety: under system load that background flush is what failed, taking the whole recording down with it. That periodic flush has been removed, so recording runs straight through to Stop without the mid-take death — and the writer no longer auto-restarts into a surprise second take if anything does go wrong.
+
+### Important
+- **Trade-off:** because recordings are no longer written in 5-second fragments, a *hard* crash, force-quit, or power loss **during** a recording can now leave an unfinished file that won't play. Quitting the app normally still finalizes and keeps the recording as before — only an abrupt kill mid-recording is affected. This is a deliberate trade: the fragment flush that provided that protection was itself the thing breaking normal recordings.
+
 ## [3.14.1] - 2026-07-07
 ### Fixed
 - **Recordings are no longer lost when the video writer dies mid-recording.** macOS's media engine can spontaneously kill the file writer during a recording (seen twice on 2026-07-07 as internal CoreMedia error -16341 during the periodic fragment flush). Previously the app kept "recording" into the dead writer, then deleted the partial file at stop — losing the whole take. Now the failure is detected within a frame, the playable part of the file (written in 5-second fragments) is salvaged and uploaded through the normal pipeline, and a new recording starts automatically so nothing after the failure is lost either.

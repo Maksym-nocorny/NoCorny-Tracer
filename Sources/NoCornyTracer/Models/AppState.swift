@@ -198,9 +198,13 @@ final class AppState {
             self.presentNoiseSuggestion?(true)
         }
 
-        // A writer that dies mid-recording (spontaneous CoreMedia fragment-flush
-        // failure) silently drops every further frame. Stop right away, ship the
-        // salvaged playable part through the normal pipeline, and restart.
+        // A writer that dies mid-recording silently drops every further frame. This is
+        // now rare — the periodic fragment flush that used to fail with -16341 is gone
+        // (see VideoWriter) — so on the off chance it still happens, stop right away and
+        // ship whatever finalized through the normal pipeline. We deliberately do NOT
+        // auto-restart into a fresh take: a surprise "recording started again" is worse
+        // than a clean stop, and the salvage-then-restart loop was itself the disruptive
+        // behavior users hit when the flush kept dying.
         recordingManager.onWriterFailed = { [weak self] in
             Task { @MainActor in await self?.recoverFromWriterFailure() }
         }
@@ -406,7 +410,6 @@ final class AppState {
 
     /// Abort recording: stops and discards the file without saving or uploading
     func abortRecording() async {
-        writerFailureRestarts = 0
         guard let recording = await recordingManager.stopRecording(playSound: false) else { return }
         
         // Play abort sound
@@ -418,7 +421,6 @@ final class AppState {
     }
 
     func stopRecording() async {
-        writerFailureRestarts = 0
         guard let recording = await recordingManager.stopRecording() else { return }
         let newRecording = recording
 
@@ -430,13 +432,11 @@ final class AppState {
         Task { await self.processRecording(id: recordingID) }
     }
 
-    /// Consecutive automatic restarts after mid-recording writer deaths. Reset when
-    /// a session ends normally; caps the failure → restart loop.
-    private var writerFailureRestarts = 0
-
     /// The writer died mid-recording: everything appended from now on would be
-    /// silently dropped. Stop immediately (salvaging the playable partial into the
-    /// normal upload pipeline) and restart so the user keeps recording.
+    /// silently dropped. Stop immediately and salvage whatever finalized into the
+    /// normal upload pipeline. We do NOT auto-restart into a fresh take (see the
+    /// onWriterFailed wiring in init for why). Rare now that the periodic fragment
+    /// flush — the old -16341 killer — has been removed from the writer.
     private func recoverFromWriterFailure() async {
         guard recordingManager.isRecording else { return }
         if let salvaged = await recordingManager.stopRecording(playSound: false) {
@@ -445,14 +445,8 @@ final class AppState {
             let recordingID = salvaged.id
             Task { await self.processRecording(id: recordingID) }
         }
-        // Don't loop forever if the writer dies again right after restarting (e.g.
-        // an ongoing system-wide graphics storm) — give up audibly instead.
-        guard writerFailureRestarts < 2 else {
-            SoundManager.shared.play(.abort)
-            return
-        }
-        writerFailureRestarts += 1
-        try? await startRecording()
+        // Audible cue that the recording ended on its own, so the user knows to check.
+        SoundManager.shared.play(.abort)
     }
 
     /// Background processing: init → open browser → parallel video+thumb upload →

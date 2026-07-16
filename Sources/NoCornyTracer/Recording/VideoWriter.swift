@@ -76,10 +76,23 @@ final class VideoWriter {
 
         let writer = try AVAssetWriter(outputURL: outputURL, fileType: .mp4)
 
-        // Write periodic movie fragments so a crash / power loss / force-quit leaves
-        // a playable file instead of a moov-less, totally unreadable .mp4. The moov
-        // atom is otherwise only written at finishWriting.
-        writer.movieFragmentInterval = CMTime(seconds: 5, preferredTimescale: 1)
+        // DO NOT set writer.movieFragmentInterval here.
+        //
+        // It was previously set to 5s for crash-safety (so a crash/power-loss left a
+        // playable file). But that periodic fragment flush is exactly what was killing
+        // live recordings: every 5s CoreMedia's MovieHeaderMaker writes a moof fragment
+        // on a background thread, and under system load / kernel IOSurface storms that
+        // flush fails with OSStatus -16341, flipping the whole writer to .failed —
+        // after which every frame is silently dropped. Seen repeatedly in the wild
+        // (four deaths in a single 2026-07-15 session), each surfacing at a 5s
+        // fragment boundary; the encoded frames themselves were always fine (the
+        // salvaged partials decoded cleanly), so the failure is the flush, not the
+        // encode. Removing the periodic flush removes the failure.
+        //
+        // Crash-safety is instead covered by finalizing the recording on quit
+        // (applicationShouldTerminate → stopRecording → finishWriting). The only case
+        // left unprotected is a hard crash / SIGKILL / power loss mid-recording, which
+        // is rare — a far better trade than recordings dying mid-take every session.
 
         // Video input settings — H.264 at 1080p
         let videoSettings: [String: Any] = [
