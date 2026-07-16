@@ -1,5 +1,10 @@
 # Changelog
 
+## [3.14.3] - 2026-07-16
+### Changed
+- **The window can no longer be stretched sideways.** Its width is now locked to the layout it was designed for — dragging the left or right edge (or clicking the green zoom button) no longer widens it. The height is still freely resizable.
+- **The vertical scrollbar never appears.** The Recorder tab was the last place a scrollbar could still flash into view while scrolling; its content now scrolls without one, matching Settings and Recordings.
+
 ## [3.14.2] - 2026-07-16
 ### Fixed
 - **Recordings no longer restart themselves mid-take.** macOS was spontaneously killing the video file writer partway through a recording (internal CoreMedia error -16341), and the app responded by salvaging the partial and automatically starting a *new* recording — so a single take could break into several pieces and the recorder appeared to restart on its own (seen four times in one session on 2026-07-15). The root cause was the periodic "movie fragment" flush the writer performed every 5 seconds for crash-safety: under system load that background flush is what failed, taking the whole recording down with it. That periodic flush has been removed, so recording runs straight through to Stop without the mid-take death — and the writer no longer auto-restarts into a surprise second take if anything does go wrong.

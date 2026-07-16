@@ -63,6 +63,8 @@ struct MainView: View {
             Divider()
             footerView
         }
+        // This fixed width is also what caps the window's width — see
+        // .windowResizability(.contentSize) in NoCornyTracerApp.
         .frame(width: 380)
         .frame(minHeight: 540)
         .background(Theme.Colors.backgroundPrimary)
@@ -182,6 +184,7 @@ struct MainView: View {
             .padding(.horizontal, Theme.Spacing.xl)
             .padding(.vertical, Theme.Spacing.lg)
         }
+        .scrollIndicators(.hidden)
     }
 
     // MARK: - Recordings Tab

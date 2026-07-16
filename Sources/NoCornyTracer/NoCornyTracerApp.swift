@@ -49,11 +49,15 @@ struct NoCornyTracerApp: App {
                     cameraWindowManager.updateVisibility(isEnabled: newValue, appState: appState)
                 }
         }
-        // .contentMinSize: window won't auto-resize when content changes (e.g. switching
-        // tabs no longer collapses the window). The window's minimum is the content's
-        // minimum (380×480), and the user can resize larger if they want.
+        // .contentSize: the window takes both its min AND max from the content, which is
+        // what locks the width — MainView is a fixed 380pt wide, so 380 becomes the
+        // window's max width too and the frame can't be dragged wider. Height stays
+        // freely resizable because every tab's content is vertically flexible (max
+        // height infinity), which also keeps switching tabs from collapsing the window.
+        // Note: .contentMinSize can't lock the width — it leaves contentMaxSize
+        // unbounded and re-applies that over any manual clamp.
         .defaultSize(width: 380, height: 560)
-        .windowResizability(.contentMinSize)
+        .windowResizability(.contentSize)
 
         // Permissions Window
         Window("Permissions", id: "permissions") {
