@@ -9,6 +9,16 @@ dist/
 ## Secrets (NEVER commit)
 Sources/NoCornyTracer/Secrets.swift
 
+## Signing / notarization config (NEVER commit)
+## release.env holds the notary profile NAME (non-secret) but is per-machine; the
+## app-specific password itself lives in the Keychain. .p12 / .p8 are private keys.
+scripts/release.env
+.env
+.env.*
+*.p12
+*.p8
+AuthKey_*.p8
+
 ## macOS
 .DS_Store
 *.xcuserdata

@@ -88,6 +88,15 @@ final class AudioCaptureManager: NSObject {
             throw AudioCaptureError.noDeviceSelected
         }
 
+        // Backstop for the AppState permission gate: mic access should already be granted
+        // by the time we get here. If it isn't (e.g. revoked in the split second between
+        // the gate and now), fail loudly rather than install a tap that silently never
+        // fires — the original "NO buffers received / silent audio track" failure.
+        guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else {
+            LogManager.shared.log("🎤 Audio: mic not authorized at capture start — aborting instead of recording a silent track.", type: .error)
+            throw AudioCaptureError.permissionDenied
+        }
+
         // Reset ambient-noise detection for this session. Only watch the floor when capturing raw.
         noiseDetectionEnabled = !reduceBackgroundNoise
         noiseFiredThisSession = false
@@ -396,11 +405,13 @@ final class AudioCaptureManager: NSObject {
 enum AudioCaptureError: LocalizedError {
     case noDeviceSelected
     case engineStartFailed
+    case permissionDenied
 
     var errorDescription: String? {
         switch self {
         case .noDeviceSelected: return "No audio input device selected"
         case .engineStartFailed: return "Failed to start audio engine"
+        case .permissionDenied:  return "Microphone access is not granted"
         }
     }
 }

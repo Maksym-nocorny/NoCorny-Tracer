@@ -92,8 +92,19 @@ if [ -d "$BUILD_DIR/Sparkle.framework" ]; then
     if [ -d "$BUILD_DIR/SparkleCore.framework" ]; then
         cp -R "$BUILD_DIR/SparkleCore.framework" "$APP_BUNDLE/Contents/Frameworks/"
     fi
-    # Add rpath so the executable can find the frameworks
-    install_name_tool -add_rpath @executable_path/../Frameworks "$APP_BUNDLE/Contents/MacOS/$APP_NAME" 2>/dev/null || true
+    # Add rpath so the executable can find the frameworks. Do NOT mask a failure here:
+    # a missing @rpath produces a perfectly signed, notarized, stapled DMG that then
+    # crashes on launch for EVERY user because Sparkle.framework can't be resolved — and
+    # notarization will not catch it. Add it idempotently (the bundle is rebuilt each run,
+    # but guard anyway) and then assert it is present.
+    if ! otool -l "$APP_BUNDLE/Contents/MacOS/$APP_NAME" | grep -q '@executable_path/../Frameworks'; then
+        install_name_tool -add_rpath @executable_path/../Frameworks "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
+    fi
+    if ! otool -l "$APP_BUNDLE/Contents/MacOS/$APP_NAME" | grep -q '@executable_path/../Frameworks'; then
+        echo "❌ @rpath '@executable_path/../Frameworks' missing from the executable after install_name_tool."
+        echo "   The app would crash on launch (Sparkle.framework unresolved). Aborting."
+        exit 1
+    fi
 fi
 
 # Add CFBundleExecutable and CFBundleIconFile to Info.plist
@@ -129,9 +140,13 @@ fi
 # === Step 3: Code sign with self-signed certificate and entitlements ===
 echo "🔏 Code signing..."
 ENTITLEMENTS="$PROJECT_DIR/Sources/NoCornyTracer/NoCornyTracer.entitlements"
-# The signing identity is explicit and overridable: point SIGN_IDENTITY at a real
-# Developer ID to ship a distributable build. The historical default is kept.
-SIGN_IDENTITY="${SIGN_IDENTITY:-NoCornyTracer Dev}"
+# The signing identity is explicit and overridable. When notarizing it is AUTO-DETECTED
+# from the keychain below (the sole "Developer ID Application" identity). An explicit
+# SIGN_IDENTITY (SHA-1 hash — preferred — or full name) always wins. There is deliberately
+# NO default identity anymore: the old hard-coded "NoCornyTracer Dev" was a footgun — a
+# typo'd name (the keychain has "NoCorny Tracer Dev", with a space) that silently fell
+# through to ad-hoc signing on a build that thought it was signing for real.
+SIGN_IDENTITY="${SIGN_IDENTITY:-}"
 # A stable designated requirement keyed on the bundle id keeps Sparkle in-place
 # updates and TCC grants intact across machines and across both signing paths.
 DESIGNATED_REQ="=designated => identifier \"$BUNDLE_ID\""
@@ -152,6 +167,14 @@ DESIGNATED_REQ="=designated => identifier \"$BUNDLE_ID\""
 # a prominent warning is printed that the DMG is NOT notarized (Gatekeeper-blocked
 # elsewhere). NOTARIZE=1 implies hardened-runtime signing; it does not change the
 # bundle id or the Sparkle Ed25519 signing key (those are handled in release.sh).
+#
+# A RELEASE build MUST be notarized — make that structural, not a convention you can
+# forget. RELEASE_BUILD=1 (set by release.sh) now implies NOTARIZE=1, so there is no
+# way to accidentally ship an ad-hoc/self-signed DMG to the public by leaving an env
+# var unset. To build a local, non-notarized copy just omit RELEASE_BUILD.
+if [ "${RELEASE_BUILD:-0}" = "1" ]; then
+    NOTARIZE=1
+fi
 NOTARIZE="${NOTARIZE:-0}"
 # Under the hardened runtime, codesign also needs --options runtime --timestamp. These
 # flags are appended only on the Developer ID path; ad-hoc signing keeps its old args.
@@ -224,33 +247,73 @@ sign_frameworks() {
     fi
 }
 
-# Opt-in Developer ID + hardened-runtime path (B8.5). Requires NOTARIZE=1 AND a
-# "Developer ID Application: …" identity available in the keychain. Signs inside-out
-# (nested Sparkle helpers/XPC/frameworks first, then the .app last) so notarization
-# accepts the bundle. The DMG itself is notarized + stapled later (Step 4b).
-if [ "$NOTARIZE" = "1" ]; then
-    if ! security find-identity -p codesigning | grep -q "$SIGN_IDENTITY"; then
-        echo "❌ NOTARIZE=1 but signing identity '$SIGN_IDENTITY' not found in the keychain."
-        echo "   Export SIGN_IDENTITY='Developer ID Application: Your Name (TEAMID)' pointing at a"
-        echo "   real Developer ID cert, or unset NOTARIZE to produce a local ad-hoc build."
+# Resolve the signing identity for the notarized path. Match on the exact SHA-1 HASH
+# (column 2 of `security find-identity -v`) — unambiguous, immune to substring/typo bugs,
+# and `-v` guarantees we never pick an expired/untrusted cert (plain `find-identity`
+# lists those under "Matching identities" and a name-grep would happily select them —
+# this machine has two CSSMERR_TP_NOT_TRUSTED self-signed certs). Require EXACTLY ONE
+# "Developer ID Application" cert so a multi-cert machine fails loudly instead of guessing.
+TEAM_ID=""
+if [ "$NOTARIZE" = "1" ] && [ -z "$SIGN_IDENTITY" ]; then
+    DEVID_LINES="$(security find-identity -v -p codesigning | grep 'Developer ID Application' || true)"
+    DEVID_COUNT="$(printf '%s' "$DEVID_LINES" | grep -c 'Developer ID Application' || true)"
+    if [ "${DEVID_COUNT:-0}" -eq 0 ]; then
+        echo "❌ No 'Developer ID Application' identity found in the keychain."
+        echo "   Create one:  Xcode ▸ Settings ▸ Accounts ▸ (team) ▸ Manage Certificates ▸ + ▸ Developer ID Application"
+        echo "   or export SIGN_IDENTITY explicitly (SHA-1 hash preferred)."
+        exit 1
+    elif [ "$DEVID_COUNT" -gt 1 ]; then
+        echo "❌ Multiple 'Developer ID Application' identities found — refusing to guess which to use:"
+        printf '%s\n' "$DEVID_LINES"
+        echo "   Pick one: export SIGN_IDENTITY='<SHA-1 hash from column 2 above>'."
         exit 1
     fi
-    case "$SIGN_IDENTITY" in
-        "Developer ID Application:"*) ;;
+    SIGN_IDENTITY="$(printf '%s' "$DEVID_LINES" | awk '{print $2}')"
+    echo "🔎 Auto-detected Developer ID identity: $(printf '%s' "$DEVID_LINES" | sed -n 's/.*"\(.*\)".*/\1/p')  [$SIGN_IDENTITY]"
+fi
+
+# Opt-in Developer ID + hardened-runtime path (B8.5). Requires NOTARIZE=1 AND a
+# "Developer ID Application" identity. Signs inside-out (nested Sparkle helpers/XPC/
+# frameworks first, then the .app last) so notarization accepts the bundle. The DMG
+# itself is notarized + stapled later (Step 4b).
+if [ "$NOTARIZE" = "1" ]; then
+    # Look up the resolved identity by its own value (hash OR name) among VALID identities
+    # only (-v). This validates existence and lets us confirm it really is a Developer ID
+    # Application cert and extract the Team ID, whether SIGN_IDENTITY is a hash or a name.
+    IDENTITY_LINE="$(security find-identity -v -p codesigning | grep -F "$SIGN_IDENTITY" | head -1 || true)"
+    if [ -z "$IDENTITY_LINE" ]; then
+        echo "❌ NOTARIZE=1 but signing identity '$SIGN_IDENTITY' is not among the valid codesigning identities."
+        echo "   Available Developer ID Application identities:"
+        security find-identity -v -p codesigning | grep 'Developer ID Application' || echo "     (none)"
+        exit 1
+    fi
+    case "$IDENTITY_LINE" in
+        *"Developer ID Application"*) ;;
         *)
-            echo "❌ NOTARIZE=1 requires a 'Developer ID Application: …' identity for Gatekeeper."
-            echo "   Got SIGN_IDENTITY='$SIGN_IDENTITY' — notarization will reject other cert types."
+            echo "❌ NOTARIZE=1 requires a 'Developer ID Application' cert for Gatekeeper."
+            echo "   Resolved '$SIGN_IDENTITY' → $IDENTITY_LINE"
+            echo "   'Apple Development' / 'Apple Distribution' certs are rejected by the notary service."
             exit 1
             ;;
     esac
-    echo "🛡️  Developer ID + hardened-runtime signing with '$SIGN_IDENTITY'..."
+    TEAM_ID="$(printf '%s' "$IDENTITY_LINE" | sed -n 's/.*(\([A-Z0-9]\{10\}\))".*/\1/p')"
+    echo "🛡️  Developer ID + hardened-runtime signing (team ${TEAM_ID:-unknown})..."
     sign_frameworks "$SIGN_IDENTITY"
     # The .app is signed LAST, with the hardened runtime + secure timestamp.
     codesign --force "${HARDENED_FLAGS[@]}" --sign "$SIGN_IDENTITY" \
         --requirements "$DESIGNATED_REQ" --entitlements "$ENTITLEMENTS" "$APP_BUNDLE"
     echo "✅ Code signed (Developer ID, hardened runtime)"
-# Check if the (non-notarized) signing identity exists
-elif security find-identity -p codesigning | grep -q "$SIGN_IDENTITY"; then
+    # Assert it is the right KIND of signature, not merely present: hardened-runtime flag
+    # set, and the whole bundle (nested helpers included) verifies strictly.
+    if ! codesign -dvvv "$APP_BUNDLE" 2>&1 | grep -q 'flags=.*runtime'; then
+        echo "❌ Hardened runtime flag not set on the signed app — notarization would reject it."
+        exit 1
+    fi
+    codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
+    echo "✅ Signature verified (hardened runtime, --deep --strict)"
+# Check if the (non-notarized) self-signed identity exists. `-n` guards against an empty
+# SIGN_IDENTITY (which would make grep match every line); `-v` skips untrusted/expired certs.
+elif [ -n "$SIGN_IDENTITY" ] && security find-identity -v -p codesigning | grep -q "$SIGN_IDENTITY"; then
     sign_frameworks "$SIGN_IDENTITY"
     codesign --force --sign "$SIGN_IDENTITY" --requirements "$DESIGNATED_REQ" --entitlements "$ENTITLEMENTS" "$APP_BUNDLE"
     echo "✅ Code signed with '$SIGN_IDENTITY' certificate"
@@ -333,21 +396,62 @@ rm -rf "$STAGING"
 if [ "$NOTARIZE" = "1" ]; then
     echo ""
     echo "🍏 Notarizing DMG (this can take several minutes)..."
+    # Build the credential args for both notarytool invocations (submit AND log-on-failure)
+    # so we can fetch the reject reason without re-typing them.
+    NOTARY_CREDS=()
     if [ -n "${NOTARY_PROFILE:-}" ]; then
-        xcrun notarytool submit "$DMG_PATH" --keychain-profile "$NOTARY_PROFILE" --wait
+        NOTARY_CREDS=(--keychain-profile "$NOTARY_PROFILE")
     elif [ -n "${AC_USERNAME:-}" ] && [ -n "${AC_PASSWORD:-}" ] && [ -n "${AC_TEAM_ID:-}" ]; then
-        xcrun notarytool submit "$DMG_PATH" \
-            --apple-id "$AC_USERNAME" --password "$AC_PASSWORD" --team-id "$AC_TEAM_ID" --wait
+        NOTARY_CREDS=(--apple-id "$AC_USERNAME" --password "$AC_PASSWORD" --team-id "$AC_TEAM_ID")
     else
         echo "❌ NOTARIZE=1 but no notary credentials provided."
         echo "   Set NOTARY_PROFILE=<profile> (from 'xcrun notarytool store-credentials'),"
         echo "   or AC_USERNAME + AC_PASSWORD + AC_TEAM_ID (Apple ID app-specific password)."
+        echo "   See scripts/setup_signing.sh for the one-time setup."
         exit 1
     fi
+
+    # Capture the submit output so we can pull the submission id and, on rejection, print
+    # the notary log — which is the ONLY thing that says WHY Apple rejected the build.
+    set +e
+    SUBMIT_OUT="$(xcrun notarytool submit "$DMG_PATH" "${NOTARY_CREDS[@]}" --wait 2>&1)"
+    SUBMIT_RC=$?
+    set -e
+    echo "$SUBMIT_OUT"
+    SUBMISSION_ID="$(printf '%s\n' "$SUBMIT_OUT" | awk '/[[:space:]]id:/{print $2; exit}')"
+    if [ "$SUBMIT_RC" -ne 0 ] || ! printf '%s' "$SUBMIT_OUT" | grep -q 'status: Accepted'; then
+        echo "❌ Notarization did not succeed."
+        if [ -n "$SUBMISSION_ID" ]; then
+            echo "   Fetching the notary log for submission $SUBMISSION_ID:"
+            xcrun notarytool log "$SUBMISSION_ID" "${NOTARY_CREDS[@]}" || true
+        fi
+        exit 1
+    fi
+
     echo "📎 Stapling notarization ticket to the DMG..."
     xcrun stapler staple "$DMG_PATH"
     xcrun stapler validate "$DMG_PATH"
-    echo "✅ DMG notarized + stapled — Gatekeeper-accepted on other Macs."
+
+    # Prove Gatekeeper's verdict. Do NOT use `spctl -t install "$DMG_PATH"`: we notarize
+    # the .app and staple the DMG, but never codesign the DMG *container* itself, so that
+    # check reports "no usable signature" for a perfectly shippable DMG. The meaningful
+    # probe is that the .APP assesses as accepted (mounting the stapled DMG ingests the
+    # ticket into the local database, so this also proves offline launch works). Mount,
+    # assess the app with `-t exec`, unmount.
+    echo "🔎 Verifying Gatekeeper acceptance of the app inside the DMG..."
+    MOUNT_POINT="$(hdiutil attach "$DMG_PATH" -nobrowse -noautoopen | grep -o '/Volumes/.*' | head -1)"
+    if [ -z "$MOUNT_POINT" ]; then
+        echo "❌ Could not mount the DMG to verify it."
+        exit 1
+    fi
+    SPCTL_OUT="$(spctl -a -t exec -vvv "$MOUNT_POINT/$APP_NAME.app" 2>&1 || true)"
+    echo "$SPCTL_OUT"
+    hdiutil detach "$MOUNT_POINT" >/dev/null 2>&1 || true
+    if ! printf '%s' "$SPCTL_OUT" | grep -q 'source=Notarized Developer ID'; then
+        echo "❌ Gatekeeper did not accept the app as 'Notarized Developer ID' — not shippable."
+        exit 1
+    fi
+    echo "✅ Notarized + stapled; app inside is Gatekeeper-accepted (Notarized Developer ID)."
 else
     echo ""
     echo "⚠️  ============================================"

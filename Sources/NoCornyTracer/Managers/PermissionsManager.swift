@@ -75,7 +75,81 @@ final class PermissionsManager {
                isMicrophoneGranted &&
                isAccessibilityGranted
     }
-    
+
+    // MARK: - Recording permission gate
+
+    /// A permission that must be granted before a recording can start, given the
+    /// user's current toggles. Screen recording is ALWAYS required; microphone and
+    /// camera only when their capture is enabled. Accessibility is deliberately not
+    /// here — it only powers global hotkeys, never the recording itself.
+    enum RecordingPermission: String, CaseIterable {
+        case screenRecording
+        case microphone
+        case camera
+
+        /// Human-readable name, matching the System Settings pane label.
+        var title: String {
+            switch self {
+            case .screenRecording: return "Screen Recording"
+            case .microphone:       return "Microphone"
+            case .camera:           return "Camera"
+            }
+        }
+
+        /// The System Settings deep-link for granting this permission.
+        var settingsPath: String {
+            switch self {
+            case .screenRecording: return "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+            case .microphone:       return "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
+            case .camera:           return "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera"
+            }
+        }
+    }
+
+    /// Which recording permissions are missing RIGHT NOW, given the toggles.
+    ///
+    /// Reads the system authorization APIs LIVE and synchronously rather than the
+    /// cached `@Observable` flags — those are only refreshed while the Permissions
+    /// window's 1-second timer is running, so at recording-start time they can be
+    /// arbitrarily stale (e.g. the user revoked the mic in System Settings mid-session).
+    static func missingForRecording(microphoneEnabled: Bool, cameraEnabled: Bool) -> [RecordingPermission] {
+        var missing: [RecordingPermission] = []
+        if !CGPreflightScreenCaptureAccess() {
+            missing.append(.screenRecording)
+        }
+        if microphoneEnabled, AVCaptureDevice.authorizationStatus(for: .audio) != .authorized {
+            missing.append(.microphone)
+        }
+        if cameraEnabled, AVCaptureDevice.authorizationStatus(for: .video) != .authorized {
+            missing.append(.camera)
+        }
+        return missing
+    }
+
+    /// For any still-undetermined required permission, shows the one-tap OS dialog and
+    /// waits for the user's answer; then returns whatever is STILL missing. This makes
+    /// the common first-run case (mic/camera never asked) a single system prompt instead
+    /// of a trip to System Settings. Screen recording has no inline-grant path (the grant
+    /// requires an app relaunch), so it is only ever reported, never prompted here.
+    static func ensureRecordingPermissions(microphoneEnabled: Bool, cameraEnabled: Bool) async -> [RecordingPermission] {
+        if microphoneEnabled, AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined {
+            _ = await AVCaptureDevice.requestAccess(for: .audio)
+        }
+        if cameraEnabled, AVCaptureDevice.authorizationStatus(for: .video) == .notDetermined {
+            _ = await AVCaptureDevice.requestAccess(for: .video)
+        }
+        return missingForRecording(microphoneEnabled: microphoneEnabled, cameraEnabled: cameraEnabled)
+    }
+
+    /// Opens the System Settings pane for a missing recording permission. Used as the
+    /// fallback when the SwiftUI Permissions window can't be summoned (e.g. launched to
+    /// the menu bar at login with the main window never shown).
+    static func openSystemSettings(for permission: RecordingPermission) {
+        if let url = URL(string: permission.settingsPath) {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
     // MARK: - Actions
 
     func requestScreenRecording() {

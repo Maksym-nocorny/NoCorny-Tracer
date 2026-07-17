@@ -131,6 +131,13 @@ final class AppState {
     @ObservationIgnored
     var presentNoiseSuggestion: ((Bool) -> Void)?
 
+    /// Presents the Permissions window (and brings the app forward) when a recording is
+    /// blocked on a missing permission. Set by the app scene's window host — like
+    /// `presentNoiseSuggestion` — because the gate fires while the main window is hidden
+    /// (both Start paths `orderOut` the window before awaiting `startRecording`).
+    @ObservationIgnored
+    var presentPermissionsGate: (([PermissionsManager.RecordingPermission]) -> Void)?
+
     /// Polls Tracer for the current Dropbox connection state. Lets the macOS app
     /// notice within ~60s when the user disconnects (or switches accounts) on the
     /// web — without needing a recording / upload to trigger a token refresh.
@@ -391,6 +398,33 @@ final class AppState {
     private static let startSoundMaskDelay: UInt64 = 650_000_000  // 0.65s
 
     func startRecording() async throws {
+        // Permission gate — must run BEFORE the start sound and before any capture is
+        // armed. Starting a recording while a required permission is missing produced a
+        // silently broken artifact (a video file with no audio track at all). Screen
+        // recording is always required; the mic only when it's enabled; the camera only
+        // when the face-cam is enabled. Accessibility is never a recording precondition.
+        // If anything is still missing, surface the Permissions window and DO NOT start —
+        // no sound, no capture, no file.
+        let missing = await PermissionsManager.ensureRecordingPermissions(
+            microphoneEnabled: isMicrophoneEnabled,
+            cameraEnabled: isCameraEnabled
+        )
+        guard missing.isEmpty else {
+            LogManager.shared.log(
+                "🔒 Recording blocked — missing permission(s): \(missing.map(\.title).joined(separator: ", "))",
+                type: .error
+            )
+            if let present = presentPermissionsGate {
+                present(missing)
+            } else if let first = missing.first {
+                // No SwiftUI window host wired yet (launched straight to the menu bar):
+                // fall back to activating the app and opening System Settings directly.
+                NSApp.activate(ignoringOtherApps: true)
+                PermissionsManager.openSystemSettings(for: first)
+            }
+            return
+        }
+
         // Play start sound immediately on button click.
         SoundManager.shared.play(.start)
 

@@ -50,38 +50,43 @@ bash scripts/release.sh
 
 ## 🔏 2b. Code Signing & Notarization (REQUIRED for distribution)
 
-The build produces one of three signing modes. **Only the notarized Developer ID mode is distributable** — the other two are Gatekeeper-blocked on every Mac except the build host.
+The build produces one of three signing modes. **Only the notarized Developer ID mode is distributable** — the other two are Gatekeeper-blocked on every Mac except the build host. A **release** (`RELEASE_BUILD=1`, set by `release.sh`) now implies `NOTARIZE=1` automatically, so the notarized mode is the default for anything you ship — you can no longer accidentally publish an ad-hoc/self-signed DMG.
 
 | Mode | Trigger | Distributable? |
 |------|---------|----------------|
-| **Ad-hoc** | no signing identity found (local/dev) | ❌ blocked on other Macs |
-| **Self-signed** (`NoCornyTracer Dev`) | that identity in keychain, `NOTARIZE` unset | ❌ blocked on other Macs |
-| **Developer ID + notarized** | `NOTARIZE=1` + a `Developer ID Application` cert | ✅ accepted everywhere |
+| **Ad-hoc** | local build, no identity (no `RELEASE_BUILD`, no `NOTARIZE`) | ❌ blocked on other Macs |
+| **Self-signed** | an explicit `SIGN_IDENTITY` self-signed cert, `NOTARIZE` unset | ❌ blocked on other Macs |
+| **Developer ID + notarized** | `RELEASE_BUILD=1` or `NOTARIZE=1` (+ a `Developer ID Application` cert) | ✅ accepted everywhere |
 
 When a build is not notarized, `build_dmg.sh` prints a prominent **"DMG is NOT NOTARIZED"** warning. Do not ship that DMG.
 
 ### One-time setup (per maintainer machine)
-1. **Developer ID Application certificate** — in your Apple Developer account create/download a *Developer ID Application* certificate and import it into the login keychain. Confirm it is present:
-   ```bash
-   security find-identity -p codesigning | grep "Developer ID Application"
-   ```
-2. **notarytool keychain profile** — store your Apple credentials once so they don't need to be passed on every build. Use an [app-specific password](https://support.apple.com/en-us/HT204397):
-   ```bash
-   xcrun notarytool store-credentials "NoCornyTracerNotary" \
-     --apple-id "you@example.com" \
-     --team-id "TEAMID" \
-     --password "app-specific-password"
-   ```
+
+Run the helper — it checks your certificate, stores your notary credentials in the Keychain (prompting you for the app-specific password directly, so it never touches a file or your shell history), writes the gitignored `scripts/release.env`, and verifies the profile authenticates:
+
+```bash
+bash scripts/setup_signing.sh
+```
+
+Prerequisite it checks for: a **Developer ID Application** certificate in your login keychain (NOT an "Apple Development" cert — that type is rejected by the notary service). Create one via *Xcode ▸ Settings ▸ Accounts ▸ (team) ▸ Manage Certificates ▸ + ▸ Developer ID Application*, then re-run the helper.
+
+> [!IMPORTANT]
+> **Back up the private key.** After the cert is created, export it as a `.p12` (*Keychain Access ▸ My Certificates ▸ your identity ▸ File ▸ Export Items…*) and store it off the machine with its password in your password manager. Apple cannot re-issue this key; losing it forces a signing-authority change that breaks Sparkle updates for every existing user.
+
+For reference, the credential store step the helper runs is the interactive form (deliberately **no** `--password` on the command line — notarytool prompts for it securely):
+```bash
+xcrun notarytool store-credentials "NoCornyTracerNotary" \
+  --apple-id "you@example.com" \
+  --team-id "Y2745RRH7B"     # this project's Team ID
+```
+An App Store Connect API key (`--key … --key-id … --issuer …`) is a more robust alternative to an app-specific password if you ever move releases to CI.
 
 ### Producing a distributable (notarized) build
-Pass the opt-in env vars to either `release.sh` or `build_dmg.sh`:
+After the one-time setup, a normal release is just:
 ```bash
-NOTARIZE=1 \
-SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-NOTARY_PROFILE="NoCornyTracerNotary" \
-bash scripts/release.sh
+bash scripts/release.sh --publish
 ```
-Instead of a profile you can pass an Apple ID directly: `AC_USERNAME`, `AC_PASSWORD` (app-specific), and `AC_TEAM_ID`.
+`release.sh` sources `scripts/release.env` for the notary profile and auto-detects the sole Developer ID Application identity in your keychain — no env vars to remember. To build a notarized DMG without publishing (e.g. a rehearsal), run `NOTARIZE=1 bash scripts/build_dmg.sh`. You can still override the identity explicitly with `SIGN_IDENTITY='<SHA-1 hash>'` if the keychain holds more than one Developer ID cert.
 
 **What `NOTARIZE=1` adds:**
 - Signs the `.app` and **all nested Sparkle code** (frameworks, `Autoupdate`, `Updater.app`, and the `Downloader.xpc` / `Installer.xpc` services) with the **hardened runtime** (`--options runtime --timestamp`), inside-out (helpers first, `.app` last).
@@ -90,8 +95,11 @@ Instead of a profile you can pass an Apple ID directly: `AC_USERNAME`, `AC_PASSW
 > [!NOTE]
 > The app's four entitlements (audio-input, camera, network.client, files.user-selected) are all compatible with the hardened runtime, so no `com.apple.security.cs.*` exceptions are needed.
 
-> [!WARNING]
-> **Sparkle cut-over:** moving installs from ad-hoc to Developer ID is a one-time signing-authority change. Sparkle validates the new app's signature lineage against the running app, so test the update path (install a prior version → Check for Updates → confirm it installs without a signature-authority rejection) on the first notarized release.
+> [!IMPORTANT]
+> **Do NOT change `SUPublicEDKey` or `CFBundleIdentifier` in the ad-hoc → Developer ID release.** The safe cut-over relies on the unchanged Sparkle EdDSA key: existing ad-hoc installs validate the new DMG against the *old* embedded public key, and a valid EdDSA signature alone authorizes the code-signing-identity change (verified in Sparkle 2.9.0 `SUUpdateValidator` — the update is accepted on `passedDSACheck || passedCodeSigning`, and the doc comment states an unchanged EdDSA key "allows change of Code Signing identity"). Apple signing and Sparkle's EdDSA signing are independent systems; switching to Developer ID does **not** require regenerating the Sparkle key. Regenerating it *would* brick updates for every existing install.
+
+> [!NOTE]
+> **Sparkle cut-over is expected to be transparent**, not risky — but still rehearse it on the first notarized release: install a prior ad-hoc build, point it at an appcast entry for the new notarized DMG, and confirm Check for Updates installs it. The one thing that can legitimately reject the update is the new `.app` not being validly signed, which the `codesign --verify --deep --strict` gate in `build_dmg.sh` already catches before you ship.
 
 ### Verifying a notarized build
 ```bash

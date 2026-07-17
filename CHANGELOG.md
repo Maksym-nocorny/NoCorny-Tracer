@@ -1,5 +1,15 @@
 # Changelog
 
+## [3.15.0] - 2026-07-17
+### Fixed
+- **Recordings can no longer start without audio (or without the permissions they need).** If you begin a recording while a required permission hasn't been granted, the app now stops and opens the Permissions window instead of silently producing a broken file. This fixes the case where the microphone permission was missing and the recording came out with **no audio track at all** — the screen was captured, but the voice was gone and there was no warning. The check is smart about what each recording actually uses: screen recording is always required; the microphone is only required when the mic is on; the camera is only required when the face-cam is on.
+
+### Changed
+- **The app is now signed with an Apple Developer ID certificate and notarized by Apple.** Earlier builds were ad-hoc signed, which is why a fresh download could be blocked on another Mac with a "damaged" or "cannot be checked" warning that forced a trip into System Settings. Notarized builds open normally on any Mac.
+
+### Important
+- **Auto-updates carry over automatically.** Moving to a Developer ID signature keeps the same app identity and the same update key, so existing installs update through Sparkle as usual — no re-download needed. If macOS asks you to re-grant Screen Recording or Microphone access once after this update, that is a one-time prompt caused by the new signature; grant it and recordings work as before.
+
 ## [3.14.4] - 2026-07-16
 ### Fixed
 - **The vertical scrollbar is now actually gone.** 3.14.3 asked the system to hide it, but that request is only advisory — whenever scroll bars are persistent (a mouse is connected, or "Show scroll bars: Always" is set in System Settings), macOS put a full-height scrollbar back on the Settings, Recorder, and Recordings tabs. The scrollbars are now removed outright, so they never appear regardless of that setting.

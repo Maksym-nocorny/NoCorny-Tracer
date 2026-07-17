@@ -97,6 +97,14 @@ private struct MainWindowHost: View {
                     noiseSuggestionWindowManager.update(show: show, appState: appState)
                 }
 
+                // Route the recording permission gate through openWindow: when a Start is
+                // blocked on a missing permission, bring the app forward and open the
+                // Permissions window so the user can see and grant exactly what's missing.
+                appState.presentPermissionsGate = { _ in
+                    NSApp.activate(ignoringOtherApps: true)
+                    openWindow(id: "permissions")
+                }
+
                 // Opt the main window out of Cocoa state restoration. With
                 // NSQuitAlwaysKeepsWindows enabled, quitting while the window is closed would
                 // otherwise relaunch the app with no window — so MainWindowHost never appears,

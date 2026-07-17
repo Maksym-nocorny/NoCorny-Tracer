@@ -13,6 +13,16 @@ set -e
 #   - sign_update tool available at .build/artifacts/sparkle/Sparkle/bin/sign_update
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+
+# Load the maintainer's signing config so `bash scripts/release.sh` just works without
+# re-typing env vars. This file is gitignored and must contain ONLY non-secrets — the
+# notarytool keychain-profile NAME and (optionally) the SIGN_IDENTITY. The actual
+# app-specific password lives in the Keychain (see scripts/setup_signing.sh), never here.
+if [ -f "$PROJECT_DIR/scripts/release.env" ]; then
+    # shellcheck disable=SC1091
+    . "$PROJECT_DIR/scripts/release.env"
+fi
+
 SIGN_UPDATE="$PROJECT_DIR/.build/artifacts/sparkle/Sparkle/bin/sign_update"
 APPCAST="$PROJECT_DIR/appcast.xml"
 GH="/opt/homebrew/bin/gh"   # gh is not on the default PATH (see MASTER.md)
@@ -128,8 +138,10 @@ if [ "$PUBLISH" = "1" ]; then
         exit 1
     fi
     echo "✅ GitHub release v$VERSION created with asset"
-    # Step 2: only now publish the feed pointing at the live asset.
-    git -C "$PROJECT_DIR" add appcast.xml
+    # Step 2: only now publish the feed pointing at the live asset. Commit the version
+    # bump + changelog alongside the feed (MASTER.md requires them per release) so the
+    # pushed appcast and the tagged source agree.
+    git -C "$PROJECT_DIR" add appcast.xml CHANGELOG.md Sources/NoCornyTracer/Info.plist
     git -C "$PROJECT_DIR" commit -m "Release v$VERSION"
     git -C "$PROJECT_DIR" push
     echo "✅ appcast.xml committed and pushed"
