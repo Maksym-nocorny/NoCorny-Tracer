@@ -1,5 +1,17 @@
 # Changelog
 
+## [3.16.0] - 2026-07-28
+### Fixed
+- **Long recordings now get an AI title, subtitles and a description.** Anything past roughly six minutes had been failing silently: the recording uploaded fine, but the title stayed as the "Recording · 27 Jul 2026 21:00" placeholder, there were no subtitles, and no description. The cause was request size — the app packed the whole audio track plus every screenshot into one request, and past a few minutes that request was larger than the server would accept, so it was rejected before it ever reached the AI. A 10-minute recording built a 6.2 MB request against a 4.5 MB limit. Long recordings are now transcribed in parallel pieces and stitched back together, so length is no longer a limit — an hour-long recording works the same as a one-minute one. Recordings under five minutes are handled exactly as before.
+- **Failed AI naming no longer wastes a minute of your time.** When a request was rejected for being too large, the app retried it six times with the identical oversized request — each one guaranteed to fail — before giving up. It now recognises which failures are worth retrying and stops immediately on the ones that aren't.
+- **Screenshot-heavy recordings no longer break AI naming on their own.** Ten screenshots of dense text or code could exceed the request limit by themselves, taking down naming even for short recordings. Screenshots are now automatically compressed to fit, and only reduced in number as a last resort.
+- **Descriptions of long recordings now cover the whole recording.** The description was generated from the first portion of the transcript only, so for a long recording it described roughly the opening fifteen minutes and nothing after.
+
+### Changed
+- **Subtitle timing is more accurate on long recordings.** Transcribing in shorter pieces avoids the timestamp drift that AI models accumulate over long audio, and a piece that comes back incomplete is now detected and re-done on its own instead of going unnoticed inside a long transcript.
+- **Names stay consistent across a long recording.** Before transcribing, the app now reads the app, product and file names visible on screen and uses them as a spelling reference, so a name introduced early in the recording is spelled the same way at the end.
+- **A partly-failed transcription now keeps what it got.** If some pieces of a long recording fail, the successful ones are still saved and still produce a title and description, and only the failed pieces are retried.
+
 ## [3.15.0] - 2026-07-17
 ### Fixed
 - **Recordings can no longer start without audio (or without the permissions they need).** If you begin a recording while a required permission hasn't been granted, the app now stops and opens the Permissions window instead of silently producing a broken file. This fixes the case where the microphone permission was missing and the recording came out with **no audio track at all** — the screen was captured, but the voice was gone and there was no warning. The check is smart about what each recording actually uses: screen recording is always required; the microphone is only required when the mic is on; the camera is only required when the face-cam is on.

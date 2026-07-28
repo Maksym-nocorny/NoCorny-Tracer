@@ -5,6 +5,14 @@ import Foundation
 /// Gemini API key lives only on the server, so a leaked binary can't burn
 /// through the project's billing.
 final class GeminiProxyClient {
+    /// Hard ceiling on the serialized request body. The proxy runs as a Vercel serverless
+    /// function, and Vercel rejects request bodies over 4.5 MB at the edge — BEFORE the
+    /// handler runs — with `413 FUNCTION_PAYLOAD_TOO_LARGE`. That means the server can never
+    /// return a friendly error or a partial result: the only place this can be caught is here,
+    /// client-side, by measuring the body we are about to send. 4.0 MB leaves headroom for
+    /// the platform's own accounting and stays safe under either MB or MiB interpretation.
+    static let maxRequestBodyBytes = 4_000_000
+
     private let baseURL: String
     private let tokenProvider: () -> String?
 
@@ -60,7 +68,23 @@ final class GeminiProxyClient {
         if let cfg = generationConfig {
             body["generationConfig"] = cfg
         }
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        // Pre-flight size guard. This is the EXACT byte count going over the wire, not an
+        // estimate from the media we packed — base64 inflation, JSON escaping and the prompt
+        // all land here. Callers budget media conservatively before building the request;
+        // this is the backstop that turns a wasted round-trip (and a 413 the server never
+        // sees) into a local, non-retryable error. Logged unconditionally so payload size
+        // stays observable in production.
+        LogManager.shared.log("🤖 Proxy: request body \(httpBody.count / 1024)KB")
+        guard httpBody.count <= Self.maxRequestBodyBytes else {
+            LogManager.shared.log(
+                "🤖 Proxy: ❌ Request body \(httpBody.count / 1024)KB exceeds \(Self.maxRequestBodyBytes / 1024)KB limit — not sending",
+                type: .error
+            )
+            throw ProxyError.payloadTooLarge(bytes: httpBody.count)
+        }
+        request.httpBody = httpBody
 
         let startedAt = Date()
         let (data, response) = try await URLSession.shared.data(for: request)
@@ -222,6 +246,7 @@ enum ProxyError: LocalizedError {
     case serverError(status: Int, body: String)
     case noTextInResponse
     case blocked(reason: String)
+    case payloadTooLarge(bytes: Int)
 
     var errorDescription: String? {
         switch self {
@@ -235,6 +260,35 @@ enum ProxyError: LocalizedError {
             return "No text in Gemini response"
         case .blocked(let reason):
             return "Gemini blocked the response (\(reason))"
+        case .payloadTooLarge(let bytes):
+            return "Request body too large (\(bytes / 1024)KB) — not sent"
         }
     }
+
+    /// Whether retrying the SAME request could plausibly succeed.
+    ///
+    /// Retrying a deterministic failure is pure waste: before this existed, a 413 cost six
+    /// identical doomed POSTs (3 inner attempts × 2 outer passes) plus ~45s of backoff, and
+    /// the caller could not tell it apart from a transient 503 because the retry loop only
+    /// ever stringified the error.
+    var isRetryable: Bool {
+        switch self {
+        case .payloadTooLarge, .notSignedIn:
+            return false
+        case .serverError(let status, _):
+            // 4xx are deterministic: the request itself is wrong (too large, unauthorized,
+            // malformed). 5xx and 429 are the genuinely transient ones — Gemini returns 503
+            // "high demand" regularly and those retries do succeed.
+            return !(status == 400 || status == 401 || status == 403 || status == 413)
+        case .invalidResponse, .noTextInResponse, .blocked:
+            // Model-side flakiness: a re-roll can legitimately produce a usable response.
+            return true
+        }
+    }
+}
+
+/// Retryability for an arbitrary error. Non-`ProxyError` failures (URLSession timeouts,
+/// connection drops, JSON serialization) are transient by nature, so they stay retryable.
+func isRetryableError(_ error: Error) -> Bool {
+    (error as? ProxyError)?.isRetryable ?? true
 }
