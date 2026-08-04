@@ -1667,6 +1667,8 @@ final class AINamingService {
         - Distant, muffled, or overlapping voices that aren't the main speaker
         - Side conversations from other people in the room
 
+        Transcribe VERBATIM in the language actually spoken. Do NOT translate, do NOT transliterate, do NOT summarize, do NOT add commentary. Ukrainian speech stays Ukrainian, Russian speech stays Russian — never convert one into the other, and never render Cyrillic-language speech in Latin script.
+
         If a span of audio has no clear primary speaker, skip it. If the entire audio has no clear primary speaker, set `srt` to exactly the string "NO_SPEECH".
 
         CRITICAL FORMATTING REQUIREMENTS for the `srt` value:

@@ -18,9 +18,14 @@ PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 # re-typing env vars. This file is gitignored and must contain ONLY non-secrets — the
 # notarytool keychain-profile NAME and (optionally) the SIGN_IDENTITY. The actual
 # app-specific password lives in the Keychain (see scripts/setup_signing.sh), never here.
+# `set -a` is load-bearing: build_dmg.sh runs as a CHILD process, so a plain `.` would
+# leave NOTARY_PROFILE as a shell-local variable it never sees, and notarization would
+# fail with "no notary credentials provided" on an otherwise perfect build.
 if [ -f "$PROJECT_DIR/scripts/release.env" ]; then
+    set -a
     # shellcheck disable=SC1091
     . "$PROJECT_DIR/scripts/release.env"
+    set +a
 fi
 
 SIGN_UPDATE="$PROJECT_DIR/.build/artifacts/sparkle/Sparkle/bin/sign_update"

@@ -1,5 +1,9 @@
 # Changelog
 
+## [3.16.1] - 2026-08-04
+### Fixed
+- **Subtitles are no longer translated into another language.** A recording narrated in Ukrainian could come back with Russian subtitles, and because the title and the description on the site are both written to match the subtitles, all three ended up in the wrong language. The AI was never told to keep the spoken language — it was only told which language to write the *title* in — so on shorter recordings it quietly translated as it transcribed, leaving occasional untranslatable words behind as the only clue. It is now told to transcribe word-for-word in the language actually spoken, the same instruction longer recordings already used.
+
 ## [3.16.0] - 2026-07-28
 ### Fixed
 - **Long recordings now get an AI title, subtitles and a description.** Anything past roughly six minutes had been failing silently: the recording uploaded fine, but the title stayed as the "Recording · 27 Jul 2026 21:00" placeholder, there were no subtitles, and no description. The cause was request size — the app packed the whole audio track plus every screenshot into one request, and past a few minutes that request was larger than the server would accept, so it was rejected before it ever reached the AI. A 10-minute recording built a 6.2 MB request against a 4.5 MB limit. Long recordings are now transcribed in parallel pieces and stitched back together, so length is no longer a limit — an hour-long recording works the same as a one-minute one. Recordings under five minutes are handled exactly as before.
