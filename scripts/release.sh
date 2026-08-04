@@ -98,14 +98,48 @@ echo ""
 echo "📝 Updating appcast.xml..."
 
 # Idempotency guard (B8.4): re-running release.sh for a version that already has an
-# <item> in the feed would otherwise sed-insert a SECOND duplicate <item> for it.
-# Keyed on the exact <sparkle:version> marker (unique per release). If present, skip
-# the insert so re-runs are a no-op on the appcast; the build/sign/instruction steps
-# above and below still run. To intentionally replace an item, delete its <item>
-# block from appcast.xml by hand and re-run.
+# <item> in the feed must not sed-insert a SECOND duplicate <item> for it. Keyed on the
+# exact <sparkle:version> marker (unique per release).
+#
+# Skipping the item outright is NOT safe, though, and that cost us a broken v3.16.1 feed
+# on 2026-08-04. A re-run REBUILDS the DMG, and DMGs are not byte-reproducible — the
+# rebuild differed from the first by 8 bytes. The kept <item> therefore described the
+# FIRST build while `--publish` uploaded the SECOND, and Sparkle verifies edSignature
+# against the bytes it downloads, so every client's update would have failed signature
+# validation. Refresh the enclosure in place instead: idempotent when nothing changed,
+# self-healing when the payload did.
 if grep -q "<sparkle:version>$VERSION</sparkle:version>" "$APPCAST"; then
-    echo "⚠️  appcast.xml already has an <item> for v$VERSION — skipping insert (re-run safe)."
-    echo "    To replace it, delete the existing <item> block for v$VERSION from appcast.xml and re-run."
+    VERSION_MARKER="<sparkle:version>$VERSION</sparkle:version>"
+    EXISTING=$(awk -v v="$VERSION_MARKER" '
+        index($0, v) { inItem = 1 }
+        inItem && /sparkle:edSignature="/ {
+            match($0, /edSignature="[^"]*"/); s = substr($0, RSTART + 13, RLENGTH - 14)
+        }
+        inItem && /length="/ {
+            match($0, /length="[^"]*"/); l = substr($0, RSTART + 8, RLENGTH - 9)
+        }
+        inItem && /<\/item>/ { print s "|" l; exit }
+    ' "$APPCAST")
+
+    if [ "$EXISTING" = "$ED_SIGNATURE|$DMG_SIZE" ]; then
+        echo "✅ appcast.xml already has a matching <item> for v$VERSION — nothing to update."
+    else
+        awk -v v="$VERSION_MARKER" -v sig="$ED_SIGNATURE" -v len="$DMG_SIZE" '
+            index($0, v) { inItem = 1 }
+            inItem && /sparkle:edSignature="/ { sub(/edSignature="[^"]*"/, "edSignature=\"" sig "\"") }
+            inItem && /length="/ { sub(/length="[^"]*"/, "length=\"" len "\"") }
+            inItem && /<\/item>/ { inItem = 0 }
+            { print }
+        ' "$APPCAST" > "$APPCAST.tmp" && mv "$APPCAST.tmp" "$APPCAST"
+
+        echo "⚠️  appcast.xml had an <item> for v$VERSION describing a different build."
+        echo "    Refreshed it to match the DMG this run produced ($DMG_SIZE bytes)."
+        if [ "$PUBLISH" = "1" ]; then
+            echo "    The release asset is re-uploaded below, so feed and asset stay in step."
+        else
+            echo "    Re-upload the DMG to the v$VERSION release, or the feed will not match the asset."
+        fi
+    fi
 else
     DOWNLOAD_URL="https://github.com/$GITHUB_REPO/releases/download/v$VERSION/$DMG_NAME.dmg"
     # RFC-822 requires English month/day abbreviations. Force the C locale so the
@@ -136,18 +170,38 @@ fi
 if [ "$PUBLISH" = "1" ]; then
     echo ""
     echo "🚀 Publishing (asset-first)..."
-    # Step 1: create the GitHub release WITH the DMG asset, so the URL in appcast.xml
-    # resolves before any client fetches the feed.
-    if ! "$GH" release create "v$VERSION" "$DMG_PATH" --title "v$VERSION" --notes "Release v$VERSION"; then
-        echo "❌ 'gh release create' failed — NOT pushing appcast.xml (would 404 Sparkle clients)."
-        exit 1
+    # Step 1: put the DMG on the release first, so the URL in appcast.xml resolves before
+    # any client fetches the feed.
+    #
+    # On a re-run the release already exists and `gh release create` refuses outright. The
+    # asset must still be replaced: the appcast above was just refreshed with THIS build's
+    # signature, and leaving the previous build attached is exactly the feed/asset mismatch
+    # that broke v3.16.1. --clobber overwrites the asset in place.
+    if "$GH" release view "v$VERSION" >/dev/null 2>&1; then
+        echo "ℹ️  Release v$VERSION already exists — replacing its asset with this build."
+        if ! "$GH" release upload "v$VERSION" "$DMG_PATH" --clobber; then
+            echo "❌ 'gh release upload' failed — NOT pushing appcast.xml (feed would not match the asset)."
+            exit 1
+        fi
+        echo "✅ GitHub release v$VERSION asset replaced"
+    else
+        if ! "$GH" release create "v$VERSION" "$DMG_PATH" --title "v$VERSION" --notes "Release v$VERSION"; then
+            echo "❌ 'gh release create' failed — NOT pushing appcast.xml (would 404 Sparkle clients)."
+            exit 1
+        fi
+        echo "✅ GitHub release v$VERSION created with asset"
     fi
-    echo "✅ GitHub release v$VERSION created with asset"
     # Step 2: only now publish the feed pointing at the live asset. Commit the version
     # bump + changelog alongside the feed (MASTER.md requires them per release) so the
     # pushed appcast and the tagged source agree.
     git -C "$PROJECT_DIR" add appcast.xml CHANGELOG.md Sources/NoCornyTracer/Info.plist
-    git -C "$PROJECT_DIR" commit -m "Release v$VERSION"
+    # `git commit` exits non-zero with nothing staged, which under `set -e` would kill the
+    # script AFTER the asset upload — reporting failure on a re-run that changed nothing.
+    if git -C "$PROJECT_DIR" diff --cached --quiet; then
+        echo "ℹ️  Nothing new to commit — feed and asset already agree."
+    else
+        git -C "$PROJECT_DIR" commit -m "Release v$VERSION"
+    fi
     git -C "$PROJECT_DIR" push
     echo "✅ appcast.xml committed and pushed"
     echo "============================================"
