@@ -1265,13 +1265,25 @@ final class AINamingService {
                 // independent signals. Comparing `dominantLanguage(name)` against the label we
                 // injected into the prompt would be a tautology: if the label were wrong and
                 // Gemini obeyed it, the check would pass every time.
+                //
+                // `.mixed` is NOT a mismatch. A Ukrainian title carrying Latin product names
+                // ("Редизайн UI сайту у Figma") is correct, and `dominantScript` needs 85%
+                // Cyrillic before it says `.cyrillic` — two or three Latin words in a short
+                // title push it under that line. Only the opposite PURE script means Gemini
+                // actually translated the title out of the spoken language.
                 let nameScript = dominantScript(cleaned)
                 let mismatch = transcriptScript != .undetermined && transcriptScript != .mixed
-                    && nameScript != .undetermined && nameScript != transcriptScript
+                    && nameScript != .undetermined && nameScript != .mixed
+                    && nameScript != transcriptScript
                 if mismatch && !languageRetryUsed && attempt < maxAttempts {
                     languageRetryUsed = true
                     result.errorCode = "naming_language_mismatch"
-                    LogManager.shared.log("🤖 Naming: ⚠️ name script \(nameScript) ≠ transcript script \(transcriptScript) — one retry with hint", type: .error)
+                    // Hold the rejected name instead of dropping it. If the retry never lands —
+                    // a 504 from the proxy is routine on these ~1.5 MB multimodal calls — a
+                    // wrong-language title still beats the "Recording · 20 Aug 2026 12:59"
+                    // placeholder the caller falls back to when `name` comes back nil.
+                    result.name = cleaned
+                    LogManager.shared.log("🤖 Naming: ⚠️ name script \(nameScript) ≠ transcript script \(transcriptScript) — one retry with hint, holding \"\(cleaned)\"", type: .error)
                     let target = language ?? (transcriptScript == .cyrillic ? "the transcript's language" : "the transcript's language")
                     hint = "\n\nPRIOR ATTEMPT FAILED: the returned `name` was in the wrong language. Write the `name` in \(target), matching the transcript. Do NOT translate it into English or any other language."
                     try? await Task.sleep(nanoseconds: jitteredDelayNanos(delay)); delay *= 2

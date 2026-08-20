@@ -1,5 +1,10 @@
 # Changelog
 
+## [3.16.2] - 2026-08-20
+### Fixed
+- **Recordings no longer lose their AI title.** A title written in Ukrainian or Russian was rejected as "wrong language" whenever it carried a couple of Latin words, which is normal for anything that mentions Figma, an API or a product name. The app then asked for a replacement title, and when that second request timed out the recording was left with the "Recording · 20 Aug 2026 12:59" placeholder, even though a perfectly good title had already been produced and thrown away. Latin words inside a Cyrillic title are now accepted as normal, and a title is never discarded before a better one has actually arrived.
+- **The AI now gets more time to name a recording.** The naming request is the heaviest one the app makes, since it carries the full transcript plus every screenshot, and on the server it was being cut off after 25 seconds. It now gets 90. This part is a server change that is already live for everyone and does not need the update.
+
 ## [3.16.1] - 2026-08-04
 ### Fixed
 - **Subtitles are no longer translated into another language.** A recording narrated in Ukrainian could come back with Russian subtitles, and because the title and the description on the site are both written to match the subtitles, all three ended up in the wrong language. The AI was never told to keep the spoken language — it was only told which language to write the *title* in — so on shorter recordings it quietly translated as it transcribed, leaving occasional untranslatable words behind as the only clue. It is now told to transcribe word-for-word in the language actually spoken, the same instruction longer recordings already used.
