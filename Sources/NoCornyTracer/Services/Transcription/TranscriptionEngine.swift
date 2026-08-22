@@ -5,6 +5,9 @@ enum TranscriptionEngineKind: String, CaseIterable, Identifiable {
     /// Gemini through tracer.nocorny.com. Multimodal: it sees frames as well as audio,
     /// which is why it can name a recording in the same call that transcribes it.
     case cloudGemini = "cloud"
+    /// Whisper on Groq, through the same proxy. Cues only, like the on-device engine: it
+    /// hears the recording but never sees it, so a title comes from a separate call.
+    case cloudGroq = "groq"
     /// Whisper on this Mac. Free and offline, and it produces cues only -- a title still
     /// has to come from somewhere else.
     case localWhisper = "local"
@@ -14,6 +17,7 @@ enum TranscriptionEngineKind: String, CaseIterable, Identifiable {
     var displayName: String {
         switch self {
         case .cloudGemini: return "Cloud (Gemini)"
+        case .cloudGroq: return "Cloud (Groq)"
         case .localWhisper: return "On this Mac"
         }
     }

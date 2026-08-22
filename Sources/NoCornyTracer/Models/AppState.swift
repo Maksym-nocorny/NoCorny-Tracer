@@ -21,6 +21,9 @@ final class AppState {
         proxyClient: GeminiProxyClient(
             tokenProvider: { [weak self] in self?.tracerAPIClient.apiToken }
         ),
+        transcriptionClient: TranscriptionProxyClient(
+            tokenProvider: { [weak self] in self?.tracerAPIClient.apiToken }
+        ),
         preferredKind: { [weak self] in self?.transcriptionEngine ?? .cloudGemini }
     )
     let hotkeyManager = HotkeyManager()

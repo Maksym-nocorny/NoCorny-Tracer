@@ -38,7 +38,11 @@ final class GeminiProxyClient {
     /// That number gates turning on server-side entitlement checks: an older build knows
     /// only the cloud path, so switching the gate on while those are still out there
     /// breaks them with nothing to point at.
-    private static let appVersion: String = {
+    ///
+    /// Shared with TranscriptionProxyClient rather than copied: two readings of the same
+    /// bundle that can drift apart would make the rollout number the server sees depend on
+    /// which engine happened to call it.
+    static let appVersion: String = {
         let bundle = Bundle.main
         let short = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
         let build = bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"

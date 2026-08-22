@@ -384,7 +384,8 @@ struct SettingsView: View {
                     id: kind.rawValue, label: kind.displayName, value: kind,
                     isLocked: true, badge: "Apple Silicon"
                 )
-            case .cloudGemini where !entitlements.cloudTranscription:
+            case .cloudGemini where !entitlements.cloudTranscription,
+                 .cloudGroq where !entitlements.cloudTranscription:
                 return DropdownOption(
                     id: kind.rawValue, label: kind.displayName, value: kind,
                     isLocked: true, badge: "Premium"
@@ -399,7 +400,7 @@ struct SettingsView: View {
     /// switch and failing later.
     private func handleLockedEngine(_ kind: TranscriptionEngineKind) {
         switch kind {
-        case .cloudGemini:
+        case .cloudGemini, .cloudGroq:
             if let url = URL(string: "\(TracerAPIClient.baseURL)/settings#plan") {
                 NSWorkspace.shared.open(url)
             }
@@ -412,6 +413,8 @@ struct SettingsView: View {
         switch appState.transcriptionEngine {
         case .cloudGemini:
             return "Transcribes in the cloud. Needs a Tracer account and an internet connection."
+        case .cloudGroq:
+            return "Transcribes in the cloud, faster than Gemini and without looking at the screen. Needs a Tracer account and an internet connection."
         case .localWhisper:
             return OnDeviceNaming.isAvailable
                 ? "Transcribes on this Mac. Nothing is uploaded and there is nothing to pay for."

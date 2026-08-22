@@ -26,6 +26,7 @@ final class AINamingService {
 
     init(
         proxyClient: GeminiProxyClient,
+        transcriptionClient: TranscriptionProxyClient,
         preferredKind: @escaping () -> TranscriptionEngineKind = { .cloudGemini }
     ) {
         let naming = NamingService(proxyClient: proxyClient)
@@ -33,9 +34,15 @@ final class AINamingService {
         self.preferredKind = preferredKind
         self.engines = [
             .cloudGemini: CloudGeminiEngine(proxyClient: proxyClient, namingService: naming),
+            .cloudGroq: CloudGroqEngine(proxyClient: transcriptionClient),
             .localWhisper: LocalWhisperEngine(),
         ]
     }
+
+    /// Who gets asked when the chosen engine cannot run, in order. Spelled out rather than
+    /// left to `engines.values.first`: with two cloud engines in the map, dictionary order
+    /// would make "which service is this recording billed to" arbitrary.
+    private static let fallbackOrder: [TranscriptionEngineKind] = [.cloudGemini, .cloudGroq, .localWhisper]
 
     /// Injection point for tests.
     init(engine: TranscriptionEngine, namingService: NamingService) {
@@ -51,11 +58,15 @@ final class AINamingService {
     private var activeEngine: TranscriptionEngine? {
         let wanted = preferredKind()
         if let engine = engines[wanted], engine.isReady { return engine }
-        if let fallback = engines.values.first(where: { $0.isReady }) {
+        if let fallback = readyEngines.first {
             LogManager.shared.log("🎛️ Engine: \(wanted.rawValue) is not ready, falling back to \(fallback.kind.rawValue)")
             return fallback
         }
         return nil
+    }
+
+    private var readyEngines: [TranscriptionEngine] {
+        Self.fallbackOrder.compactMap { engines[$0] }.filter(\.isReady)
     }
 
     /// True when the pipeline can run at all. Callers use it to skip the work up front
@@ -73,6 +84,16 @@ final class AINamingService {
         }
 
         var result = await engine.transcribe(videoURL: videoURL)
+
+        // An engine an admin has switched off server-side has said nothing about the
+        // recording, so it is worth asking someone else instead of returning nothing.
+        // Narrow on purpose: only this one code, only when no cues came back, and only one
+        // alternative -- anything broader turns a billing decision into a retry loop.
+        if result.srt == nil, result.errorCode == "engine_disabled",
+           let alternative = readyEngines.first(where: { $0.kind != engine.kind }) {
+            LogManager.shared.log("🎛️ Engine: \(engine.kind.rawValue) is switched off server-side, falling back to \(alternative.kind.rawValue)")
+            result = await alternative.transcribe(videoURL: videoURL)
+        }
 
         // Only Gemini's single-call path names a recording while transcribing it. Every
         // other engine returns cues alone, so the title is a second, separate call --
