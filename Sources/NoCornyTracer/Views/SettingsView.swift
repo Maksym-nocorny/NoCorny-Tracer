@@ -44,6 +44,16 @@ struct SettingsView: View {
         .scrollIndicators(.never)
         .background(Theme.Colors.backgroundPrimary)
         .customDropdownOverlay(activeDropdownID: $activeDropdownID)
+        .alert(item: $pendingReport) { reportConfirmation($0) }
+        .alert(
+            "Problem report",
+            isPresented: Binding(
+                get: { reportOutcome != nil },
+                set: { if !$0 { reportOutcome = nil } }
+            ),
+            actions: { Button("OK", role: .cancel) { reportOutcome = nil } },
+            message: { Text(reportOutcome ?? "") }
+        )
         .sheet(isPresented: Binding(
             get: { appState.dropboxAuthManager.showConnectionConfirmation },
             set: { appState.dropboxAuthManager.showConnectionConfirmation = $0 }
@@ -279,6 +289,44 @@ struct SettingsView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // MARK: - Problem Reports
+
+    @State private var pendingReport: BugReportClient.Payload?
+    @State private var isSendingReport = false
+    @State private var reportOutcome: String?
+
+    /// Confirmation before sending, listing what actually goes. The report contains the
+    /// app's own diagnostic log, and telling someone that only after the fact is not
+    /// consent -- so the numbers here are real ones read off the payload.
+    private func reportConfirmation(_ payload: BugReportClient.Payload) -> Alert {
+        Alert(
+            title: Text("Send a problem report?"),
+            message: Text("""
+            This sends recent diagnostic log entries (about \(payload.logSizeKB) KB), \
+            your app version (\(payload.appVersion)), macOS version and Mac model.
+
+            No video, audio or transcript text is included, and links to your recordings \
+            are removed.
+            """),
+            primaryButton: .default(Text("Send")) { send(payload) },
+            secondaryButton: .cancel()
+        )
+    }
+
+    private func send(_ payload: BugReportClient.Payload) {
+        isSendingReport = true
+        reportOutcome = nil
+        Task {
+            do {
+                try await BugReportClient.send(payload, token: appState.tracerAPIClient.apiToken)
+                reportOutcome = "Report sent. Thank you."
+            } catch {
+                reportOutcome = error.localizedDescription
+            }
+            isSendingReport = false
+        }
     }
 
     // MARK: - Transcription
@@ -578,6 +626,15 @@ struct SettingsView: View {
                     NSWorkspace.shared.selectFile(LogManager.shared.getLogFileURL().path, inFileViewerRootedAtPath: "")
                 }
                 .buttonStyle(SettingsButtonStyle())
+                .onHover { inside in
+                    if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+                }
+
+                Button(isSendingReport ? "Sending…" : "Report a Problem") {
+                    pendingReport = BugReportClient.makePayload()
+                }
+                .buttonStyle(SettingsButtonStyle())
+                .disabled(isSendingReport)
                 .onHover { inside in
                     if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
                 }

@@ -114,6 +114,7 @@ final class LogManager {
         if now.timeIntervalSince(lastRotationCheck) >= rotationCheckInterval {
             lastRotationCheck = now
             rotateLogsIfNeeded()
+            reheaderAfterRotationIfNeeded()
         }
     }
     
@@ -125,6 +126,26 @@ final class LogManager {
         let oldLogURL = logFileURL.deletingLastPathComponent().appendingPathComponent("app.old.log")
         try? FileManager.default.removeItem(at: oldLogURL)
         try? FileManager.default.moveItem(at: logFileURL, to: oldLogURL)
+        didRotateMidSession = true
+    }
+
+    /// Set when rotation happened after startup rather than before it. A bug report scopes
+    /// itself by counting session headers backwards, and a mid-session rotation leaves the
+    /// fresh file with none -- the run that is actually being reported would look like it
+    /// had never started.
+    private var didRotateMidSession = false
+
+    /// Re-emits the startup header if rotation just cut the current session in half.
+    /// Called from the file-append path, so it happens on the log queue.
+    private func reheaderAfterRotationIfNeeded() {
+        guard didRotateMidSession else { return }
+        didRotateMidSession = false
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown"
+        let line = "[\(ISO8601DateFormatter().string(from: Date()))] 📝: 🚀 NoCorny Tracer v\(version) (\(build)) Started (log rotated)\n"
+        if let data = line.data(using: .utf8) {
+            try? data.write(to: logFileURL, options: .atomic)
+        }
     }
     
     private func loadLogs() {
