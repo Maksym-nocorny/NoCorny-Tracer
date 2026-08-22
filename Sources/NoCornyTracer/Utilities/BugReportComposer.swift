@@ -83,13 +83,41 @@ enum BugReportComposer {
     /// The window the report covers: everything since the third-most-recent session marker.
     /// Falls back to the whole window when there are fewer markers than that, and never to
     /// nothing -- a log with no marker at all is still the best evidence available.
+    /// The version that is running, as it appears in a session header.
+    private static var currentVersionMarker: String {
+        let short = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        return "\(sessionMarker)\(short) "
+    }
+
+    /// The window a report covers: the last few launches OF THIS VERSION, never earlier ones.
+    ///
+    /// This is the load-bearing rule, and it replaces trying to sanitize whatever an older
+    /// build happened to write. Redacting free-form log text with patterns kept failing in
+    /// ways nobody predicted - a naming line whose prefix was not on the list, a model reply
+    /// that spanned several lines so per-line rules only protected the first. Each fix closed
+    /// one shape and left the class open.
+    ///
+    /// Scoping to this version inverts that. This build is auditable: it logs lengths and
+    /// counts, never a title, a transcript or a model reply. Lines written by any earlier
+    /// build are simply not eligible, so what they contain stops mattering. Redaction stays
+    /// as a second line of defence rather than as the only one.
+    ///
+    /// The cost is that a report filed right after updating carries less history. That is a
+    /// smaller price than shipping someone else's speech to our server.
     private static func readScopedLines() -> [String] {
         let lines = readTail(maxLines: maxScanLines)
         guard !lines.isEmpty else { return [] }
 
-        let markers = lines.indices.filter { lines[$0].contains(sessionMarker) }
-        guard let start = markers.suffix(3).first else { return lines }
-        return Array(lines[start...])
+        let versionMarker = currentVersionMarker
+        let ownMarkers = lines.indices.filter { lines[$0].contains(versionMarker) }
+        if let start = ownMarkers.suffix(3).first {
+            return Array(lines[start...])
+        }
+
+        // No header from this build yet - the log rotated mid-session, or the header write
+        // has not landed. Everything an older build wrote stays out, so send nothing rather
+        // than fall back to the whole window.
+        return []
     }
 
     /// Reads app.log, and prepends app.old.log when rotation has just left the current file
@@ -115,11 +143,25 @@ enum BugReportComposer {
             // protects lines written by a build that has it: anyone upgrading carries a log
             // full of share links and transcript previews written by the previous version,
             // and those are precisely the users most likely to be reporting something.
-            .map { redact($0) }
+            // Drop continuation lines along with the payload they belong to. A log line
+            // starts with an ISO timestamp; anything after a redacted payload that does not
+            // is the rest of that payload, and per-line redaction can never see it. This is
+            // how a multi-line model reply used to walk out whole while its first line was
+            // dutifully cleaned.
+            .reduce(into: [String]()) { acc, line in
+                let isNewEntry = line.hasPrefix("[") && line.contains("Z] ")
+                if !isNewEntry, let last = acc.last, last.contains(payloadMarker) {
+                    return
+                }
+                acc.append(redact(line))
+            }
     }
 
+    /// Left in place of a dropped payload, and used to recognise its continuation lines.
+    private static let payloadMarker = "[REDACTED]"
+
     private static let transcriptPreviewPattern = try? NSRegularExpression(
-        pattern: "(Raw SRT \\([0-9]+ chars\\) preview:|preview:|First 200 chars:).*$",
+        pattern: "(Raw SRT \\([0-9]+ chars\\) preview:|preview:|First 200 chars:|Could not parse JSON response:|Could not parse any segments from response\\.).*$",
         options: [.caseInsensitive]
     )
 
@@ -132,7 +174,7 @@ enum BugReportComposer {
         if let transcriptPreviewPattern {
             let range = NSRange(result.startIndex..., in: result)
             result = transcriptPreviewPattern.stringByReplacingMatches(
-                in: result, options: [], range: range, withTemplate: "[REDACTED]"
+                in: result, options: [], range: range, withTemplate: payloadMarker
             )
         }
         return result

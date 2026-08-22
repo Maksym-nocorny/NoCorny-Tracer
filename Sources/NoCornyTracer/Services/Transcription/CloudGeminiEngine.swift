@@ -236,7 +236,7 @@ final class CloudGeminiEngine: TranscriptionEngine {
                 LogManager.shared.log("🤖 Combined: ✅ Got response (\(raw.count) chars, prompt=\(result.usage.promptTokens), out=\(result.usage.outputTokens))")
 
                 guard let parsed = parseCombinedResponse(raw) else {
-                    LogManager.shared.log("🤖 Combined: ⚠️ Could not parse JSON response: \(raw.prefix(200))", type: .error)
+                    LogManager.shared.log("🤖 Combined: ⚠️ Could not parse JSON response (\(raw.count) chars, starts with \(raw.prefix(1).map { $0.isLetter || $0.isNumber ? "text" : String($0) }.joined()))", type: .error)
                     lastError = "parse_failed"
                     if attempt < maxRetries {
                         try? await Task.sleep(nanoseconds: delay)
@@ -731,7 +731,9 @@ final class CloudGeminiEngine: TranscriptionEngine {
             LogManager.shared.log("🤖 Glossary: none (timeout, failure, or nothing found) — chunks run unprimed")
             return raced ?? GlossaryResult()
         }
-        LogManager.shared.log("🤖 Glossary: \(result.terms.count) terms — \(result.terms.joined(separator: ", "))")
+        // The terms are proper nouns lifted off the recording's own frames - names of people
+        // and companies. The count is the diagnostic; the list is content.
+        LogManager.shared.log("🤖 Glossary: \(result.terms.count) terms")
         return result
     }
 
@@ -944,7 +946,7 @@ final class CloudGeminiEngine: TranscriptionEngine {
         let success = (speechCoverage >= 0.5) || namingCall.name != nil
 
         LogManager.shared.log(
-            "🤖 Chunked: ✅ name=\"\(namingCall.name ?? "nil")\", srt \(srt.count) chars from \(merged.count) cues"
+            "🤖 Chunked: ✅ named (\(namingCall.name?.count ?? 0) chars), srt \(srt.count) chars from \(merged.count) cues"
         )
 
         return NamingResult(

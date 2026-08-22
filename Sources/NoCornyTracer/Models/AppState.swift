@@ -963,8 +963,10 @@ final class AppState {
     /// never be re-labelled -- which at release, where everyone is on the free tier, is every
     /// recording anyone has.
     ///
-    /// The Dropbox mirror is a different question and does stay gated. It spends the user's own
-    /// storage quota, so it waits until separation is something they have actually turned on
+    /// The Dropbox mirror is a different question and does stay gated. It spends the
+    /// user's own storage quota, so it waits until the account is entitled to separation -
+    /// deliberately not until they have switched it on, because the person who turns it on
+    /// tomorrow is the one whose local cache will have been evicted by then
     /// and are entitled to; the local cache is bounded at 2 GB and evicted, so keeping it
     /// speculatively costs nothing anybody notices.
     ///

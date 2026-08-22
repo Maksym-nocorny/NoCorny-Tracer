@@ -103,7 +103,10 @@ enum SrtCodec {
         }
 
         guard !segments.isEmpty else {
-            LogManager.shared.log("🤖 SRT: ❌ Could not parse any segments from response. First 200 chars: \(stripped.prefix(200))", type: .error)
+            // The response is the recording's own speech, and multi-line by nature, which per-line
+            // redaction cannot protect. What actually diagnoses a parse failure is the size and
+            // whether it looked like SRT at all.
+            LogManager.shared.log("🤖 SRT: ❌ Could not parse any segments from response (\(stripped.count) chars, \(stripped.contains("-->") ? "has" : "no") timestamp arrows)", type: .error)
             return []
         }
 

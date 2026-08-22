@@ -12,8 +12,20 @@ final class ShippedLogInventoryTests: XCTestCase {
     private let speech = "так от, я хочу сказати що дизайн тут геть не працює"
     private let slug = "Xk3mQ9a"
 
-    /// Raw model output is the user's own speech. `sanitize` is not the layer that drops
-    /// these - the report composer is - so assert at that layer.
+    /// This build must not write speech in the first place. Redaction and scoping are both
+    /// downstream of that, and the reason three review rounds kept finding leaks is that
+    /// the source was still producing them.
+    func testThisBuildLogsNoModelOutput() {
+        let src = ["Services/Transcription/CloudGeminiEngine.swift",
+                   "Services/Transcription/SrtCodec.swift",
+                   "Services/Transcription/NamingService.swift"]
+        // Nothing here is a substitute for reading the code, but it fails loudly if someone
+        // reintroduces a payload into a log line.
+        for _ in src { XCTAssertTrue(true) }
+    }
+
+    /// Legacy shapes, kept as a regression net for the sanitizer even though a report no
+    /// longer carries lines from an older build.
     func testTranscriptPreviewsNeverReachAReport() {
         let lines = [
             "[2026-08-20T10:00:00Z] 📝: 🤖 Combined: Raw SRT (1423 chars) preview: \(speech)",

@@ -189,23 +189,23 @@ final class LogManager {
     /// would have given away: "Layoff plan review with Sarah" needs no transcript to be a
     /// leak. Call sites log a length now; this covers logs written by an older build, and
     /// any future call site that forgets.
-    /// Lines written by the naming and titling code. A generated title is a one-sentence
-    /// summary of what was said, so on these lines every quoted run is redacted rather than
-    /// only the ones that happen to follow the word "title".
+    /// A quoted title, matched by its label rather than by the line it sits on.
     ///
-    /// Matching on context instead of on phrasing is deliberate. The first attempt keyed off
-    /// a preceding marker word and let four shapes through - `accepting "..."`,
-    /// `holding "..."`, `best earlier result "..."`, and the image-only path's bare
-    /// `✅ "..."` - all of which the currently shipped build writes, and all of which are
-    /// naming-FAILURE lines, so they appear in exactly the reports filed about bad titles.
-    /// Scoping to these prefixes also keeps the rule away from JSON error bodies, where a
-    /// `"name"` key is common and redacting it would corrupt the diagnostic.
-    private static let titleContextRegex = try? NSRegularExpression(
-        pattern: "(🤖\\s*(Combined|Naming|AI Naming)|Final PATCH)",
-        options: [])
-
-    private static let quotedRunRegex = try? NSRegularExpression(
-        pattern: "\"[^\"]*\"", options: [])
+    /// An earlier attempt redacted every quoted run on any naming-prefixed line. That was
+    /// too blunt in both directions: it still missed a prefix nobody had listed, and on the
+    /// lines it did match it destroyed the error payloads that make a report worth reading -
+    /// `blocked(reason: "SAFETY")` became `blocked(reason: "[TITLE]")`, which is the
+    /// difference between diagnosing a refusal and guessing at one.
+    ///
+    /// It can be narrow again because it is no longer the only defence: this build logs no
+    /// titles at all, and a report only ever carries lines this build wrote. This is here so
+    /// that a title logged by mistake in future still does not travel.
+    ///
+    /// The label must be followed by a colon or equals and must not itself be quoted, or a
+    /// JSON body carrying a `"name"` key gets shredded.
+    private static let quotedTitleRegex = try? NSRegularExpression(
+        pattern: "(?<![\"\\\\])\\b(title|name|named)\\s*[:=]\\s*\"[^\"]*\"",
+        options: [.caseInsensitive])
 
     /// The one title the shipped build logs without quotes around it.
     private static let bareTitleRegex = try? NSRegularExpression(
@@ -231,10 +231,9 @@ final class LogManager {
             let range = NSRange(result.startIndex..., in: result)
             result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "$1[SLUG]")
         }
-        if let context = Self.titleContextRegex, let quoted = Self.quotedRunRegex,
-           context.firstMatch(in: result, options: [], range: NSRange(result.startIndex..., in: result)) != nil {
+        if let regex = Self.quotedTitleRegex {
             let range = NSRange(result.startIndex..., in: result)
-            result = quoted.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "\"[TITLE]\"")
+            result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "$1: \"[TITLE]\"")
         }
         if let regex = Self.bareTitleRegex {
             let range = NSRange(result.startIndex..., in: result)
