@@ -91,6 +91,14 @@ final class AppState {
             UserDefaults.standard.set(transcriptionEngine.rawValue, forKey: "transcriptionEngine")
         }
     }
+    /// Label transcript cues with who said them. Off by default: it costs minutes of Core ML
+    /// on a long recording and a ~130 MB model download the first time, neither of which is a
+    /// fair surprise for someone who only wanted subtitles.
+    var diarizationEnabled: Bool = false {
+        didSet {
+            UserDefaults.standard.set(diarizationEnabled, forKey: "diarizationEnabled")
+        }
+    }
     var appTheme: AppTheme = .light {
         didSet {
             UserDefaults.standard.set(appTheme.rawValue, forKey: "appTheme")
@@ -175,6 +183,7 @@ final class AppState {
         self.launchAtLogin = UserDefaults.standard.bool(forKey: "launchAtLogin")
         self.reduceBackgroundNoise = UserDefaults.standard.bool(forKey: "reduceBackgroundNoise")
         self.recordSystemAudio = UserDefaults.standard.bool(forKey: "recordSystemAudio")
+        self.diarizationEnabled = UserDefaults.standard.bool(forKey: "diarizationEnabled")
         if let engineRaw = UserDefaults.standard.string(forKey: "transcriptionEngine"),
            let engine = TranscriptionEngineKind(rawValue: engineRaw) {
             self.transcriptionEngine = engine
@@ -766,6 +775,10 @@ final class AppState {
         // cloud call; on-device transcription of a long recording is minutes of CPU.
         let cached = recordings.first(where: { $0.id == id })
         let cachedTranscript = (cached?.transcriptSrt?.isEmpty == false) ? cached?.transcriptSrt : nil
+        // Both halves are required: the setting is what the user asked for, the entitlement is
+        // what they are allowed. Read here, after the profile refresh above, so a plan change
+        // takes effect on this recording rather than the next one.
+        let shouldDiarize = diarizationEnabled && tracerAPIClient.entitlements.diarization
 
         var firstPass: NamingResult? = nil
         if let cachedTranscript {
@@ -774,7 +787,9 @@ final class AppState {
             aiName = cached?.aiGeneratedName
             aiSucceeded = true
         } else {
-            let pass = await aiNamingService.generateSubtitlesAndName(for: fileURL)
+            let pass = await aiNamingService.generateSubtitlesAndName(
+                for: fileURL, systemAudioURL: cached?.systemAudioURL, diarize: shouldDiarize
+            )
             firstPass = pass
             generatedSubtitles = pass.srt
             aiName = pass.name
@@ -793,7 +808,9 @@ final class AppState {
         if let firstPass, generatedSubtitles == nil, aiName == nil, !firstPass.fatal {
             LogManager.shared.log("🤖 Combined: ⚠️ First pass returned nothing — waiting 10s before second pass...", type: .error)
             try? await Task.sleep(nanoseconds: 10_000_000_000)
-            let secondPass = await aiNamingService.generateSubtitlesAndName(for: fileURL)
+            let secondPass = await aiNamingService.generateSubtitlesAndName(
+                for: fileURL, systemAudioURL: cached?.systemAudioURL, diarize: shouldDiarize
+            )
             generatedSubtitles = secondPass.srt
             aiName = secondPass.name
             aiUsage.add(secondPass.usage)

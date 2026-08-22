@@ -172,13 +172,24 @@ enum SrtCodec {
     /// Renders segments as a standard SRT file, numbering entries from 1. Any index values
     /// from the source are irrelevant — both our parser and the web's ignore them — so the
     /// chunked path can concatenate segments freely and let this assign final numbering.
+    ///
+    /// A labelled cue gets its speaker as a `[Name] ` prefix on the text line. That shape is a
+    /// contract with the web player, which lifts the name out with `/^\[([^\]]{1,40})\]\s+/`
+    /// and renders it as a speaker chip: no brackets, no trailing space, name under 40 chars,
+    /// or the prefix stops being a name and starts being part of what someone said. Players
+    /// that know nothing about speakers still show a valid subtitle, which is why the label
+    /// lives in the text rather than in an extension SRT has no room for.
     static func serializeSrt(_ segments: [SrtSegment]) -> String? {
         var lines: [String] = []
         var idx = 1
         for seg in segments {
             lines.append("\(idx)")
             lines.append("\(formatSrtTimestamp(seg.start)) --> \(formatSrtTimestamp(seg.end))")
-            lines.append(seg.text)
+            if let speaker = seg.speaker {
+                lines.append("[\(speaker)] \(seg.text)")
+            } else {
+                lines.append(seg.text)
+            }
             lines.append("")
             idx += 1
         }

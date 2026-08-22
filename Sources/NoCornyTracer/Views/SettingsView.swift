@@ -368,7 +368,53 @@ struct SettingsView: View {
                         .foregroundStyle(Theme.Colors.brandPurple)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+
+                diarizationRow
             }
+        }
+    }
+
+    /// Locked the same way the cloud engines are: shown with a badge and a padlock rather
+    /// than hidden. The switch is disabled instead of removed so it reads as something to
+    /// unlock, and the badge is the thing you click to go and do that.
+    private var diarizationRow: some View {
+        let unlocked = appState.tracerAPIClient.entitlements.diarization
+        return VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+            HStack(spacing: Theme.Spacing.sm) {
+                Toggle("Separate speakers", isOn: $appState.diarizationEnabled)
+                    .controlSize(.small)
+                    .font(Theme.Typography.body(12))
+                    .disabled(!unlocked)
+                    .foregroundStyle(unlocked ? Theme.Colors.textPrimary : Theme.Colors.textPrimary.opacity(0.55))
+
+                if !unlocked {
+                    Button {
+                        if let url = URL(string: "\(TracerAPIClient.baseURL)/settings#plan") {
+                            NSWorkspace.shared.open(url)
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text("Premium")
+                                .font(Theme.Typography.body(10))
+                                .foregroundStyle(Theme.Colors.brandPurple)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 1)
+                                .background(Capsule().fill(Theme.Colors.brandPurple.opacity(0.12)))
+                            Image(systemName: "lock.fill")
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundStyle(Theme.Colors.textPrimary.opacity(0.55))
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                Spacer(minLength: 0)
+            }
+
+            Text("Marks who said what in the transcript. Works best when \"Record system audio\" is on - the other side of a call then arrives on its own track instead of through your microphone.")
+                .font(Theme.Typography.body(10, weight: .light))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 

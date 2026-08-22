@@ -27,10 +27,7 @@ final class CloudGeminiEngine: TranscriptionEngine {
     var isReady: Bool { proxyClient.isReady }
 
     func transcribe(videoURL: URL, multiSpeaker: Bool) async -> EngineResult {
-        // multiSpeaker is accepted but not yet acted on -- the prompts still ask for the
-        // foreground narrator only. Wiring it changes what the model is asked for, so it
-        // lands with speaker separation rather than ahead of it.
-        let r = await run(videoURL)
+        let r = await run(videoURL, multiSpeaker: multiSpeaker)
         return EngineResult(
             srt: r.srt, name: r.name, usage: r.usage, model: r.model,
             latencyMs: r.latencyMs, attempts: r.attempts, success: r.success,
@@ -43,7 +40,7 @@ final class CloudGeminiEngine: TranscriptionEngine {
     /// Audio may be trimmed of silence (and optionally sped up) before sending to reduce
     /// per-second costs. The returned SRT timestamps are mapped back onto the original
     /// recording timeline so they sync perfectly with the unmodified video.
-    private func run(_ videoURL: URL) async -> NamingResult {
+    private func run(_ videoURL: URL, multiSpeaker: Bool) async -> NamingResult {
         LogManager.shared.log("🤖 Combined: Starting for \(videoURL.lastPathComponent)")
 
         // AI naming runs through tracer.nocorny.com with a per-user token. Without
@@ -116,7 +113,8 @@ final class CloudGeminiEngine: TranscriptionEngine {
             )
             return await generateChunked(
                 videoURL: videoURL, audioURL: audioURL,
-                analysis: analysis, keptRanges: keptRanges
+                analysis: analysis, keptRanges: keptRanges,
+                multiSpeaker: multiSpeaker
             )
         }
 
@@ -186,7 +184,7 @@ final class CloudGeminiEngine: TranscriptionEngine {
         frames = FramePreparation.fitFramesToBudget(frames, budget: framesBudget)
 
         // Step 6: combined Gemini call.
-        let prompt = combinedPrompt()
+        let prompt = combinedPrompt(multiSpeaker: multiSpeaker)
         let schema: [String: Any] = [
             "type": "object",
             "properties": [
@@ -374,7 +372,8 @@ final class CloudGeminiEngine: TranscriptionEngine {
         totalChunks: Int,
         originalDuration: Double,
         glossary: [String],
-        extraInstruction: String = ""
+        extraInstruction: String = "",
+        multiSpeaker: Bool = false
     ) async -> ChunkResult {
         var result = ChunkResult(index: chunk.index, status: .failed)
 
@@ -405,7 +404,8 @@ final class CloudGeminiEngine: TranscriptionEngine {
         for attempt in 1...maxAttempts {
             let prompt = chunkTranscriptionPrompt(
                 part: chunk.index + 1, of: totalChunks,
-                clipSeconds: chunk.localDuration, glossary: glossary
+                clipSeconds: chunk.localDuration, glossary: glossary,
+                multiSpeaker: multiSpeaker
             ) + extraInstruction + hint
 
             do {
@@ -567,7 +567,8 @@ final class CloudGeminiEngine: TranscriptionEngine {
         glossary: [String],
         concurrency: Int,
         scratchKey: String,
-        extraInstruction: String = ""
+        extraInstruction: String = "",
+        multiSpeaker: Bool = false
     ) async -> [Int: ChunkResult] {
         var outcomes: [Int: ChunkResult] = [:]
         guard !plans.isEmpty else { return outcomes }
@@ -596,7 +597,8 @@ final class CloudGeminiEngine: TranscriptionEngine {
                     group.addTask { [self] in
                         await runOneChunk(plan: plan, totalChunks: totalChunks, sourceAsset: sourceAsset,
                                           sourceTrack: sourceTrack, originalDuration: originalDuration,
-                                          glossary: glossary, extraInstruction: extraInstruction)
+                                          glossary: glossary, extraInstruction: extraInstruction,
+                                          multiSpeaker: multiSpeaker)
                     }
                 }
             }
@@ -611,7 +613,8 @@ final class CloudGeminiEngine: TranscriptionEngine {
         sourceTrack: AVAssetTrack,
         originalDuration: Double,
         glossary: [String],
-        extraInstruction: String
+        extraInstruction: String,
+        multiSpeaker: Bool = false
     ) async -> ChunkResult {
         guard let chunk = await AudioPreparation.buildChunkAudio(sourceAsset: sourceAsset, sourceTrack: sourceTrack, plan: plan) else {
             var failed = ChunkResult(index: plan.index, status: .failed)
@@ -628,7 +631,7 @@ final class CloudGeminiEngine: TranscriptionEngine {
 
         return await transcribeChunk(
             chunk, totalChunks: totalChunks, originalDuration: originalDuration,
-            glossary: glossary, extraInstruction: extraInstruction
+            glossary: glossary, extraInstruction: extraInstruction, multiSpeaker: multiSpeaker
         )
     }
 
@@ -755,7 +758,8 @@ final class CloudGeminiEngine: TranscriptionEngine {
         videoURL: URL,
         audioURL: URL,
         analysis: SpeechAnalysis,
-        keptRanges: [SampleRange]
+        keptRanges: [SampleRange],
+        multiSpeaker: Bool = false
     ) async -> NamingResult {
         // Chunk audio is always built at 1.0×. Enabling `TranscriptionTuning.enableSpeedUp` requires threading the
         // factor through AudioPreparation.buildChunkAudio AND the merge — a mismatch yields uniformly
@@ -823,7 +827,8 @@ final class CloudGeminiEngine: TranscriptionEngine {
             plans: plans, totalChunks: plans.count,
             sourceAsset: sourceAsset, sourceTrack: sourceTrack,
             originalDuration: analysis.totalDuration,
-            glossary: glossary, concurrency: tuning.maxConcurrent, scratchKey: scratchKey
+            glossary: glossary, concurrency: tuning.maxConcurrent, scratchKey: scratchKey,
+            multiSpeaker: multiSpeaker
         )
 
         // Wave 2 — targeted retry of ONLY the chunks that failed recoverably. This replaces
@@ -840,7 +845,8 @@ final class CloudGeminiEngine: TranscriptionEngine {
                 plans: retryable, totalChunks: plans.count,
                 sourceAsset: sourceAsset, sourceTrack: sourceTrack,
                 originalDuration: analysis.totalDuration,
-                glossary: glossary, concurrency: tuning.maxConcurrent, scratchKey: scratchKey
+                glossary: glossary, concurrency: tuning.maxConcurrent, scratchKey: scratchKey,
+                multiSpeaker: multiSpeaker
             )
             for (index, result) in retried {
                 // Keep the retry only if it actually improved on the first attempt.
@@ -868,7 +874,8 @@ final class CloudGeminiEngine: TranscriptionEngine {
             outcomes: &outcomes, plans: plans,
             sourceAsset: sourceAsset, sourceTrack: sourceTrack,
             originalDuration: analysis.totalDuration,
-            glossary: glossary, concurrency: tuning.maxConcurrent, scratchKey: scratchKey
+            glossary: glossary, concurrency: tuning.maxConcurrent, scratchKey: scratchKey,
+            multiSpeaker: multiSpeaker
         )
 
         var results = outcomes.values.sorted { $0.index < $1.index }
@@ -965,7 +972,8 @@ final class CloudGeminiEngine: TranscriptionEngine {
         originalDuration: Double,
         glossary: [String],
         concurrency: Int,
-        scratchKey: String
+        scratchKey: String,
+        multiSpeaker: Bool = false
     ) async {
         var weights: [String: Double] = [:]
         var languageByIndex: [Int: String] = [:]
@@ -1003,7 +1011,8 @@ final class CloudGeminiEngine: TranscriptionEngine {
             sourceAsset: sourceAsset, sourceTrack: sourceTrack,
             originalDuration: originalDuration,
             glossary: glossary, concurrency: concurrency, scratchKey: scratchKey,
-            extraInstruction: "\n\nIMPORTANT: transcribe EXACTLY the language actually spoken in this clip. NEVER translate or transliterate into another language."
+            extraInstruction: "\n\nIMPORTANT: transcribe EXACTLY the language actually spoken in this clip. NEVER translate or transliterate into another language.",
+            multiSpeaker: multiSpeaker
         )
 
         for (index, result) in retried {
@@ -1032,20 +1041,53 @@ final class CloudGeminiEngine: TranscriptionEngine {
         }
     }
 
-    func combinedPrompt() -> String {
+    /// Who Gemini is meant to write down.
+    ///
+    /// The narrator-only default is not a style choice: a screen recording usually has one
+    /// person talking over whatever the Mac is playing, and without this the model dutifully
+    /// transcribes the YouTube video in the background. Speaker separation flips it, because
+    /// a transcript with the far end of the call stripped out has nobody left to separate.
+    /// The exclusions stay either way - a podcast playing in the room is still not a
+    /// participant, however many people are.
+    static func speakerScopeRules(multiSpeaker: Bool) -> String {
+        if multiSpeaker {
+            return """
+        Transcribe EVERY clearly audible person taking part in this recording - the narrator and anyone they are talking to, including voices coming through the Mac's own audio on a call. Do NOT transcribe:
+        - Background voices from TV, radio, podcasts, or videos playing nearby
+        - Song lyrics or vocal music
+        - Distant, muffled voices that are not taking part in the conversation
+        - Side conversations from other people in the room
+        """
+        }
         return """
-        You receive an audio track and 3-10 screenshots from a screen recording. Produce a single JSON object with two fields: `srt` and `name`.
-
-        ### `srt` — SRT subtitles
-        Transcribe ONLY the primary, foreground speaker — the person actively narrating this screen recording. Do NOT transcribe:
+        Transcribe ONLY the primary, foreground speaker - the person actively narrating this screen recording. Do NOT transcribe:
         - Background voices from TV, radio, podcasts, or videos playing nearby
         - Song lyrics or vocal music
         - Distant, muffled, or overlapping voices that aren't the main speaker
         - Side conversations from other people in the room
+        """
+    }
+
+    /// The NO_SPEECH sentinel, phrased for whichever scope is in force. Under multi-speaker
+    /// the "no clear PRIMARY speaker" wording would quietly reinstate the narrator-only rule
+    /// on every quiet stretch, which is where the far end usually is.
+    static func noSpeechRule(multiSpeaker: Bool, unit: String) -> String {
+        if multiSpeaker {
+            return "If a span of audio has no clearly audible participant, skip it. If the entire \(unit) has none, set `srt` to exactly the string \"NO_SPEECH\"."
+        }
+        return "If a span of audio has no clear primary speaker, skip it. If the entire \(unit) has no clear primary speaker, set `srt` to exactly the string \"NO_SPEECH\"."
+    }
+
+    func combinedPrompt(multiSpeaker: Bool = false) -> String {
+        return """
+        You receive an audio track and 3-10 screenshots from a screen recording. Produce a single JSON object with two fields: `srt` and `name`.
+
+        ### `srt` — SRT subtitles
+        \(Self.speakerScopeRules(multiSpeaker: multiSpeaker))
 
         Transcribe VERBATIM in the language actually spoken. Do NOT translate, do NOT transliterate, do NOT summarize, do NOT add commentary. Ukrainian speech stays Ukrainian, Russian speech stays Russian — never convert one into the other, and never render Cyrillic-language speech in Latin script.
 
-        If a span of audio has no clear primary speaker, skip it. If the entire audio has no clear primary speaker, set `srt` to exactly the string "NO_SPEECH".
+        \(Self.noSpeechRule(multiSpeaker: multiSpeaker, unit: "audio"))
 
         CRITICAL FORMATTING REQUIREMENTS for the `srt` value:
         1. Each subtitle entry MUST be 1-2 sentences only. Maximum 10 seconds per entry.
@@ -1108,20 +1150,16 @@ final class CloudGeminiEngine: TranscriptionEngine {
     /// combined prompt verbatim; the `name` half moves to `namingService.namingPrompt`. The clip-relative
     /// timestamp rules are new and critical: the model is told it is part k of n, which is
     /// exactly the framing that can tempt it to emit whole-recording timestamps.
-    func chunkTranscriptionPrompt(part: Int, of total: Int, clipSeconds: Double, glossary: [String]) -> String {
+    func chunkTranscriptionPrompt(part: Int, of total: Int, clipSeconds: Double, glossary: [String], multiSpeaker: Bool = false) -> String {
         let d = String(format: "%.0f", clipSeconds)
         return """
         You receive ONE AUDIO CLIP taken from a longer screen recording (part \(part) of \(total)). Transcribe it as SRT subtitles.
 
-        Transcribe ONLY the primary, foreground speaker — the person actively narrating this screen recording. Do NOT transcribe:
-        - Background voices from TV, radio, podcasts, or videos playing nearby
-        - Song lyrics or vocal music
-        - Distant, muffled, or overlapping voices that aren't the main speaker
-        - Side conversations from other people in the room
+        \(Self.speakerScopeRules(multiSpeaker: multiSpeaker))
 
         Transcribe VERBATIM in the language actually spoken. Do NOT translate, do NOT transliterate, do NOT summarize, do NOT add commentary. The clip may begin or end mid-sentence — that is expected; transcribe what you hear and do not try to complete or explain it.
 
-        If a span of audio has no clear primary speaker, skip it. If the entire clip has no clear primary speaker, set `srt` to exactly the string "NO_SPEECH".
+        \(Self.noSpeechRule(multiSpeaker: multiSpeaker, unit: "clip"))
 
         CRITICAL FORMATTING REQUIREMENTS for the `srt` value:
         1. Each subtitle entry MUST be 1-2 sentences only. Maximum 10 seconds per entry.

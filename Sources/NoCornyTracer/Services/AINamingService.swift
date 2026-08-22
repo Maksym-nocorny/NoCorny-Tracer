@@ -73,7 +73,16 @@ final class AINamingService {
     /// rather than to discover the failure one expensive step in.
     var isReady: Bool { activeEngine != nil || namingService.isReady }
 
-    func generateSubtitlesAndName(for videoURL: URL) async -> NamingResult {
+    /// - Parameters:
+    ///   - systemAudioURL: the recording's `-system.m4a` sidecar, when it has one. Only read
+    ///     when `diarize` is on, and only as an input to speaker separation.
+    ///   - diarize: label cues with who said them. Off unless the user asked for it AND their
+    ///     plan includes it; the caller owns both halves of that decision.
+    func generateSubtitlesAndName(
+        for videoURL: URL,
+        systemAudioURL: URL? = nil,
+        diarize: Bool = false
+    ) async -> NamingResult {
         guard let engine = activeEngine else {
             LogManager.shared.log("🎛️ Engine: no engine is ready — sign in, or download the on-device model", type: .error)
             return NamingResult(
@@ -83,7 +92,10 @@ final class AINamingService {
             )
         }
 
-        var result = await engine.transcribe(videoURL: videoURL)
+        // A multi-speaker transcript is one the engine had to be asked for: the cloud prompts
+        // otherwise throw away everyone but the narrator, which would leave separation with a
+        // transcript that has nobody to separate.
+        var result = await engine.transcribe(videoURL: videoURL, multiSpeaker: diarize)
 
         // An engine an admin has switched off server-side has said nothing about the
         // recording, so it is worth asking someone else instead of returning nothing.
@@ -92,7 +104,7 @@ final class AINamingService {
         if result.srt == nil, result.errorCode == "engine_disabled",
            let alternative = readyEngines.first(where: { $0.kind != engine.kind }) {
             LogManager.shared.log("🎛️ Engine: \(engine.kind.rawValue) is switched off server-side, falling back to \(alternative.kind.rawValue)")
-            result = await alternative.transcribe(videoURL: videoURL)
+            result = await alternative.transcribe(videoURL: videoURL, multiSpeaker: diarize)
         }
 
         // Only Gemini's single-call path names a recording while transcribing it. Every
@@ -124,6 +136,13 @@ final class AINamingService {
             }
         }
 
+        // Last, and only ever additive. Naming goes first so the title is written from what
+        // people said rather than from "[Speaker 1] " prefixes, and separation cannot delay a
+        // title that costs one call while it spends minutes on Core ML.
+        if diarize, let srt = result.srt, !srt.isEmpty {
+            result.srt = await labelSpeakers(in: srt, videoURL: videoURL, systemAudioURL: systemAudioURL)
+        }
+
         return NamingResult(
             srt: result.srt,
             name: result.name,
@@ -137,5 +156,30 @@ final class AINamingService {
             totalChunks: result.totalChunks,
             failedChunks: result.failedChunks
         )
+    }
+
+    /// Runs speaker separation over a finished transcript and re-serializes it. Returns the
+    /// transcript it was given whenever that produces nothing better, which is every failure
+    /// mode separation has.
+    private func labelSpeakers(in srt: String, videoURL: URL, systemAudioURL: URL?) async -> String {
+        let cues = SrtCodec.parseAndRepairSrt(srt)
+        guard !cues.isEmpty else { return srt }
+
+        // Spelled out rather than chained: a `try? await ….load(…).seconds` one-liner is the
+        // shape that has crashed the 6.3.3 type-checker elsewhere in this pipeline.
+        var duration: Double = 0
+        if let assetDuration = try? await AVURLAsset(url: videoURL).load(.duration) {
+            let seconds = assetDuration.seconds
+            if seconds.isFinite, seconds > 0 { duration = seconds }
+        }
+
+        let labelled = await SpeakerSeparation.label(
+            cues: cues,
+            videoURL: videoURL,
+            systemAudioURL: systemAudioURL,
+            recordingDuration: duration
+        )
+        guard labelled.contains(where: { $0.speaker != nil }) else { return srt }
+        return SrtCodec.serializeSrt(labelled) ?? srt
     }
 }

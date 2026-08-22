@@ -154,6 +154,21 @@ struct SrtSegment {
     let start: Double
     let end: Double
     let text: String
+    /// Who said it, once speaker separation has run. nil is the normal state and means
+    /// "unlabelled": diarization is off by default, and a run that fails or overruns its
+    /// deadline leaves every cue like this rather than costing us the transcript.
+    var speaker: String? = nil
+}
+
+/// One speaker-labelled span of audio from on-device diarization.
+///
+/// `speakerId` is stable for the whole file it was diarized from, so the same voice keeps
+/// the same id from the first minute to the last. It is NOT a display label: the numbering
+/// the transcript shows is decided later, once we know whether the user occupies Speaker 1.
+struct DiarizedSpan: Sendable {
+    let speakerId: String
+    let startMs: Int64
+    let endMs: Int64
 }
 
 

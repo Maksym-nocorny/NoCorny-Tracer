@@ -19,6 +19,12 @@ let package = Package(
         // same API surface we use (WhisperKit.download, ModelUtilities.loadTokenizer,
         // DecodingOptions.chunkingStrategy) plus the SpeakerKit diarization library.
         .package(url: "https://github.com/argmaxinc/WhisperKit.git", exact: "0.18.0"),
+        // Speaker diarization (segmentation + embeddings, CoreML). PINNED EXACT:
+        // 0.15.x introduces a binaryTarget plus a resource bundle, neither of which
+        // scripts/build_dmg.sh knows how to copy into the .app, so the DMG would ship
+        // an app that crashes on first diarization. 0.14.5 is a plain Swift+C target
+        // set with no external dependencies and no bundle.
+        .package(url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.14.5"),
     ],
     targets: [
         .executableTarget(
@@ -26,6 +32,7 @@ let package = Package(
             dependencies: [
                 .product(name: "Sparkle", package: "Sparkle"),
                 .product(name: "WhisperKit", package: "WhisperKit"),
+                .product(name: "FluidAudio", package: "FluidAudio"),
             ],
             path: "Sources/NoCornyTracer",
             exclude: ["NoCornyTracer.entitlements", "Secrets.swift.template", "Info.plist"],

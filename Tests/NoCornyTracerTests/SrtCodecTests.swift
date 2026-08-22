@@ -158,6 +158,38 @@ final class SrtCodecTests: XCTestCase {
         }
     }
 
+    // MARK: speaker labels
+
+    /// The `[Name] ` prefix is a contract with the web player's
+    /// `/^\[([^\]]{1,40})\]\s+/`. Written only for cues that actually have a speaker: an
+    /// unlabelled transcript must serialize byte-for-byte as it did before diarization existed.
+    func testSpeakerPrefixOnlyWhenLabelled() {
+        let srt = SrtCodec.serializeSrt([
+            SrtSegment(start: 0, end: 1.5, text: "Hello there", speaker: "Speaker 1"),
+            SrtSegment(start: 1.5, end: 3, text: "No label here"),
+        ])
+        XCTAssertNotNil(srt)
+        XCTAssertTrue(srt!.contains("[Speaker 1] Hello there"))
+        XCTAssertTrue(srt!.contains("\nNo label here"))
+        XCTAssertFalse(srt!.contains("[] No label here"))
+    }
+
+    /// The web strips the prefix, we do not: a round trip through our own parser has to leave
+    /// it sitting in the cue text, or re-serializing a labelled transcript would lose the
+    /// speakers on the way through.
+    func testSpeakerPrefixSurvivesRoundTrip() {
+        let srt = SrtCodec.serializeSrt([
+            SrtSegment(start: 0, end: 2, text: "First line", speaker: "Speaker 1"),
+            SrtSegment(start: 2, end: 4, text: "Second line", speaker: "Speaker 2"),
+        ])
+        let segs = SrtCodec.parseAndRepairSrt(srt ?? "")
+        XCTAssertEqual(segs.count, 2)
+        XCTAssertEqual(segs[0].text, "[Speaker 1] First line")
+        XCTAssertEqual(segs[1].text, "[Speaker 2] Second line")
+        XCTAssertNil(segs[0].speaker, "parsing does not restore the field, the prefix IS the record")
+        XCTAssertEqual(SrtCodec.serializeSrt(segs), srt)
+    }
+
     // MARK: dedupe helper
 
     func testNormalizedForDedupeIgnoresCaseAndPunctuation() {
