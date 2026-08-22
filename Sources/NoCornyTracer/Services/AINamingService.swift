@@ -83,7 +83,10 @@ final class AINamingService {
         // transcript and they dominate its cost; with a real transcript in hand the text
         // carries the meaning, and this keeps the one call a free-tier recording still
         // makes down to a rounding error.
-        if result.name == nil, let srt = result.srt, !srt.isEmpty, namingService.isReady {
+        // On-device naming needs no account, so a signed-out user transcribing locally can
+        // still get a real title rather than a timestamp.
+        let canName = namingService.isReady || OnDeviceNaming.isAvailable
+        if result.name == nil, let srt = result.srt, !srt.isEmpty, canName {
             let transcript = namingService.namingTranscriptText(SrtCodec.parseAndRepairSrt(srt))
             if !transcript.isEmpty {
                 let call = await namingService.generateNameFromTranscript(

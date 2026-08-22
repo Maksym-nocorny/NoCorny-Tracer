@@ -86,6 +86,18 @@ final class NamingService {
     ) async -> NamingCallResult {
         var result = NamingCallResult()
 
+        // Ask this Mac first. On macOS 26 with Apple Intelligence on, the model is already
+        // installed and costs nothing to run, so the cloud call is worth avoiding when the
+        // transcript alone is enough to name the recording. Anything less than a usable
+        // title -- older macOS, Apple Intelligence off, a refusal, a paragraph instead of a
+        // title -- falls through to Gemini below rather than degrading what the user gets.
+        if let onDevice = await OnDeviceNaming.title(fromTranscript: transcript) {
+            result.name = cleanupName(onDevice) ?? onDevice
+            result.model = "apple-on-device"
+            result.attempts = 1
+            return result
+        }
+
         let schema: [String: Any] = [
             "type": "object",
             "properties": ["name": ["type": "string"]],
