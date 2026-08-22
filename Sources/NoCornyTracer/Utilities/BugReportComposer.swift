@@ -123,6 +123,10 @@ enum BugReportComposer {
         options: [.caseInsensitive]
     )
 
+    /// Exposed for tests: the report is the last place these lines can be stopped, so the
+    /// assertion belongs on this function rather than on something further upstream.
+    static func redactForTests(_ line: String) -> String { redact(line) }
+
     private static func redact(_ line: String) -> String {
         var result = LogManager.shared.sanitize(line)
         if let transcriptPreviewPattern {
