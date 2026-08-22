@@ -90,10 +90,25 @@ enum OnDeviceNaming {
             }
             LogManager.shared.log("🍎 Naming: ✅ on-device title in \(elapsed)ms")
             return cleaned
+        } catch let error as LanguageModelSession.GenerationError {
+            // Worth telling apart in a bug report. The common one by far is language:
+            // Apple Intelligence covers a fixed list that does not include Ukrainian or
+            // Russian, so for a Ukrainian or Russian recording this path will always
+            // decline and the cloud will always name it. That is working as intended, not
+            // a fault, and the log should not read like one.
+            switch error {
+            case .unsupportedLanguageOrLocale:
+                LogManager.shared.log("🍎 Naming: on-device does not support this language - naming in the cloud")
+            case .guardrailViolation:
+                LogManager.shared.log("🍎 Naming: on-device declined the transcript - naming in the cloud")
+            case .exceededContextWindowSize:
+                LogManager.shared.log("🍎 Naming: transcript too long for the on-device model - naming in the cloud")
+            default:
+                LogManager.shared.log("🍎 Naming: on-device failed (\(error)) - naming in the cloud")
+            }
+            return nil
         } catch {
-            // Guardrails, context overflow, an unloadable model -- all of it means the same
-            // thing here, and none of it should cost the user a title.
-            LogManager.shared.log("🍎 Naming: on-device failed (\(error)) - falling back to the cloud")
+            LogManager.shared.log("🍎 Naming: on-device failed (\(error)) - naming in the cloud")
             return nil
         }
         #else
