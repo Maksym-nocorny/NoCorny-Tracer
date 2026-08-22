@@ -4,44 +4,12 @@ import AppKit
 import CoreMedia
 import ImageIO
 
-/// Result of a naming + subtitles run, including accumulated cost-tracking metadata.
-struct NamingResult {
-    var srt: String?
-    var name: String?
-    var usage: GeminiUsage
-    var model: String
-    var latencyMs: Int
-    var attempts: Int
-    var success: Bool
-    var errorCode: String?
-    /// True when retrying the whole run cannot help: the failure was deterministic (oversized
-    /// payload, not signed in, bad request), or the chunked path already ran its own internal
-    /// retry wave. The caller uses this to skip its outer second pass instead of burning a
-    /// full re-run — for an hour-long recording that re-run means re-encoding every chunk.
-    var fatal: Bool = false
-    /// Chunk accounting for the chunked path (1/0 for the single-call path). Surfaced so a
-    /// partial transcript is visible in telemetry rather than silently shipping as complete.
-    var totalChunks: Int = 1
-    var failedChunks: Int = 0
-}
 
 /// Uses Google Gemini (via Cloudflare proxy) to generate descriptive names + subtitles for screen recordings.
 final class AINamingService {
 
     // MARK: - Feature Flags
 
-    /// Trim long silences before sending audio to Gemini. Phase A — enabled.
-    static let enableTrimSilence: Bool = true
-    /// Apply 1.25× speedup to trimmed audio. Phase B — disabled until validated on real ukr/rus recordings.
-    static let enableSpeedUp: Bool = false
-    static let speedUpFactor: Double = 1.25
-
-    /// Audio chunks at or below this RMS in dBFS are silence for trim purposes.
-    static let trimSilenceThresholdDBFS: Float = -45
-    /// Hard cutoff for skip-if-silent: only fire when the file is essentially mute.
-    static let skipSilenceThresholdDBFS: Float = -50
-    /// If ≥95% of the audio is below skipSilenceThresholdDBFS, skip transcription entirely.
-    static let skipSilenceCoverage: Float = 0.95
 
     /// Budget for the base64-ENCODED inline media (audio + frames) in one Gemini request.
     ///
@@ -56,20 +24,6 @@ final class AINamingService {
     /// body is the real guard, this one is the pre-emptive budget used to degrade gracefully.
     static let maxInlineMediaBytes = 3_800_000
 
-    /// Audio longer than this goes down the chunked path instead of one combined call.
-    /// Derived from the real per-call ceilings — the 4.5 MB body limit (~12 min of 32 kbps
-    /// audio once base64-encoded) and the 120s client timeout (~20 min at the observed
-    /// ~5.4s of processing per minute of audio) — with generous margin. Smaller chunks also
-    /// buy better timestamp accuracy, cheaper retries and finer sparse-SRT granularity.
-    static let singleCallMaxAudioSeconds: Double = 300
-
-    /// Hard ceiling on the audio in ANY single chunk, whatever else the planner wants.
-    ///
-    /// At 32 kbps, 600s of audio is ~3.2 MB once base64-encoded — comfortably inside
-    /// `maxInlineMediaBytes` with room for the prompt — and ~54s of processing at the observed
-    /// ~5.4s per minute, well under both the 120s client timeout and the 300s server limit.
-    /// Nothing may raise a chunk past this, including the `maxChunks` runaway guard.
-    static let absoluteMaxChunkSeconds: Double = 600
 
     // MARK: - Configuration
 
@@ -114,7 +68,7 @@ final class AINamingService {
         var observedModel = "gemini-2.5-flash-lite"
 
         // Step 1: extract a tiny m4a (32 kbps mono 16 kHz). Independent of original audio quality.
-        guard let audioURL = await extractCompressedAudio(from: videoURL) else {
+        guard let audioURL = await AudioPreparation.extractCompressedAudio(from: videoURL) else {
             LogManager.shared.log("🤖 Combined: ❌ Failed to extract audio — falling back to image-only naming", type: .error)
             let fb = await generateNameImageOnly(for: videoURL)
             return NamingResult(
@@ -128,7 +82,7 @@ final class AINamingService {
         defer { try? FileManager.default.removeItem(at: audioURL) }
 
         // Step 2: VAD pre-check.
-        let analysis = await analyzeSpeech(audioURL: audioURL)
+        let analysis = await AudioPreparation.analyzeSpeech(audioURL: audioURL)
         LogManager.shared.log("🤖 Combined: VAD — duration=\(String(format: "%.1f", analysis.totalDuration))s, speech=\(String(format: "%.1f", analysis.totalSpeechDuration))s, segments=\(analysis.segments.count), silenceCoverage=\(String(format: "%.2f", analysis.silenceCoverage))")
 
         if analysis.shouldSkipTranscription {
@@ -151,15 +105,15 @@ final class AINamingService {
         // original, well-tested single-call path unchanged.
         //
         // The threshold is measured against the audio we would actually SEND, not wall-clock
-        // duration — `chunkKeptRanges` applies the same trim decision the single-call path
+        // duration — `ChunkPlanner.chunkKeptRanges` applies the same trim decision the single-call path
         // makes below, so a mostly-silent 10-minute recording with 2 minutes of speech stays
         // on the cheaper single-call path instead of paying for a separate naming call.
         let totalSamples = Int(analysis.totalDuration * 16000)
-        let keptRanges = chunkKeptRanges(analysis: analysis, totalSamples: totalSamples)
+        let keptRanges = ChunkPlanner.chunkKeptRanges(analysis: analysis, totalSamples: totalSamples)
         let audioSecondsToSend = Double(keptRanges.reduce(0) { $0 + $1.length }) / 16000.0
-        if audioSecondsToSend > Self.effectiveSingleCallThresholdSeconds {
+        if audioSecondsToSend > ChunkPlanner.effectiveSingleCallThresholdSeconds {
             LogManager.shared.log(
-                "🤖 Combined: \(String(format: "%.0f", audioSecondsToSend))s of audio to send exceeds the \(String(format: "%.0f", Self.effectiveSingleCallThresholdSeconds))s single-call threshold — using the chunked path"
+                "🤖 Combined: \(String(format: "%.0f", audioSecondsToSend))s of audio to send exceeds the \(String(format: "%.0f", ChunkPlanner.effectiveSingleCallThresholdSeconds))s single-call threshold — using the chunked path"
             )
             return await generateChunked(
                 videoURL: videoURL, audioURL: audioURL,
@@ -174,19 +128,19 @@ final class AINamingService {
         var stitchedURL: URL? = nil
         var spedUpURL: URL? = nil
 
-        if Self.enableTrimSilence {
-            if let stitched = await stitchSpeechAudio(audioURL: audioURL, segments: analysis.segments, originalDuration: analysis.totalDuration) {
+        if TranscriptionTuning.enableTrimSilence {
+            if let stitched = await AudioPreparation.stitchSpeechAudio(audioURL: audioURL, segments: analysis.segments, originalDuration: analysis.totalDuration) {
                 stitchedURL = stitched.url
                 mapping = stitched.mapping
                 audioForGemini = stitched.url
                 LogManager.shared.log("🤖 Combined: Trimmed audio — \(stitched.mapping.count) segments, stitched=\(String(format: "%.1f", Double(stitched.mapping.last?.stitchedEndSamples ?? 0) / 16000.0))s")
 
-                if Self.enableSpeedUp,
-                   let sped = await applySpeedUp(audioURL: stitched.url, factor: Self.speedUpFactor) {
+                if TranscriptionTuning.enableSpeedUp,
+                   let sped = await AudioPreparation.applySpeedUp(audioURL: stitched.url, factor: TranscriptionTuning.speedUpFactor) {
                     spedUpURL = sped
                     audioForGemini = sped
-                    speedupFactor = Self.speedUpFactor
-                    LogManager.shared.log("🤖 Combined: Applied \(Self.speedUpFactor)× speedup")
+                    speedupFactor = TranscriptionTuning.speedUpFactor
+                    LogManager.shared.log("🤖 Combined: Applied \(TranscriptionTuning.speedUpFactor)× speedup")
                 }
             } else {
                 LogManager.shared.log("🤖 Combined: Trim skipped — using original audio")
@@ -207,7 +161,7 @@ final class AINamingService {
         LogManager.shared.log("🤖 Combined: Audio for Gemini: \(sizeKB)KB (mapping segments: \(mapping.count), speedup: \(speedupFactor)×)")
 
         // Step 5: extract frames (no transcript yet — equispaced).
-        var frames = await extractFrames(from: videoURL)
+        var frames = await FramePreparation.extractFrames(from: videoURL)
         if frames.isEmpty {
             LogManager.shared.log("🤖 Combined: ⚠️ No frames extracted — proceeding with audio only", type: .error)
         } else {
@@ -218,19 +172,19 @@ final class AINamingService {
         // serialized-body check in GeminiProxyClient; this pre-emptive budget exists so we can
         // degrade gracefully instead of hitting it. Frames shrink first — on a long recording
         // the transcript is the valuable half, so audio is the last thing we give up.
-        let audioBase64Bytes = base64Size(audioData.count)
+        let audioBase64Bytes = FramePreparation.base64Size(audioData.count)
         let framesBudget = Self.maxInlineMediaBytes - audioBase64Bytes
-        LogManager.shared.log("🤖 Combined: Payload budget — audio b64=\(audioBase64Bytes / 1024)KB, frames b64=\(encodedSize(frames) / 1024)KB, budget=\(Self.maxInlineMediaBytes / 1024)KB")
+        LogManager.shared.log("🤖 Combined: Payload budget — audio b64=\(audioBase64Bytes / 1024)KB, frames b64=\(FramePreparation.encodedSize(frames) / 1024)KB, budget=\(Self.maxInlineMediaBytes / 1024)KB")
 
         if framesBudget <= 0 {
             // Audio alone blows the budget, so there is nothing left to shrink. Reaching this
-            // on the single-call path means the audio was under `singleCallMaxAudioSeconds`
+            // on the single-call path means the audio was under `ChunkPlanner.singleCallMaxAudioSeconds`
             // yet still too big — unusual, but bail to image-only rather than send a doomed request.
             LogManager.shared.log("🤖 Combined: ❌ Audio alone (\(audioBase64Bytes / 1024)KB b64) exceeds the media budget — falling back to image-only naming", type: .error)
             let fb = await generateNameImageOnly(for: videoURL)
             return NamingResult(srt: nil, name: fb.name, usage: fb.usage, model: fb.model, latencyMs: fb.latencyMs, attempts: fb.attempts, success: fb.name != nil, errorCode: fb.errorCode ?? "audio_too_large")
         }
-        frames = fitFramesToBudget(frames, budget: framesBudget)
+        frames = FramePreparation.fitFramesToBudget(frames, budget: framesBudget)
 
         // Step 6: combined Gemini call.
         let prompt = combinedPrompt()
@@ -261,7 +215,7 @@ final class AINamingService {
         // Best acceptable result seen so far. A later retry that throws (network drop,
         // proxy error) must NOT discard a perfectly good earlier attempt — we fall back to
         // this instead of returning nil. The latest acceptable attempt overwrites the
-        // previous one. restoreSrtTimestamps is computed once at store time and reused.
+        // previous one. SrtCodec.restoreSrtTimestamps is computed once at store time and reused.
         var bestName: String? = nil
         var bestRestoredSrt: String? = nil
         var haveAcceptable = false
@@ -304,7 +258,7 @@ final class AINamingService {
 
                 // Restore the SRT timestamps once for this attempt so it can be stored as the
                 // best result (and reused at the success return) without recomputing.
-                let restoredSrt = restoreSrtTimestamps(parsed.srt, mapping: mapping, speedupFactor: speedupFactor, originalDuration: analysis.totalDuration)
+                let restoredSrt = SrtCodec.restoreSrtTimestamps(parsed.srt, mapping: mapping, speedupFactor: speedupFactor, originalDuration: analysis.totalDuration)
 
                 // Keep this attempt as the best acceptable result if it carries a usable name
                 // or a real (non-NO_SPEECH) SRT. Overwrite so the latest acceptable wins. This
@@ -322,7 +276,7 @@ final class AINamingService {
                 // We only flag as sparse when speech was detected (analysis.totalSpeechDuration)
                 // so a genuinely silent recording with NO_SPEECH won't loop.
                 let isExplicitNoSpeech = parsed.srt.uppercased().contains("NO_SPEECH")
-                let lastEndSec = lastSrtEndSeconds(parsed.srt) ?? 0
+                let lastEndSec = SrtCodec.lastSrtEndSeconds(parsed.srt) ?? 0
                 let speechSec = analysis.totalSpeechDuration
                 let coverageRatio = speechSec > 0 ? lastEndSec / speechSec : 1.0
                 let sparseEnoughToRetry =
@@ -416,294 +370,6 @@ final class AINamingService {
 
     // MARK: - Chunked Transcription (long recordings)
 
-    /// Internal (not private) so `planChunks` — a pure, deterministic function that is the
-    /// single most test-worthy piece of the chunked path — stays reachable from tests.
-    struct SampleRange {
-        var start: Int
-        var end: Int
-        var length: Int { end - start }
-    }
-
-    struct PlannedChunk {
-        let index: Int
-        let ranges: [SampleRange]
-        var speechSamples: Int { ranges.reduce(0) { $0 + $1.length } }
-        var speechSeconds: Double { Double(speechSamples) / 16000.0 }
-    }
-
-    private struct ChunkTuning {
-        let targetSamples: Int
-        let maxSamples: Int
-        let minSliverSamples: Int
-        let overlapSamples: Int
-        let maxChunks: Int
-        let maxConcurrent: Int
-
-        static var current: ChunkTuning {
-            let target = effectiveChunkTargetSeconds
-            return ChunkTuning(
-                targetSamples: Int(target * 16000),
-                maxSamples: Int(target * 1.4 * 16000),
-                minSliverSamples: Int(min(20, target * 0.1) * 16000),
-                overlapSamples: Int(1.5 * 16000),
-                maxChunks: 60,
-                // Three concurrent calls keeps an hour-long recording at ~4 waves while
-                // limiting exposure to Gemini's 503 "high demand" responses, which we see
-                // in production. More parallelism buys little and multiplies that risk.
-                maxConcurrent: 3
-            )
-        }
-    }
-
-    /// Debug override lets a 3-minute recording exercise the full chunked path in ~60s
-    /// instead of needing a real hour-long asset.
-    static var effectiveChunkTargetSeconds: Double {
-        let override = UserDefaults.standard.double(forKey: "NCTChunkTargetSecondsOverride")
-        return override > 0 ? override : singleCallMaxAudioSeconds
-    }
-
-    static var effectiveSingleCallThresholdSeconds: Double {
-        let override = UserDefaults.standard.double(forKey: "NCTChunkTargetSecondsOverride")
-        return override > 0 ? override * 0.67 : singleCallMaxAudioSeconds
-    }
-
-    /// Splits speech ranges into chunks, preferring cuts at VAD pauses.
-    ///
-    /// Cutting at a range boundary is always safe: `analyzeSpeech` pads every segment with
-    /// 200ms of silence on both sides and merges gaps under 800ms, so at least 400ms of real
-    /// silence separates adjacent ranges. A chunk therefore ends in silence and the next
-    /// begins in silence — no overlap needed. Overlap is introduced ONLY when a single range
-    /// is longer than one chunk and must be cut mid-speech.
-    ///
-    /// Pure and deterministic so it can be unit-tested without any AV or network work.
-    func planChunks(
-        keptRanges: [SampleRange],
-        targetSamples: Int,
-        maxSamples: Int,
-        minSliverSamples: Int,
-        overlapSamples: Int,
-        maxChunks: Int
-    ) -> [PlannedChunk] {
-        var queue = keptRanges.filter { $0.length > 0 }
-        guard !queue.isEmpty, targetSamples > 0, maxSamples > 0 else { return [] }
-
-        let total = queue.reduce(0) { $0 + $1.length }
-
-        // Cap the chunk count by RAISING the target, never by dropping the tail — but the
-        // payload ceiling wins over the chunk-count cap. `maxChunks` is a runaway guard, not a
-        // product limit: exceeding it costs extra requests, whereas exceeding the request-body
-        // limit costs the whole transcript (a 413 the server never even sees). An 8-hour
-        // recording would otherwise be pushed to ~11-minute chunks that sit right against the
-        // budget, so clamp hard and let the chunk count grow instead.
-        let hardMaxSamples = Int(Self.absoluteMaxChunkSeconds * 16000)
-        var target = min(targetSamples, hardMaxSamples)
-        var maxPer = min(maxSamples, hardMaxSamples)
-        if maxChunks > 0 {
-            let projected = Int(ceil(Double(total) / Double(target)))
-            if projected > maxChunks {
-                target = min(hardMaxSamples, Int(ceil(Double(total) / Double(maxChunks))))
-                maxPer = min(hardMaxSamples, max(maxPer, Int(Double(target) * 1.4)))
-                let stillProjected = Int(ceil(Double(total) / Double(target)))
-                if stillProjected > maxChunks {
-                    LogManager.shared.log(
-                        "🤖 Chunks: ⚠️ \(total / 16000)s of speech needs \(stillProjected) chunks, over the \(maxChunks) cap — proceeding anyway; the payload ceiling (\(Int(Self.absoluteMaxChunkSeconds))s/chunk) takes precedence over the cap",
-                        type: .error
-                    )
-                } else {
-                    LogManager.shared.log(
-                        "🤖 Chunks: ⚠️ \(projected) chunks would exceed the \(maxChunks) cap — raising target to \(target / 16000)s/chunk",
-                        type: .error
-                    )
-                }
-            }
-        }
-        guard target > 0, maxPer > 0 else { return [] }
-
-        var chunks: [PlannedChunk] = []
-        var current: [SampleRange] = []
-        var acc = 0
-        var remaining = total
-
-        // Recomputed after every cut so overlap re-queues don't let the target drift.
-        func evenTarget() -> Int {
-            guard remaining > 0 else { return target }
-            let n = max(1, Int(ceil(Double(remaining) / Double(target))))
-            return max(1, Int(ceil(Double(remaining) / Double(n))))
-        }
-
-        func closeChunk() {
-            guard !current.isEmpty else { return }
-            chunks.append(PlannedChunk(index: chunks.count, ranges: current))
-            remaining -= acc
-            current = []
-            acc = 0
-        }
-
-        var i = 0
-        while i < queue.count {
-            let r = queue[i]
-            if r.length <= 0 { i += 1; continue }
-
-            if acc + r.length <= maxPer {
-                current.append(r)
-                acc += r.length
-                i += 1
-                if acc >= evenTarget() { closeChunk() }
-                continue
-            }
-
-            let capacity = maxPer - acc
-            // Not enough room left for a worthwhile slice — close and retry in a fresh chunk.
-            // Guarded on acc > 0 so a fresh chunk always makes progress (no infinite loop).
-            if acc > 0 && capacity < minSliverSamples {
-                closeChunk()
-                continue
-            }
-
-            // Forced mid-speech cut: the only place overlap is introduced.
-            let cut = r.start + capacity
-            current.append(SampleRange(start: r.start, end: cut))
-            acc += capacity
-            closeChunk()
-            queue[i] = SampleRange(start: max(r.start, cut - overlapSamples), end: r.end)
-        }
-        closeChunk()
-
-        return chunks
-    }
-
-    /// Chooses which sample ranges the chunked path transcribes, preserving today's trim
-    /// semantics exactly: VAD speech segments when trimming would apply, otherwise the whole
-    /// timeline. Note the >0.95 bail means a continuously-narrated recording — the profile of
-    /// both production failures — takes the whole-timeline branch.
-    private func chunkKeptRanges(analysis: SpeechAnalysis, totalSamples: Int) -> [SampleRange] {
-        let speechSeconds = analysis.totalSpeechDuration
-        let fraction = analysis.totalDuration > 0 ? speechSeconds / analysis.totalDuration : 1.0
-
-        if Self.enableTrimSilence, !analysis.segments.isEmpty,
-           fraction <= 0.95, fraction >= 0.05, speechSeconds >= 5.0 {
-            return analysis.segments.map { SampleRange(start: $0.startSamples, end: $0.endSamples) }
-        }
-        return wholeTimelineRanges(segments: analysis.segments, totalSamples: totalSamples)
-    }
-
-    /// Covers the whole timeline with contiguous ranges whose boundaries sit in the middle of
-    /// each silence gap. `planChunks` only cuts at range boundaries, so this hands it natural
-    /// pause positions to prefer WITHOUT dropping any audio — the union is still [0, total].
-    private func wholeTimelineRanges(segments: [SpeechSegment], totalSamples: Int) -> [SampleRange] {
-        guard totalSamples > 0 else { return [] }
-        guard segments.count > 1 else { return [SampleRange(start: 0, end: totalSamples)] }
-
-        var ranges: [SampleRange] = []
-        var cursor = 0
-        for i in 0..<(segments.count - 1) {
-            let gapStart = segments[i].endSamples
-            let gapEnd = segments[i + 1].startSamples
-            guard gapEnd > gapStart else { continue }
-            let boundary = min(totalSamples, (gapStart + gapEnd) / 2)
-            if boundary > cursor {
-                ranges.append(SampleRange(start: cursor, end: boundary))
-                cursor = boundary
-            }
-        }
-        if cursor < totalSamples {
-            ranges.append(SampleRange(start: cursor, end: totalSamples))
-        }
-        return ranges
-    }
-
-    private struct AudioChunk {
-        let index: Int
-        let url: URL
-        /// Chunk-LOCAL mapping: `stitchedStart` begins at 0, so `mapSegments` lands cues
-        /// directly on the original timeline with no offset arithmetic anywhere.
-        let mapping: [TimestampMapping]
-        let localDuration: Double
-        let speechSeconds: Double
-        /// Always 1.0 today. Carried explicitly rather than hardcoded at the merge so that
-        /// enabling `enableSpeedUp` later cannot silently desync timestamps — a factor
-        /// mismatch produces uniformly compressed, in-bounds cues that no bounds check catches.
-        let speedupFactor: Double
-    }
-
-    /// Builds one chunk's audio as a composition over the original extracted track, encoded
-    /// with the same 32 kbps/16 kHz/mono settings as the full-file path.
-    private func buildChunkAudio(sourceAsset: AVAsset, sourceTrack: AVAssetTrack, plan: PlannedChunk) async -> AudioChunk? {
-        let composition = AVMutableComposition()
-        guard let track = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else {
-            LogManager.shared.log("🤖 Chunk \(plan.index): ❌ Could not add composition track", type: .error)
-            return nil
-        }
-
-        // Integer sample counts at a 16 kHz timescale — exact, no float drift.
-        let timeScale: CMTimeScale = 16000
-        var mapping: [TimestampMapping] = []
-        var local = 0
-
-        for r in plan.ranges {
-            guard r.length > 0 else { continue }
-            do {
-                try track.insertTimeRange(
-                    CMTimeRange(
-                        start: CMTime(value: CMTimeValue(r.start), timescale: timeScale),
-                        duration: CMTime(value: CMTimeValue(r.length), timescale: timeScale)
-                    ),
-                    of: sourceTrack,
-                    at: CMTime(value: CMTimeValue(local), timescale: timeScale)
-                )
-            } catch {
-                LogManager.shared.log("🤖 Chunk \(plan.index): ❌ insertTimeRange failed: \(error.localizedDescription)", type: .error)
-                return nil
-            }
-            mapping.append(TimestampMapping(
-                stitchedStartSamples: local,
-                stitchedEndSamples: local + r.length,
-                originalStartSamples: r.start
-            ))
-            local += r.length
-        }
-
-        guard local > 0 else { return nil }
-
-        let compositionTracks: [AVAssetTrack]
-        do {
-            compositionTracks = try await composition.loadTracks(withMediaType: .audio)
-        } catch {
-            LogManager.shared.log("🤖 Chunk \(plan.index): ❌ loadTracks failed: \(error.localizedDescription)", type: .error)
-            return nil
-        }
-        guard let compTrack = compositionTracks.first,
-              let url = await encodeSpeechAudio(from: composition, sourceTrack: compTrack) else {
-            LogManager.shared.log("🤖 Chunk \(plan.index): ❌ Encode failed", type: .error)
-            return nil
-        }
-
-        return AudioChunk(
-            index: plan.index,
-            url: url,
-            mapping: mapping,
-            localDuration: Double(local) / 16000.0,
-            speechSeconds: plan.speechSeconds,
-            speedupFactor: 1.0
-        )
-    }
-
-    private struct ChunkResult {
-        enum Status { case transcribed, noSpeech, failed }
-        let index: Int
-        var status: Status
-        /// Segments already mapped onto the ORIGINAL recording timeline.
-        var segments: [SrtSegment] = []
-        /// Plain cue text, used for per-chunk language detection.
-        var text: String = ""
-        var usage = GeminiUsage.zero
-        var latencyMs = 0
-        var attempts = 0
-        var model: String? = nil
-        var errorCode: String? = nil
-        /// Failure that retrying cannot fix — excluded from the targeted retry wave.
-        var fatal = false
-    }
 
     /// Exponential backoff with jitter. Concurrent chunks that all catch a Gemini 503 would
     /// otherwise retry in lockstep and hit it again at exactly the same instant.
@@ -792,7 +458,7 @@ final class AINamingService {
                     return result
                 }
 
-                let localSegments = parseAndRepairSrt(rawSrt)
+                let localSegments = SrtCodec.parseAndRepairSrt(rawSrt)
                 guard !localSegments.isEmpty else {
                     result.errorCode = "chunk_unparseable_srt"
                     if attempt < maxAttempts {
@@ -846,7 +512,7 @@ final class AINamingService {
                     continue
                 }
 
-                let (mapped, oob) = mapSegments(
+                let (mapped, oob) = SrtCodec.mapSegments(
                     clamped, mapping: chunk.mapping,
                     speedupFactor: chunk.speedupFactor, originalDuration: originalDuration
                 )
@@ -898,7 +564,7 @@ final class AINamingService {
         for seg in all {
             guard let prev = kept.last else { kept.append(seg); continue }
             // Duplicate from an overlap window — only forced mid-speech cuts create these.
-            if seg.start < prev.end - 0.2, normalizedForDedupe(seg.text) == normalizedForDedupe(prev.text) {
+            if seg.start < prev.end - 0.2, SrtCodec.normalizedForDedupe(seg.text) == SrtCodec.normalizedForDedupe(prev.text) {
                 continue
             }
             // Enforce monotonicity so the merged file never has overlapping cues.
@@ -910,12 +576,6 @@ final class AINamingService {
         return kept
     }
 
-    private func normalizedForDedupe(_ s: String) -> String {
-        s.lowercased()
-            .components(separatedBy: CharacterSet.alphanumerics.inverted)
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
-    }
 
     /// Runs a set of chunk plans through build + transcribe with a sliding-window task group.
     ///
@@ -976,7 +636,7 @@ final class AINamingService {
         glossary: [String],
         extraInstruction: String
     ) async -> ChunkResult {
-        guard let chunk = await buildChunkAudio(sourceAsset: sourceAsset, sourceTrack: sourceTrack, plan: plan) else {
+        guard let chunk = await AudioPreparation.buildChunkAudio(sourceAsset: sourceAsset, sourceTrack: sourceTrack, plan: plan) else {
             var failed = ChunkResult(index: plan.index, status: .failed)
             failed.errorCode = "chunk_build_failed"
             failed.fatal = true
@@ -1001,7 +661,7 @@ final class AINamingService {
     /// nearly an hour of already-paid transcription with no trace. Cheap insurance, and the
     /// seed for a future resume.
     private func persistChunkScratch(key: String, result: ChunkResult) {
-        guard result.status == .transcribed, let srt = serializeSrt(result.segments) else { return }
+        guard result.status == .transcribed, let srt = SrtCodec.serializeSrt(result.segments) else { return }
         let dir = chunkScratchDirectory(key: key)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let url = dir.appendingPathComponent(String(format: "chunk-%03d.srt", result.index))
@@ -1022,13 +682,6 @@ final class AINamingService {
 
     // MARK: - Frames-first Glossary (cross-chunk context)
 
-    private struct GlossaryResult {
-        var terms: [String] = []
-        var usage = GeminiUsage.zero
-        var latencyMs = 0
-        var attempts = 0
-        var model: String? = nil
-    }
 
     private static let glossaryMaxTerms = 15
     private static let glossaryTimeoutNanos: UInt64 = 10_000_000_000
@@ -1147,15 +800,6 @@ final class AINamingService {
 
     // MARK: - Naming from Transcript
 
-    private struct NamingCallResult {
-        var name: String?
-        var usage = GeminiUsage.zero
-        var latencyMs = 0
-        var attempts = 0
-        var model: String? = nil
-        var errorCode: String? = nil
-        var fatal = false
-    }
 
     private static let maxNamingTranscriptChars = 40_000
 
@@ -1327,10 +971,10 @@ final class AINamingService {
         analysis: SpeechAnalysis,
         keptRanges: [SampleRange]
     ) async -> NamingResult {
-        // Chunk audio is always built at 1.0×. Enabling `enableSpeedUp` requires threading the
-        // factor through buildChunkAudio AND the merge — a mismatch yields uniformly
+        // Chunk audio is always built at 1.0×. Enabling `TranscriptionTuning.enableSpeedUp` requires threading the
+        // factor through AudioPreparation.buildChunkAudio AND the merge — a mismatch yields uniformly
         // compressed, in-bounds timestamps that no bounds check can detect.
-        assert(!Self.enableSpeedUp, "Chunked path assumes speedupFactor 1.0")
+        assert(!TranscriptionTuning.enableSpeedUp, "Chunked path assumes speedupFactor 1.0")
 
         var usage = GeminiUsage.zero
         var latencyMs = 0
@@ -1349,8 +993,8 @@ final class AINamingService {
             )
         }
 
-        let tuning = ChunkTuning.current
-        let plans = planChunks(
+        let tuning = ChunkPlanner.ChunkTuning.current
+        let plans = ChunkPlanner.planChunks(
             keptRanges: keptRanges,
             targetSamples: tuning.targetSamples,
             maxSamples: tuning.maxSamples,
@@ -1374,7 +1018,7 @@ final class AINamingService {
         )
 
         // Frames feed both the glossary call and the naming call.
-        let frames = fitFramesToBudget(await extractFrames(from: videoURL), budget: Self.maxInlineMediaBytes)
+        let frames = FramePreparation.fitFramesToBudget(await FramePreparation.extractFrames(from: videoURL), budget: Self.maxInlineMediaBytes)
 
         // Glossary must resolve before the fan-out — every chunk prompt embeds it.
         let glossaryResult = await buildFrameGlossary(frames: frames)
@@ -1459,7 +1103,7 @@ final class AINamingService {
         )
 
         let merged = mergeChunkSegments(results)
-        let mergedSrt = merged.isEmpty ? nil : serializeSrt(merged)
+        let mergedSrt = merged.isEmpty ? nil : SrtCodec.serializeSrt(merged)
 
         // Tier 2 of the out-of-bounds policy: a transcript survives as long as ANY chunk
         // produced usable cues. Per-chunk judgement already dropped the corrupted ones, so
@@ -1600,14 +1244,6 @@ final class AINamingService {
 
     // MARK: - Image-only Naming Fallback
 
-    private struct ImageOnlyResult {
-        var name: String?
-        var usage: GeminiUsage
-        var model: String
-        var latencyMs: Int
-        var attempts: Int
-        var errorCode: String?
-    }
 
     private func generateNameImageOnly(for videoURL: URL) async -> ImageOnlyResult {
         var totalUsage = GeminiUsage.zero
@@ -1616,11 +1252,11 @@ final class AINamingService {
         var observedModel = "gemini-2.5-flash-lite"
         var lastError: String? = nil
 
-        let extracted = await extractFrames(from: videoURL)
+        let extracted = await FramePreparation.extractFrames(from: videoURL)
         // This is the fallback everything else lands on, so it MUST fit the budget on its own:
         // 10 text-heavy screenshots at full quality can exceed the whole request budget, which
         // would 413 the very path meant to rescue a failed run.
-        let frames = fitFramesToBudget(extracted, budget: Self.maxInlineMediaBytes)
+        let frames = FramePreparation.fitFramesToBudget(extracted, budget: Self.maxInlineMediaBytes)
         guard !frames.isEmpty else {
             LogManager.shared.log("🤖 Naming (image-only): ❌ No frames", type: .error)
             return ImageOnlyResult(name: nil, usage: totalUsage, model: observedModel, latencyMs: 0, attempts: 0, errorCode: extracted.isEmpty ? "no_frames" : "frames_too_large")
@@ -1898,13 +1534,6 @@ final class AINamingService {
 
     // MARK: - Language Detection
 
-    /// Coarse script classification used to verify the AI title is in the same script as
-    /// the transcript. We don't need true language identification — script is enough to
-    /// catch the failure mode we see in production: Russian/Ukrainian narration getting
-    /// an English title.
-    enum NameScript: String {
-        case cyrillic, latin, mixed, undetermined
-    }
 
     /// Returns whichever of {Cyrillic, Latin} dominates the alphabetic characters in `s`.
     /// `mixed` if both are present in roughly equal share, `undetermined` if there are no
@@ -1976,34 +1605,6 @@ final class AINamingService {
         return "English"
     }
 
-    private struct CombinedResponse {
-        let srt: String
-        let name: String
-    }
-
-    /// Parses an SRT body and returns the largest end-timestamp it contains (in seconds).
-    /// Used to detect "sparse" outputs where Gemini transcribed only the first phrase.
-    private func lastSrtEndSeconds(_ srt: String) -> Double? {
-        // Match every "HH:MM:SS,mmm --> HH:MM:SS,mmm" line and take the max end time.
-        // Tolerates ',' or '.' as the millisecond separator (Gemini sometimes confuses them).
-        let pattern = #"(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})\s*-->\s*(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})"#
-        guard let re = try? NSRegularExpression(pattern: pattern) else { return nil }
-        let nsrange = NSRange(srt.startIndex..., in: srt)
-        var maxEnd: Double = 0
-        var found = false
-        re.enumerateMatches(in: srt, range: nsrange) { match, _, _ in
-            guard let m = match, m.numberOfRanges >= 9 else { return }
-            func g(_ i: Int) -> Int {
-                guard let r = Range(m.range(at: i), in: srt), let v = Int(srt[r]) else { return 0 }
-                return v
-            }
-            let h = g(5), mm = g(6), s = g(7), ms = g(8)
-            let end = Double(h * 3600 + mm * 60 + s) + Double(ms) / 1000.0
-            if end > maxEnd { maxEnd = end }
-            found = true
-        }
-        return found ? maxEnd : nil
-    }
 
     private func parseCombinedResponse(_ raw: String) -> CombinedResponse? {
         let stripped = raw
@@ -2024,1100 +1625,29 @@ final class AINamingService {
 
     // MARK: - VAD Analysis
 
-    private struct SpeechSegment {
-        let startSamples: Int
-        let endSamples: Int
-        var startSeconds: Double { Double(startSamples) / 16000.0 }
-        var endSeconds: Double { Double(endSamples) / 16000.0 }
-    }
-
-    private struct SpeechAnalysis {
-        let totalDuration: Double
-        let totalSpeechDuration: Double
-        let segments: [SpeechSegment]
-        let silenceCoverage: Float
-        let shouldSkipTranscription: Bool
-    }
-
-    private struct TimestampMapping {
-        let stitchedStartSamples: Int
-        let stitchedEndSamples: Int
-        let originalStartSamples: Int
-        var stitchedStartSeconds: Double { Double(stitchedStartSamples) / 16000.0 }
-        var stitchedEndSeconds: Double { Double(stitchedEndSamples) / 16000.0 }
-        var originalStartSeconds: Double { Double(originalStartSamples) / 16000.0 }
-    }
-
-    /// Reads the compressed m4a as PCM, computes per-100ms RMS, and groups active chunks
-    /// into speech segments. All bookkeeping is in integer sample counts to avoid float drift.
-    private func analyzeSpeech(audioURL: URL) async -> SpeechAnalysis {
-        return await Task.detached(priority: .userInitiated) {
-            guard let file = try? AVAudioFile(forReading: audioURL) else {
-                return SpeechAnalysis(totalDuration: 0, totalSpeechDuration: 0, segments: [], silenceCoverage: 1.0, shouldSkipTranscription: true)
-            }
-
-            let format = file.processingFormat
-            let totalFrames = AVAudioFramePosition(file.length)
-            let sampleRate = format.sampleRate
-            let totalDuration = Double(totalFrames) / sampleRate
-            let chunkSamples = Int(sampleRate * 0.1)
-
-            guard chunkSamples > 0, totalFrames > 0 else {
-                return SpeechAnalysis(totalDuration: totalDuration, totalSpeechDuration: 0, segments: [], silenceCoverage: 1.0, shouldSkipTranscription: true)
-            }
-
-            guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(chunkSamples)) else {
-                return SpeechAnalysis(totalDuration: totalDuration, totalSpeechDuration: 0, segments: [], silenceCoverage: 1.0, shouldSkipTranscription: true)
-            }
-
-            var rmsByChunk: [Float] = []
-            do {
-                while file.framePosition < totalFrames {
-                    let remaining = totalFrames - file.framePosition
-                    let toRead = AVAudioFrameCount(min(AVAudioFramePosition(chunkSamples), remaining))
-                    buffer.frameLength = 0
-                    try file.read(into: buffer, frameCount: toRead)
-                    let count = Int(buffer.frameLength)
-                    guard count > 0, let channelData = buffer.floatChannelData else { break }
-
-                    var sumSquares: Float = 0
-                    let ptr = channelData[0]
-                    for i in 0..<count {
-                        let v = ptr[i]
-                        sumSquares += v * v
-                    }
-                    let mean = sumSquares / Float(count)
-                    let rms = sqrt(max(mean, 1e-12))
-                    let dbfs = 20 * log10(rms)
-                    rmsByChunk.append(dbfs)
-                }
-            } catch {
-                return SpeechAnalysis(totalDuration: totalDuration, totalSpeechDuration: 0, segments: [], silenceCoverage: 1.0, shouldSkipTranscription: true)
-            }
-
-            // Skip-if-silent coverage check.
-            let silentChunks = rmsByChunk.filter { $0 < AINamingService.skipSilenceThresholdDBFS }.count
-            let silenceCoverage = rmsByChunk.isEmpty ? 1.0 : Float(silentChunks) / Float(rmsByChunk.count)
-            let skipDueToSilence = silenceCoverage >= AINamingService.skipSilenceCoverage
-
-            // Group consecutive active chunks into raw segments.
-            let activeMask = rmsByChunk.map { $0 > AINamingService.trimSilenceThresholdDBFS }
-            var rawSegments: [(start: Int, end: Int)] = []
-            var i = 0
-            while i < activeMask.count {
-                if activeMask[i] {
-                    let start = i * chunkSamples
-                    var j = i
-                    while j < activeMask.count && activeMask[j] { j += 1 }
-                    let end = min(j * chunkSamples, Int(totalFrames))
-                    rawSegments.append((start, end))
-                    i = j
-                } else {
-                    i += 1
-                }
-            }
-
-            // Merge adjacent (gap < 800ms).
-            let mergeGapSamples = Int(sampleRate * 0.8)
-            var merged: [(Int, Int)] = []
-            for seg in rawSegments {
-                if let last = merged.last, seg.start - last.1 < mergeGapSamples {
-                    merged[merged.count - 1] = (last.0, seg.end)
-                } else {
-                    merged.append(seg)
-                }
-            }
-
-            // Drop short (< 300ms).
-            let minSegmentSamples = Int(sampleRate * 0.3)
-            let filtered = merged.filter { $0.1 - $0.0 >= minSegmentSamples }
-
-            // Add 200ms padding each side.
-            let paddingSamples = Int(sampleRate * 0.2)
-            let padded: [(Int, Int)] = filtered.map { seg in
-                let s = max(0, seg.0 - paddingSamples)
-                let e = min(Int(totalFrames), seg.1 + paddingSamples)
-                return (s, e)
-            }
-
-            // Merge overlapping after padding.
-            var final: [(Int, Int)] = []
-            for seg in padded {
-                if let last = final.last, seg.0 <= last.1 {
-                    final[final.count - 1] = (last.0, max(last.1, seg.1))
-                } else {
-                    final.append(seg)
-                }
-            }
-
-            let segments = final.map { SpeechSegment(startSamples: $0.0, endSamples: $0.1) }
-            let totalSpeechSamples = segments.reduce(0) { $0 + ($1.endSamples - $1.startSamples) }
-            let totalSpeechDuration = Double(totalSpeechSamples) / sampleRate
-
-            let shouldSkip = skipDueToSilence || segments.isEmpty || totalSpeechDuration < 1.0
-
-            return SpeechAnalysis(
-                totalDuration: totalDuration,
-                totalSpeechDuration: totalSpeechDuration,
-                segments: segments,
-                silenceCoverage: silenceCoverage,
-                shouldSkipTranscription: shouldSkip
-            )
-        }.value
-    }
 
     // MARK: - Stitch and Speedup
 
-    private struct StitchResult {
-        let url: URL
-        let mapping: [TimestampMapping]
-    }
-
-    /// Builds an AVMutableComposition that contains only the speech segments and exports
-    /// it as m4a. Returns nil (caller falls back to original) when trimming wouldn't help
-    /// or any AV step fails.
-    private func stitchSpeechAudio(audioURL: URL, segments: [SpeechSegment], originalDuration: Double) async -> StitchResult? {
-        guard !segments.isEmpty else { return nil }
-
-        let speechSeconds = segments.reduce(0.0) { $0 + ($1.endSeconds - $1.startSeconds) }
-
-        if originalDuration > 0 {
-            let speechFraction = speechSeconds / originalDuration
-            if speechFraction > 0.95 {
-                LogManager.shared.log("🤖 Trim: Speech covers >95% of audio — skipping trim (no benefit)")
-                return nil
-            }
-            if speechFraction < 0.05 {
-                LogManager.shared.log("🤖 Trim: Speech covers <5% of audio — falling back to original")
-                return nil
-            }
-        }
-        if speechSeconds < 5.0 {
-            LogManager.shared.log("🤖 Trim: Stitched audio would be < 5s — skipping trim (transcription quality concern)")
-            return nil
-        }
-
-        let asset = AVAsset(url: audioURL)
-        let composition = AVMutableComposition()
-        guard let track = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else {
-            return nil
-        }
-
-        let audioTracks: [AVAssetTrack]
-        do {
-            audioTracks = try await asset.loadTracks(withMediaType: .audio)
-        } catch {
-            LogManager.shared.log("🤖 Trim: ❌ loadTracks failed: \(error.localizedDescription)", type: .error)
-            return nil
-        }
-        guard let sourceTrack = audioTracks.first else {
-            LogManager.shared.log("🤖 Trim: ❌ No audio track in source", type: .error)
-            return nil
-        }
-
-        let timeScale: CMTimeScale = 16000
-        var mapping: [TimestampMapping] = []
-        var stitchedSamples = 0
-
-        for seg in segments {
-            let segDurationSamples = seg.endSamples - seg.startSamples
-            if segDurationSamples <= 0 { continue }
-
-            let sourceStart = CMTime(value: CMTimeValue(seg.startSamples), timescale: timeScale)
-            let sourceDur = CMTime(value: CMTimeValue(segDurationSamples), timescale: timeScale)
-            let insertionTime = CMTime(value: CMTimeValue(stitchedSamples), timescale: timeScale)
-
-            do {
-                try track.insertTimeRange(
-                    CMTimeRange(start: sourceStart, duration: sourceDur),
-                    of: sourceTrack,
-                    at: insertionTime
-                )
-            } catch {
-                LogManager.shared.log("🤖 Trim: ❌ insertTimeRange failed: \(error.localizedDescription)", type: .error)
-                return nil
-            }
-
-            mapping.append(TimestampMapping(
-                stitchedStartSamples: stitchedSamples,
-                stitchedEndSamples: stitchedSamples + segDurationSamples,
-                originalStartSamples: seg.startSamples
-            ))
-            stitchedSamples += segDurationSamples
-        }
-
-        let outputURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString)
-            .appendingPathExtension("m4a")
-
-        guard let exportSession = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetAppleM4A) else {
-            LogManager.shared.log("🤖 Trim: ❌ Could not create AVAssetExportSession", type: .error)
-            return nil
-        }
-        exportSession.outputURL = outputURL
-        exportSession.outputFileType = .m4a
-        await exportSession.export()
-
-        if exportSession.status == .completed {
-            return StitchResult(url: outputURL, mapping: mapping)
-        } else {
-            LogManager.shared.log("🤖 Trim: ❌ Export failed: \(exportSession.error?.localizedDescription ?? "unknown")", type: .error)
-            try? FileManager.default.removeItem(at: outputURL)
-            return nil
-        }
-    }
-
-    /// Speeds up the audio by `factor` while preserving pitch (spectral algorithm).
-    /// Returns nil on any failure — caller continues with the slower copy.
-    private func applySpeedUp(audioURL: URL, factor: Double) async -> URL? {
-        let asset = AVAsset(url: audioURL)
-        let composition = AVMutableComposition()
-        guard let track = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else {
-            return nil
-        }
-        let audioTracks: [AVAssetTrack]
-        do {
-            audioTracks = try await asset.loadTracks(withMediaType: .audio)
-        } catch { return nil }
-        guard let sourceTrack = audioTracks.first else { return nil }
-
-        let timeRange = CMTimeRange(start: .zero, duration: asset.duration)
-        do {
-            try track.insertTimeRange(timeRange, of: sourceTrack, at: .zero)
-        } catch {
-            LogManager.shared.log("🤖 Speedup: ❌ insertTimeRange failed: \(error.localizedDescription)", type: .error)
-            return nil
-        }
-        let scaledDuration = CMTimeMultiplyByFloat64(asset.duration, multiplier: 1.0 / factor)
-        track.scaleTimeRange(timeRange, toDuration: scaledDuration)
-
-        let outputURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString)
-            .appendingPathExtension("m4a")
-
-        guard let exportSession = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetAppleM4A) else { return nil }
-        exportSession.outputURL = outputURL
-        exportSession.outputFileType = .m4a
-        exportSession.audioTimePitchAlgorithm = .spectral
-        await exportSession.export()
-
-        if exportSession.status == .completed {
-            return outputURL
-        } else {
-            LogManager.shared.log("🤖 Speedup: ❌ Export failed: \(exportSession.error?.localizedDescription ?? "unknown")", type: .error)
-            try? FileManager.default.removeItem(at: outputURL)
-            return nil
-        }
-    }
 
     // MARK: - SRT Timestamp Restoration
 
-    /// Maps SRT timestamps from Gemini's stitched-and-sped-up timeline back onto the
-    /// original recording timeline AND always re-formats the SRT so the web's `parseSrt`
-    /// gets a clean, multi-segment file (Gemini in JSON-mode sometimes collapses everything
-    /// into one giant entry — we split that back into per-sentence chunks here).
-    /// Returns nil for empty / NO_SPEECH responses, or when too many entries fall out of bounds.
-    private func restoreSrtTimestamps(_ srt: String, mapping: [TimestampMapping], speedupFactor: Double, originalDuration: Double) -> String? {
-        let segments = parseAndRepairSrt(srt)
-        guard !segments.isEmpty else { return nil }
-
-        let (mapped, outOfBoundsCount) = mapSegments(
-            segments, mapping: mapping, speedupFactor: speedupFactor, originalDuration: originalDuration
-        )
-
-        if outOfBoundsCount > segments.count / 5 {
-            LogManager.shared.log("🤖 Trim: ⚠️ \(outOfBoundsCount)/\(segments.count) timestamps out of bounds — discarding SRT", type: .error)
-            return nil
-        }
-
-        return serializeSrt(mapped)
-    }
-
-    /// Parses a raw Gemini SRT payload into segments, applying the whole recovery ladder:
-    /// blank-line normalization, regex recovery for unparseable output, inline-timestamp
-    /// splitting, and sentence-splitting of over-long entries. Returns [] for empty /
-    /// NO_SPEECH / unrecoverable input.
-    ///
-    /// Split out of `restoreSrtTimestamps` so the chunked path can parse each chunk on its
-    /// own before mapping — the repairs are per-response and must run before any merge.
-    private func parseAndRepairSrt(_ srt: String) -> [SrtSegment] {
-        let trimmed = srt.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty || trimmed == "NO_SPEECH" {
-            return []
-        }
-
-        let stripped = trimmed
-            .replacingOccurrences(of: "```srt\n", with: "")
-            .replacingOccurrences(of: "```srt", with: "")
-            .replacingOccurrences(of: "```\n", with: "")
-            .replacingOccurrences(of: "```", with: "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-
-        // Normalize single-newline-between-entries to the standard blank-line separator.
-        // Gemini in JSON-mode sometimes drops the blank line, especially for Cyrillic /
-        // non-Latin content, which collapses the entire SRT into one block under standard
-        // parsers. Insert the missing blank line before every "number\ntimestamp -->" run.
-        let normalized = stripped.replacingOccurrences(
-            of: #"(?<!\n)\n(\d+\n\d{1,2}:\d{2}:\d{2}[,.]\d{1,3}\s*-->)"#,
-            with: "\n\n$1",
-            options: .regularExpression
-        )
-
-        var segments = parseSrt(normalized)
-
-        // Recovery: if the Gemini response wasn't parseable (no real newlines, exotic format),
-        // try a regex sweep over the raw text to find timestamp pairs.
-        if segments.isEmpty {
-            segments = recoverSrtFromInline(stripped)
-            if !segments.isEmpty {
-                LogManager.shared.log("🤖 SRT: ⚠️ Standard parse failed, recovered \(segments.count) segments via regex fallback")
-            }
-        }
-
-        guard !segments.isEmpty else {
-            LogManager.shared.log("🤖 SRT: ❌ Could not parse any segments from response. First 200 chars: \(stripped.prefix(200))", type: .error)
-            return []
-        }
-
-        // Recovery #1.5: Gemini occasionally collapses several adjacent cues into one block
-        // where the inner timestamps remain inline as plain text inside the cue body
-        // (e.g. "первая фраза 00:00:03,375 --> 00:00:05,335 вторая фраза"). The standard
-        // parseSrt() preserves that text verbatim, so the timestamps would render in the
-        // transcript UI. Split such segments using the embedded timestamps as breakpoints,
-        // then strip any leftover patterns as a safety net.
-        let splitByInline = splitSegmentsByInlineTimestamps(segments)
-        if splitByInline.count != segments.count {
-            LogManager.shared.log("🤖 SRT: Split inline-collapsed segment(s): \(segments.count) → \(splitByInline.count)")
-        }
-        segments = splitByInline.map { sanitizeInlineTimestamps($0) }
-
-        // Recovery #2: if Gemini collapsed everything into a single very long entry, split
-        // it into sentence-sized chunks so the player and the description-generator on the
-        // web see a properly segmented transcript.
-        var splitSegments: [SrtSegment] = []
-        for seg in segments {
-            let dur = seg.end - seg.start
-            if dur > 15 && seg.text.count > 80 {
-                splitSegments.append(contentsOf: splitLongSegmentBySentences(seg))
-            } else {
-                splitSegments.append(seg)
-            }
-        }
-        if splitSegments.count != segments.count {
-            LogManager.shared.log("🤖 SRT: Split \(segments.count) → \(splitSegments.count) segments (Gemini gave overly-long entries)")
-        }
-        return splitSegments
-    }
-
-    /// Maps segments from the AI's timeline onto the original recording timeline, returning
-    /// the mapped segments plus a count of entries whose timestamps landed out of bounds.
-    ///
-    /// The caller decides what to do with `outOfBounds` — the single-call path discards the
-    /// whole SRT past a threshold, while the chunked path judges each chunk separately so one
-    /// bad chunk cannot destroy the others' work.
-    private func mapSegments(
-        _ segments: [SrtSegment],
-        mapping: [TimestampMapping],
-        speedupFactor: Double,
-        originalDuration: Double
-    ) -> (segments: [SrtSegment], outOfBounds: Int) {
-        var mapped: [SrtSegment] = []
-        var outOfBoundsCount = 0
-
-        for seg in segments {
-            let mappedStart = mapTimestamp(seg.start, mapping: mapping, speedupFactor: speedupFactor, originalDuration: originalDuration)
-            let mappedEnd = mapTimestamp(seg.end, mapping: mapping, speedupFactor: speedupFactor, originalDuration: originalDuration)
-
-            if mappedEnd <= mappedStart { outOfBoundsCount += 1; continue }
-            if mappedStart < 0 || mappedEnd > originalDuration + 0.5 { outOfBoundsCount += 1 }
-
-            let clampedStart = max(0, mappedStart)
-            let clampedEnd = min(originalDuration, mappedEnd)
-            if clampedEnd <= clampedStart { continue }
-
-            mapped.append(SrtSegment(start: clampedStart, end: clampedEnd, text: seg.text))
-        }
-
-        return (mapped, outOfBoundsCount)
-    }
-
-    /// Renders segments as a standard SRT file, numbering entries from 1. Any index values
-    /// from the source are irrelevant — both our parser and the web's ignore them — so the
-    /// chunked path can concatenate segments freely and let this assign final numbering.
-    private func serializeSrt(_ segments: [SrtSegment]) -> String? {
-        var lines: [String] = []
-        var idx = 1
-        for seg in segments {
-            lines.append("\(idx)")
-            lines.append("\(formatSrtTimestamp(seg.start)) --> \(formatSrtTimestamp(seg.end))")
-            lines.append(seg.text)
-            lines.append("")
-            idx += 1
-        }
-        let result = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-        return result.isEmpty ? nil : result
-    }
-
-    /// Last-resort recovery: regex-scan the raw text for timestamp pairs and slice text
-    /// between them. Used when the response contains no real newlines (`\\n` literals or
-    /// an exotic single-line format).
-    private func recoverSrtFromInline(_ raw: String) -> [SrtSegment] {
-        let pattern = #"(\d{1,2}:\d{2}:\d{2}[,.]\d{1,3})\s*-->\s*(\d{1,2}:\d{2}:\d{2}[,.]\d{1,3})"#
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else { return [] }
-        let nstext = raw as NSString
-        let matches = regex.matches(in: raw, range: NSRange(location: 0, length: nstext.length))
-        guard !matches.isEmpty else { return [] }
-
-        var segments: [SrtSegment] = []
-        for (i, m) in matches.enumerated() {
-            let start = parseSrtTimestamp(nstext.substring(with: m.range(at: 1)))
-            let end = parseSrtTimestamp(nstext.substring(with: m.range(at: 2)))
-            // Text lives between the end of this timestamp pair and the start of the next.
-            let textStart = m.range.location + m.range.length
-            let textEnd = (i + 1 < matches.count) ? matches[i + 1].range.location : nstext.length
-            guard textEnd > textStart else { continue }
-            var text = nstext.substring(with: NSRange(location: textStart, length: textEnd - textStart))
-            // Strip leading numeric index if the next entry starts with one.
-            text = text.replacingOccurrences(of: #"^\s*\d+\s*$"#, with: "", options: .regularExpression)
-            // Strip the trailing entry-index that belongs to the NEXT cue — but only when
-            // there actually IS a next cue, and only a digit run that stands alone after
-            // whitespace (or is the entire slice). This preserves meaningful trailing digits
-            // like "port 8080" or "error code 500" — especially in the final cue, which has
-            // no following index to remove.
-            if i + 1 < matches.count {
-                text = text.replacingOccurrences(of: #"(?:^|\s)\d{1,4}\s*$"#, with: "", options: .regularExpression)
-            }
-            text = text
-                .replacingOccurrences(of: "\\n", with: " ")
-                .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if !text.isEmpty {
-                segments.append(SrtSegment(start: start, end: end, text: text))
-            }
-        }
-        return segments
-    }
-
-    /// Inline-timestamp pattern used to detect Gemini's "collapsed cue" failure mode.
-    /// Matches `HH:MM:SS,mmm --> HH:MM:SS,mmm` (also tolerates `.` as the ms separator).
-    private static let inlineTimestampPattern = #"(\d{1,2}:\d{2}:\d{2}[,.]\d{1,3})\s*-->\s*(\d{1,2}:\d{2}:\d{2}[,.]\d{1,3})"#
-
-    /// Splits any segment whose text body contains inline `HH:MM:SS,mmm --> HH:MM:SS,mmm`
-    /// patterns into multiple segments, using the embedded timestamps as breakpoints.
-    /// Timestamps stay on the same (stitched/sped-up) timeline that Gemini returned, so
-    /// `mapTimestamp()` later translates them back to the original recording timeline along
-    /// with every other segment.
-    private func splitSegmentsByInlineTimestamps(_ segments: [SrtSegment]) -> [SrtSegment] {
-        guard let regex = try? NSRegularExpression(pattern: Self.inlineTimestampPattern, options: []) else {
-            return segments
-        }
-        var result: [SrtSegment] = []
-        for seg in segments {
-            let nstext = seg.text as NSString
-            let matches = regex.matches(in: seg.text, range: NSRange(location: 0, length: nstext.length))
-            if matches.isEmpty {
-                result.append(seg)
-                continue
-            }
-
-            // Pre-chunk: text before the first embedded timestamp keeps the segment's start
-            // and ends where the first embedded cue begins.
-            let firstMatchLoc = matches[0].range.location
-            let firstEmbeddedStart = parseSrtTimestamp(nstext.substring(with: matches[0].range(at: 1)))
-            if firstMatchLoc > 0 {
-                let preText = nstext.substring(with: NSRange(location: 0, length: firstMatchLoc))
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                if !preText.isEmpty {
-                    let preEnd = max(seg.start, min(seg.end, firstEmbeddedStart))
-                    if preEnd > seg.start {
-                        result.append(SrtSegment(start: seg.start, end: preEnd, text: preText))
-                    }
-                }
-            }
-
-            // Per-match chunks: text between this match's end and the next match's start
-            // (or seg.end for the last match). Use the embedded pair for the chunk's timing.
-            for (i, m) in matches.enumerated() {
-                let embeddedStart = parseSrtTimestamp(nstext.substring(with: m.range(at: 1)))
-                let embeddedEnd = parseSrtTimestamp(nstext.substring(with: m.range(at: 2)))
-                let textStart = m.range.location + m.range.length
-                let textEnd = (i + 1 < matches.count) ? matches[i + 1].range.location : nstext.length
-                guard textEnd > textStart else { continue }
-                let text = nstext.substring(with: NSRange(location: textStart, length: textEnd - textStart))
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                if text.isEmpty { continue }
-                let chunkStart = max(seg.start, min(seg.end, embeddedStart))
-                let chunkEnd = max(chunkStart, min(seg.end, embeddedEnd))
-                if chunkEnd > chunkStart {
-                    result.append(SrtSegment(start: chunkStart, end: chunkEnd, text: text))
-                }
-            }
-        }
-        return result
-    }
-
-    /// Final safety net: strip any remaining inline `HH:MM:SS,mmm --> HH:MM:SS,mmm` patterns
-    /// from cue text. The splitter above handles well-formed inline timestamps, but malformed
-    /// values (e.g. impossible end < start) might fall through — this guarantees the UI never
-    /// renders a raw timestamp pair.
-    private func sanitizeInlineTimestamps(_ seg: SrtSegment) -> SrtSegment {
-        let cleaned = seg.text
-            .replacingOccurrences(of: Self.inlineTimestampPattern, with: "", options: .regularExpression)
-            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard cleaned != seg.text else { return seg }
-        return SrtSegment(start: seg.start, end: seg.end, text: cleaned)
-    }
-
-    /// Splits one long segment into sentence-sized sub-segments, distributing time
-    /// proportionally to character count.
-    private func splitLongSegmentBySentences(_ seg: SrtSegment) -> [SrtSegment] {
-        let pattern = #"[^.!?]+[.!?]+"#
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else { return [seg] }
-        let nstext = seg.text as NSString
-        let matches = regex.matches(in: seg.text, range: NSRange(location: 0, length: nstext.length))
-        guard matches.count >= 2 else { return [seg] }
-
-        var sentences: [String] = []
-        var totalChars = 0
-        for m in matches {
-            let s = nstext.substring(with: m.range).trimmingCharacters(in: .whitespacesAndNewlines)
-            if !s.isEmpty {
-                sentences.append(s)
-                totalChars += s.count
-            }
-        }
-
-        // Capture any residual text after the last terminal-punctuation match — a trailing
-        // fragment with no closing "." / "!" / "?" would otherwise be silently dropped (the
-        // regex only matches up to the last terminator). Append it so its characters are
-        // counted and it gets a proportional time slice.
-        if let lastMatch = matches.last {
-            let lastMatchEnd = lastMatch.range.location + lastMatch.range.length
-            if lastMatchEnd < nstext.length {
-                let tail = nstext.substring(from: lastMatchEnd).trimmingCharacters(in: .whitespacesAndNewlines)
-                if !tail.isEmpty {
-                    sentences.append(tail)
-                    totalChars += tail.count
-                }
-            }
-        }
-
-        guard sentences.count >= 2, totalChars > 0 else { return [seg] }
-
-        let totalDuration = seg.end - seg.start
-        var result: [SrtSegment] = []
-        var cursor = seg.start
-        for (i, s) in sentences.enumerated() {
-            let proportion = Double(s.count) / Double(totalChars)
-            let dur = totalDuration * proportion
-            let isLast = i == sentences.count - 1
-            let end = isLast ? seg.end : min(seg.end, cursor + dur)
-            result.append(SrtSegment(start: cursor, end: end, text: s))
-            cursor = end
-        }
-        return result
-    }
-
-    private func mapTimestamp(_ aiTime: Double, mapping: [TimestampMapping], speedupFactor: Double, originalDuration: Double) -> Double {
-        let stitchedTime = aiTime * speedupFactor
-        if mapping.isEmpty { return stitchedTime }
-        for seg in mapping {
-            if stitchedTime >= seg.stitchedStartSeconds && stitchedTime < seg.stitchedEndSeconds {
-                return seg.originalStartSeconds + (stitchedTime - seg.stitchedStartSeconds)
-            }
-        }
-        // Out of range → clamp to last segment's original end.
-        if let last = mapping.last {
-            let lastOriginalEnd = last.originalStartSeconds + (last.stitchedEndSeconds - last.stitchedStartSeconds)
-            return min(originalDuration, lastOriginalEnd)
-        }
-        return stitchedTime
-    }
-
-    private func formatSrtTimestamp(_ seconds: Double) -> String {
-        let total = max(0, seconds)
-        let h = Int(total / 3600)
-        let m = Int(total.truncatingRemainder(dividingBy: 3600) / 60)
-        let s = Int(total.truncatingRemainder(dividingBy: 60))
-        let ms = Int((total - Double(Int(total))) * 1000)
-        return String(format: "%02d:%02d:%02d,%03d", h, m, s, ms)
-    }
 
     // MARK: - Compressed Audio Extraction
 
-    /// Extracts the audio track and re-encodes it as a tiny m4a (32 kbps mono 16 kHz) for
-    /// transcription. Independent of the video's audio quality — the original audio in the
-    /// recorded MP4 is untouched. 16 kHz mono is the format speech models expect; 32 kbps
-    /// keeps even hour-long videos under Gemini's 20 MB inline-data limit.
-    private func extractCompressedAudio(from videoURL: URL) async -> URL? {
-        let asset = AVAsset(url: videoURL)
-
-        let audioTracks: [AVAssetTrack]
-        do {
-            audioTracks = try await asset.loadTracks(withMediaType: .audio)
-        } catch {
-            LogManager.shared.log("🤖 Subtitles: ❌ Failed to load audio tracks: \(error.localizedDescription)", type: .error)
-            return nil
-        }
-        guard let audioTrack = audioTracks.first else {
-            LogManager.shared.log("🤖 Subtitles: ❌ Video has no audio track", type: .error)
-            return nil
-        }
-
-        return await encodeSpeechAudio(from: asset, sourceTrack: audioTrack)
-    }
-
-    /// Encodes `asset`'s audio to a tiny m4a (32 kbps mono 16 kHz).
-    ///
-    /// Split out of `extractCompressedAudio` so chunk compositions reuse the EXACT same
-    /// encoder settings. `AVAssetExportSession` with `AVAssetExportPresetAppleM4A` — the
-    /// obvious alternative — does not preserve them, and the whole payload budget is derived
-    /// from that 32 kbps figure, so pinning it here keeps the size math true by construction.
-    ///
-    /// `sourceTrack` must belong to `asset` (works for both a file-backed AVAsset and an
-    /// AVMutableComposition).
-    private func encodeSpeechAudio(from asset: AVAsset, sourceTrack: AVAssetTrack) async -> URL? {
-        let outputURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString)
-            .appendingPathExtension("m4a")
-
-        let writer: AVAssetWriter
-        do {
-            writer = try AVAssetWriter(url: outputURL, fileType: .m4a)
-        } catch {
-            LogManager.shared.log("🤖 Subtitles: ❌ Could not create AVAssetWriter: \(error.localizedDescription)", type: .error)
-            return nil
-        }
-
-        let outputSettings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatMPEG4AAC,
-            AVSampleRateKey: 16_000,
-            AVNumberOfChannelsKey: 1,
-            AVEncoderBitRateKey: 32_000,
-        ]
-        let writerInput = AVAssetWriterInput(mediaType: .audio, outputSettings: outputSettings)
-        writerInput.expectsMediaDataInRealTime = false
-        guard writer.canAdd(writerInput) else {
-            LogManager.shared.log("🤖 Subtitles: ❌ AVAssetWriter cannot accept input", type: .error)
-            return nil
-        }
-        writer.add(writerInput)
-
-        let reader: AVAssetReader
-        do {
-            reader = try AVAssetReader(asset: asset)
-        } catch {
-            LogManager.shared.log("🤖 Subtitles: ❌ Could not create AVAssetReader: \(error.localizedDescription)", type: .error)
-            return nil
-        }
-
-        let readerOutputSettings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatLinearPCM,
-            AVLinearPCMBitDepthKey: 16,
-            AVLinearPCMIsFloatKey: false,
-            AVLinearPCMIsBigEndianKey: false,
-            AVNumberOfChannelsKey: 1,
-            AVSampleRateKey: 16_000,
-        ]
-        let readerOutput = AVAssetReaderTrackOutput(track: sourceTrack, outputSettings: readerOutputSettings)
-        guard reader.canAdd(readerOutput) else {
-            LogManager.shared.log("🤖 Subtitles: ❌ AVAssetReader cannot accept output", type: .error)
-            return nil
-        }
-        reader.add(readerOutput)
-
-        guard reader.startReading() else {
-            LogManager.shared.log("🤖 Subtitles: ❌ AVAssetReader failed to start: \(reader.error?.localizedDescription ?? "unknown")", type: .error)
-            return nil
-        }
-        guard writer.startWriting() else {
-            LogManager.shared.log("🤖 Subtitles: ❌ AVAssetWriter failed to start: \(writer.error?.localizedDescription ?? "unknown")", type: .error)
-            return nil
-        }
-        writer.startSession(atSourceTime: .zero)
-
-        return await withCheckedContinuation { continuation in
-            let queue = DispatchQueue(label: "com.nocorny.tracer.audio-export", qos: .userInitiated)
-            writerInput.requestMediaDataWhenReady(on: queue) {
-                while writerInput.isReadyForMoreMediaData {
-                    if let buffer = readerOutput.copyNextSampleBuffer() {
-                        if !writerInput.append(buffer) {
-                            LogManager.shared.log("🤖 Subtitles: ❌ AVAssetWriter append failed: \(writer.error?.localizedDescription ?? "unknown")", type: .error)
-                            writerInput.markAsFinished()
-                            writer.finishWriting {
-                                continuation.resume(returning: nil)
-                            }
-                            return
-                        }
-                    } else {
-                        // copyNextSampleBuffer returned nil. This is EITHER true EOF OR a mid-stream
-                        // reader failure (e.g. a corrupt/truncated source). Treat a .failed reader as
-                        // an error — finalizing here would write a SILENTLY TRUNCATED file and report
-                        // success, so Gemini would transcribe a fragment. Only .reading / .completed /
-                        // .cancelled count as a normal end-of-stream.
-                        if reader.status == .failed {
-                            LogManager.shared.log("🤖 Subtitles: ❌ Audio reader failed mid-stream: \(reader.error?.localizedDescription ?? "unknown") — discarding partial audio", type: .error)
-                            writerInput.markAsFinished()
-                            writer.cancelWriting()
-                            try? FileManager.default.removeItem(at: outputURL)
-                            continuation.resume(returning: nil)
-                            return
-                        }
-                        writerInput.markAsFinished()
-                        writer.finishWriting {
-                            if writer.status == .completed {
-                                continuation.resume(returning: outputURL)
-                            } else {
-                                LogManager.shared.log("🤖 Subtitles: ❌ Finalization failed: \(writer.error?.localizedDescription ?? "unknown") (status \(writer.status.rawValue))", type: .error)
-                                continuation.resume(returning: nil)
-                            }
-                        }
-                        return
-                    }
-                }
-            }
-        }
-    }
 
     // MARK: - Frame Extraction
 
-    /// Extracts frames at evenly spaced timestamps. 1024×1024 max resolution: still readable
-    /// for code/UI screenshots, ~55% fewer image tokens than 1568.
-    private func extractFrames(from videoURL: URL) async -> [Data] {
-        let asset = AVAsset(url: videoURL)
-        let durationSeconds = CMTimeGetSeconds(asset.duration)
-
-        guard durationSeconds > 0 else { return [] }
-
-        let timestamps = pickTimestamps(duration: durationSeconds)
-        guard !timestamps.isEmpty else { return [] }
-        LogManager.shared.log("🤖 AI Naming: Picked \(timestamps.count) timestamps: \(timestamps.map { String(format: "%.1f", $0) }.joined(separator: ", "))s")
-
-        let generator = AVAssetImageGenerator(asset: asset)
-        generator.appliesPreferredTrackTransform = true
-        generator.maximumSize = CGSize(width: 1024, height: 1024)
-        generator.requestedTimeToleranceBefore = CMTime(seconds: 0.5, preferredTimescale: 600)
-        generator.requestedTimeToleranceAfter = CMTime(seconds: 0.5, preferredTimescale: 600)
-
-        let times: [NSValue] = timestamps.map { ts in
-            NSValue(time: CMTime(seconds: ts, preferredTimescale: 600))
-        }
-
-        let timesCount = times.count
-        let rendered: [(timestamp: Double, data: Data)] = await withCheckedContinuation { continuation in
-            var results: [(Double, Data)] = []
-            var processedCount = 0
-            let lock = NSLock()
-
-            generator.generateCGImagesAsynchronously(forTimes: times) { requestedTime, image, actualTime, result, error in
-                if result == .succeeded, let cgImage = image {
-                    let nsImage = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
-                    if let tiffData = nsImage.tiffRepresentation,
-                       let bitmap = NSBitmapImageRep(data: tiffData),
-                       let jpegData = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.85]) {
-                        let ts = CMTimeGetSeconds(requestedTime)
-                        lock.lock()
-                        results.append((ts, jpegData))
-                        lock.unlock()
-                    }
-                }
-
-                lock.lock()
-                processedCount += 1
-                let done = processedCount == timesCount
-                lock.unlock()
-
-                if done {
-                    let sorted = results.sorted { $0.0 < $1.0 }
-                    continuation.resume(returning: sorted.map { (timestamp: $0.0, data: $0.1) })
-                }
-            }
-        }
-
-        let deduped = deduplicate(frames: rendered, hammingThreshold: 5)
-        if deduped.count != rendered.count {
-            LogManager.shared.log("🤖 AI Naming: Deduped \(rendered.count) → \(deduped.count) frames")
-        }
-        return deduped
-    }
 
     // MARK: - Frame Budgeting
 
-    /// Base64 inflates raw bytes by 4/3 (ceil division). Every size check against the request
-    /// budget must use the ENCODED size — guarding on raw bytes is what let a 6.2 MB body
-    /// sail past an 18 MB "limit" and die at the proxy.
-    private func base64Size(_ rawBytes: Int) -> Int { (rawBytes + 2) / 3 * 4 }
-
-    private func encodedSize(_ frames: [Data]) -> Int {
-        frames.reduce(0) { $0 + base64Size($1.count) }
-    }
-
-    private struct FrameBudgetStep {
-        let quality: Double
-        let maxEdge: Int?
-        let keep: Int?
-    }
-
-    /// Degradation ladder for oversized frame sets, cheapest-first.
-    ///
-    /// Quality steps come before downscaling on purpose: Gemini bills images by pixel
-    /// dimensions, not bytes, so dropping JPEG quality shrinks the request for free while
-    /// downscaling actually costs visual detail (and 1024px was already chosen as the
-    /// readability floor for code/UI screenshots). Dropping frames comes last.
-    private static let frameBudgetLadder: [FrameBudgetStep] = [
-        FrameBudgetStep(quality: 0.60, maxEdge: nil, keep: nil),
-        FrameBudgetStep(quality: 0.45, maxEdge: nil, keep: nil),
-        FrameBudgetStep(quality: 0.60, maxEdge: 768, keep: nil),
-        FrameBudgetStep(quality: 0.60, maxEdge: 768, keep: 6),
-        FrameBudgetStep(quality: 0.60, maxEdge: 768, keep: 3),
-        FrameBudgetStep(quality: 0.55, maxEdge: 640, keep: 1),
-    ]
-
-    /// Shrinks `frames` until their base64 total fits `budget`, returning [] if even one
-    /// downscaled frame won't fit. Text-heavy screen content is the worst case for JPEG, and
-    /// 10 such frames at 1024px/q0.85 can exceed the entire request budget on their own —
-    /// so this runs on every path that sends frames, including the image-only fallback.
-    func fitFramesToBudget(_ frames: [Data], budget: Int) -> [Data] {
-        guard !frames.isEmpty, budget > 0 else { return [] }
-        let original = encodedSize(frames)
-        if original <= budget { return frames }
-
-        for step in Self.frameBudgetLadder {
-            var candidate = frames
-            if let keep = step.keep, keep < candidate.count {
-                candidate = evenlySampled(candidate, keep: keep)
-            }
-            candidate = candidate.map { reencodeJPEG($0, quality: step.quality, maxEdge: step.maxEdge) ?? $0 }
-            let size = encodedSize(candidate)
-            if size <= budget {
-                LogManager.shared.log(
-                    "🤖 Frames: fitted \(original / 1024)KB → \(size / 1024)KB b64 (q\(step.quality), edge=\(step.maxEdge.map(String.init) ?? "orig"), \(candidate.count)/\(frames.count) frames)"
-                )
-                return candidate
-            }
-        }
-
-        LogManager.shared.log(
-            "🤖 Frames: ⚠️ \(original / 1024)KB b64 won't fit \(budget / 1024)KB budget even at minimum quality — dropping frames",
-            type: .error
-        )
-        return []
-    }
-
-    /// Picks `keep` frames spread evenly across the set so the sample still spans the whole
-    /// recording rather than clustering at the start.
-    private func evenlySampled(_ frames: [Data], keep: Int) -> [Data] {
-        guard keep > 0, keep < frames.count else { return frames }
-        if keep == 1 { return [frames[frames.count / 2]] }
-        let step = Double(frames.count - 1) / Double(keep - 1)
-        var picked: [Data] = []
-        var seen = Set<Int>()
-        for i in 0..<keep {
-            let idx = min(frames.count - 1, Int((Double(i) * step).rounded()))
-            if seen.insert(idx).inserted { picked.append(frames[idx]) }
-        }
-        return picked
-    }
-
-    /// Re-encodes a JPEG at `quality`, optionally downscaling the longest edge to `maxEdge`
-    /// first. Returns nil when the image can't be decoded or re-encoded — callers keep the
-    /// original frame in that case, so a failure here can only cost budget, never correctness.
-    private func reencodeJPEG(_ data: Data, quality: Double, maxEdge: Int?) -> Data? {
-        guard let source = NSBitmapImageRep(data: data) else { return nil }
-        var rep = source
-
-        if let maxEdge, max(source.pixelsWide, source.pixelsHigh) > maxEdge {
-            let scale = Double(maxEdge) / Double(max(source.pixelsWide, source.pixelsHigh))
-            let width = max(1, Int((Double(source.pixelsWide) * scale).rounded()))
-            let height = max(1, Int((Double(source.pixelsHigh) * scale).rounded()))
-            guard let scaled = NSBitmapImageRep(
-                bitmapDataPlanes: nil,
-                pixelsWide: width, pixelsHigh: height,
-                bitsPerSample: 8, samplesPerPixel: 3,
-                hasAlpha: false, isPlanar: false,
-                colorSpaceName: .deviceRGB,
-                bytesPerRow: 0, bitsPerPixel: 0
-            ) else { return nil }
-            scaled.size = NSSize(width: width, height: height)
-
-            NSGraphicsContext.saveGraphicsState()
-            defer { NSGraphicsContext.restoreGraphicsState() }
-            guard let context = NSGraphicsContext(bitmapImageRep: scaled) else { return nil }
-            NSGraphicsContext.current = context
-            context.imageInterpolation = .high
-            source.draw(in: NSRect(x: 0, y: 0, width: width, height: height))
-            context.flushGraphics()
-            rep = scaled
-        }
-
-        return rep.representation(using: .jpeg, properties: [.compressionFactor: quality])
-    }
 
     // MARK: - Timestamp Selection
 
-    private struct SrtSegment {
-        let start: Double
-        let end: Double
-        let text: String
-    }
-
-    private func pickTimestamps(duration: Double) -> [Double] {
-        guard duration > 0 else { return [] }
-
-        if duration < 1 {
-            return [duration / 2]
-        }
-
-        let n = max(3, min(10, Int(ceil(duration / 10.0))))
-        let interval = duration / Double(n)
-        var equispaced = (0..<n).map { interval * Double($0) + (interval / 2) }
-        if !equispaced.isEmpty {
-            equispaced[0] = min(equispaced[0], 0.5)
-        }
-
-        return equispaced
-    }
 
     // MARK: - SRT Parsing
 
-    private func parseSrt(_ srt: String) -> [SrtSegment] {
-        let normalized = srt
-            .replacingOccurrences(of: "\r\n", with: "\n")
-            .replacingOccurrences(of: "\r", with: "\n")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalized.isEmpty else { return [] }
-
-        let blocks = normalized.components(separatedBy: "\n\n")
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-
-        var segments: [SrtSegment] = []
-        for block in blocks {
-            let lines = block.components(separatedBy: "\n")
-                .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
-            guard lines.count >= 2 else { continue }
-
-            let timeLineIdx = lines[0].contains("-->") ? 0 : 1
-            guard timeLineIdx < lines.count else { continue }
-            let timeLine = lines[timeLineIdx]
-
-            let pattern = #"([\d:,.]+)\s*-->\s*([\d:,.]+)"#
-            guard let regex = try? NSRegularExpression(pattern: pattern),
-                  let match = regex.firstMatch(in: timeLine, range: NSRange(timeLine.startIndex..., in: timeLine)),
-                  let startRange = Range(match.range(at: 1), in: timeLine),
-                  let endRange = Range(match.range(at: 2), in: timeLine) else {
-                continue
-            }
-
-            let start = parseSrtTimestamp(String(timeLine[startRange]))
-            let end = parseSrtTimestamp(String(timeLine[endRange]))
-
-            let text = lines.dropFirst(timeLineIdx + 1)
-                .joined(separator: " ")
-                .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
-                .trimmingCharacters(in: .whitespaces)
-            guard !text.isEmpty else { continue }
-
-            segments.append(SrtSegment(start: start, end: end, text: text))
-        }
-        return segments
-    }
-
-    private func parseSrtTimestamp(_ ts: String) -> Double {
-        let trimmed = ts.trimmingCharacters(in: .whitespaces)
-        let pattern = #"^(\d+):(\d+):(\d+)[,.](\d+)$"#
-        guard let regex = try? NSRegularExpression(pattern: pattern),
-              let match = regex.firstMatch(in: trimmed, range: NSRange(trimmed.startIndex..., in: trimmed)) else {
-            return 0
-        }
-        func capture(_ idx: Int) -> String {
-            guard let r = Range(match.range(at: idx), in: trimmed) else { return "0" }
-            return String(trimmed[r])
-        }
-        let h = Double(capture(1)) ?? 0
-        let m = Double(capture(2)) ?? 0
-        let s = Double(capture(3)) ?? 0
-        var msStr = capture(4)
-        while msStr.count < 3 { msStr += "0" }
-        msStr = String(msStr.prefix(3))
-        let ms = Double(msStr) ?? 0
-        return h * 3600 + m * 60 + s + ms / 1000
-    }
 
     // MARK: - Perceptual Hash Dedup
 
-    private func deduplicate(frames: [(timestamp: Double, data: Data)], hammingThreshold: Int) -> [Data] {
-        guard !frames.isEmpty else { return [] }
 
-        var accepted: [(timestamp: Double, data: Data, hash: UInt64?)] = []
-        var rejected: [(timestamp: Double, data: Data)] = []
-
-        for frame in frames {
-            let hash = dHash(frame.data)
-            let isDup = accepted.contains { existing in
-                guard let h1 = hash, let h2 = existing.hash else { return false }
-                return hammingDistance(h1, h2) < hammingThreshold
-            }
-            if isDup {
-                rejected.append((frame.timestamp, frame.data))
-            } else {
-                accepted.append((frame.timestamp, frame.data, hash))
-            }
-        }
-
-        let minFrames = min(3, frames.count)
-        while accepted.count < minFrames && !rejected.isEmpty {
-            let restored = rejected.removeFirst()
-            accepted.append((restored.timestamp, restored.data, nil))
-        }
-
-        return accepted.sorted { $0.timestamp < $1.timestamp }.map { $0.data }
-    }
-
-    private func dHash(_ jpegData: Data) -> UInt64? {
-        guard let imageSource = CGImageSourceCreateWithData(jpegData as CFData, nil),
-              let cgImage = CGImageSourceCreateImageAtIndex(imageSource, 0, nil) else {
-            return nil
-        }
-
-        let width = 9
-        let height = 8
-        let colorSpace = CGColorSpaceCreateDeviceGray()
-        guard let context = CGContext(
-            data: nil,
-            width: width,
-            height: height,
-            bitsPerComponent: 8,
-            bytesPerRow: width,
-            space: colorSpace,
-            bitmapInfo: CGImageAlphaInfo.none.rawValue
-        ) else {
-            return nil
-        }
-
-        context.interpolationQuality = .low
-        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
-
-        guard let pixels = context.data else { return nil }
-        let buffer = pixels.bindMemory(to: UInt8.self, capacity: width * height)
-
-        var hash: UInt64 = 0
-        var bit = 0
-        for y in 0..<height {
-            for x in 0..<(width - 1) {
-                let left = buffer[y * width + x]
-                let right = buffer[y * width + x + 1]
-                if left > right {
-                    hash |= (UInt64(1) << bit)
-                }
-                bit += 1
-            }
-        }
-        return hash
-    }
-
-    private func hammingDistance(_ a: UInt64, _ b: UInt64) -> Int {
-        return (a ^ b).nonzeroBitCount
-    }
 }
