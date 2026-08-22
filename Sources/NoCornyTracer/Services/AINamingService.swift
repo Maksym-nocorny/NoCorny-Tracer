@@ -11,26 +11,17 @@ final class AINamingService {
     // MARK: - Feature Flags
 
 
-    /// Budget for the base64-ENCODED inline media (audio + frames) in one Gemini request.
-    ///
-    /// This was 18 MB, sized against Gemini's ~20 MB inline-data cap — but the request never
-    /// reaches Gemini. It goes through our Vercel-hosted proxy, whose serverless request-body
-    /// limit is 4.5 MB, enforced at the edge before the handler runs. An 18 MB budget meant
-    /// the guard could not fire: a 10-minute recording built a ~6.2 MB body and died with
-    /// `413 FUNCTION_PAYLOAD_TOO_LARGE`, six times over, producing no title and no transcript.
-    ///
-    /// Kept slightly under `GeminiProxyClient.maxRequestBodyBytes` so the prompt and JSON
-    /// scaffolding fit alongside the media; that client-side check on the exact serialized
-    /// body is the real guard, this one is the pre-emptive budget used to degrade gracefully.
-    static let maxInlineMediaBytes = 3_800_000
-
-
     // MARK: - Configuration
 
     private let proxyClient: GeminiProxyClient
 
+    /// Naming is a separate service so a non-Gemini transcription engine can still get
+    /// a real title: the two calls are independent, and only this one has to be Gemini.
+    private let naming: NamingService
+
     init(proxyClient: GeminiProxyClient) {
         self.proxyClient = proxyClient
+        self.naming = NamingService(proxyClient: proxyClient)
     }
 
     /// True when the underlying proxy is ready to make calls (i.e. the user is
@@ -70,7 +61,7 @@ final class AINamingService {
         // Step 1: extract a tiny m4a (32 kbps mono 16 kHz). Independent of original audio quality.
         guard let audioURL = await AudioPreparation.extractCompressedAudio(from: videoURL) else {
             LogManager.shared.log("🤖 Combined: ❌ Failed to extract audio — falling back to image-only naming", type: .error)
-            let fb = await generateNameImageOnly(for: videoURL)
+            let fb = await naming.generateNameImageOnly(for: videoURL)
             return NamingResult(
                 srt: nil, name: fb.name,
                 usage: fb.usage, model: fb.model,
@@ -87,7 +78,7 @@ final class AINamingService {
 
         if analysis.shouldSkipTranscription {
             LogManager.shared.log("🤖 Combined: 🤫 Skipping transcription (no clear speech detected)")
-            let fb = await generateNameImageOnly(for: videoURL)
+            let fb = await naming.generateNameImageOnly(for: videoURL)
             return NamingResult(
                 srt: nil, name: fb.name,
                 usage: fb.usage, model: fb.model,
@@ -154,7 +145,7 @@ final class AINamingService {
         // Step 4: read audio bytes and check size.
         guard let audioData = try? Data(contentsOf: audioForGemini) else {
             LogManager.shared.log("🤖 Combined: ❌ Failed to read audio at \(audioForGemini.path)", type: .error)
-            let fb = await generateNameImageOnly(for: videoURL)
+            let fb = await naming.generateNameImageOnly(for: videoURL)
             return NamingResult(srt: nil, name: fb.name, usage: fb.usage, model: fb.model, latencyMs: fb.latencyMs, attempts: fb.attempts, success: fb.name != nil, errorCode: fb.errorCode ?? "audio_read_failed")
         }
         let sizeKB = audioData.count / 1024
@@ -173,15 +164,15 @@ final class AINamingService {
         // degrade gracefully instead of hitting it. Frames shrink first — on a long recording
         // the transcript is the valuable half, so audio is the last thing we give up.
         let audioBase64Bytes = FramePreparation.base64Size(audioData.count)
-        let framesBudget = Self.maxInlineMediaBytes - audioBase64Bytes
-        LogManager.shared.log("🤖 Combined: Payload budget — audio b64=\(audioBase64Bytes / 1024)KB, frames b64=\(FramePreparation.encodedSize(frames) / 1024)KB, budget=\(Self.maxInlineMediaBytes / 1024)KB")
+        let framesBudget = TranscriptionTuning.maxInlineMediaBytes - audioBase64Bytes
+        LogManager.shared.log("🤖 Combined: Payload budget — audio b64=\(audioBase64Bytes / 1024)KB, frames b64=\(FramePreparation.encodedSize(frames) / 1024)KB, budget=\(TranscriptionTuning.maxInlineMediaBytes / 1024)KB")
 
         if framesBudget <= 0 {
             // Audio alone blows the budget, so there is nothing left to shrink. Reaching this
             // on the single-call path means the audio was under `ChunkPlanner.singleCallMaxAudioSeconds`
             // yet still too big — unusual, but bail to image-only rather than send a doomed request.
             LogManager.shared.log("🤖 Combined: ❌ Audio alone (\(audioBase64Bytes / 1024)KB b64) exceeds the media budget — falling back to image-only naming", type: .error)
-            let fb = await generateNameImageOnly(for: videoURL)
+            let fb = await naming.generateNameImageOnly(for: videoURL)
             return NamingResult(srt: nil, name: fb.name, usage: fb.usage, model: fb.model, latencyMs: fb.latencyMs, attempts: fb.attempts, success: fb.name != nil, errorCode: fb.errorCode ?? "audio_too_large")
         }
         frames = FramePreparation.fitFramesToBudget(frames, budget: framesBudget)
@@ -252,7 +243,7 @@ final class AINamingService {
                     return NamingResult(srt: nil, name: nil, usage: totalUsage, model: observedModel, latencyMs: totalLatencyMs, attempts: totalAttempts, success: false, errorCode: lastError)
                 }
 
-                let cleanedName = cleanupName(parsed.name)
+                let cleanedName = naming.cleanupName(parsed.name)
                 let srtPreview = parsed.srt.prefix(120).replacingOccurrences(of: "\n", with: "⏎")
                 LogManager.shared.log("🤖 Combined: Raw SRT (\(parsed.srt.count) chars) preview: \(srtPreview)")
 
@@ -307,11 +298,11 @@ final class AINamingService {
                 // doesn't match the SRT's.
                 // A NO_SPEECH transcript carries no spoken language, so the name is
                 // unconstrained-by-audio (English fallback or whatever the visuals warrant) —
-                // never trigger the language-mismatch retry for it. dominantLanguage would
+                // never trigger the language-mismatch retry for it. LanguageDetection.dominantLanguage would
                 // otherwise classify the literal "NO_SPEECH" sentinel as English and force a
                 // wasteful extra network round-trip.
-                let srtLanguage = isExplicitNoSpeech ? nil : dominantLanguage(parsed.srt)
-                let nameLanguage = dominantLanguage(cleanedName ?? parsed.name)
+                let srtLanguage = isExplicitNoSpeech ? nil : LanguageDetection.dominantLanguage(parsed.srt)
+                let nameLanguage = LanguageDetection.dominantLanguage(cleanedName ?? parsed.name)
                 let languageMismatch = !isExplicitNoSpeech && srtLanguage != nil && nameLanguage != nil && srtLanguage != nameLanguage
                 if languageMismatch && attempt < maxRetries {
                     let lang = srtLanguage!
@@ -371,26 +362,6 @@ final class AINamingService {
     // MARK: - Chunked Transcription (long recordings)
 
 
-    /// Exponential backoff with jitter. Concurrent chunks that all catch a Gemini 503 would
-    /// otherwise retry in lockstep and hit it again at exactly the same instant.
-    private func jitteredDelayNanos(_ seconds: Double) -> UInt64 {
-        UInt64(max(0.1, seconds * Double.random(in: 0.75...1.25)) * 1_000_000_000)
-    }
-
-    /// Strips markdown fences and pulls one string field out of a JSON response.
-    private func parseJSONStringField(_ raw: String, field: String) -> String? {
-        let stripped = raw
-            .replacingOccurrences(of: "```json\n", with: "")
-            .replacingOccurrences(of: "```json", with: "")
-            .replacingOccurrences(of: "```\n", with: "")
-            .replacingOccurrences(of: "```", with: "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let data = stripped.data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let value = json[field] as? String else { return nil }
-        return value
-    }
-
     private func transcribeChunk(
         _ chunk: AudioChunk,
         totalChunks: Int,
@@ -442,11 +413,11 @@ final class AINamingService {
                 result.usage.add(response.usage)
                 result.model = response.model
 
-                guard let rawSrt = parseJSONStringField(response.text, field: "srt") else {
+                guard let rawSrt = TranscriptionSupport.parseJSONStringField(response.text, field: "srt") else {
                     result.errorCode = "chunk_parse_failed"
                     if attempt < maxAttempts {
                         hint = "\n\nPRIOR ATTEMPT FAILED: the response was not strict JSON of the form {\"srt\":\"...\"}. Return JSON only, with no prose around it."
-                        try? await Task.sleep(nanoseconds: jitteredDelayNanos(delay)); delay *= 2
+                        try? await Task.sleep(nanoseconds: TranscriptionSupport.jitteredDelayNanos(delay)); delay *= 2
                         continue
                     }
                     return result
@@ -463,7 +434,7 @@ final class AINamingService {
                     result.errorCode = "chunk_unparseable_srt"
                     if attempt < maxAttempts {
                         hint = "\n\nPRIOR ATTEMPT FAILED: the SRT could not be parsed. Follow the exact format shown, with a blank line between entries."
-                        try? await Task.sleep(nanoseconds: jitteredDelayNanos(delay)); delay *= 2
+                        try? await Task.sleep(nanoseconds: TranscriptionSupport.jitteredDelayNanos(delay)); delay *= 2
                         continue
                     }
                     return result
@@ -486,7 +457,7 @@ final class AINamingService {
                     )
                     if attempt < maxAttempts {
                         hint = "\n\nPRIOR ATTEMPT FAILED: the timestamps were NOT relative to this clip. This clip is \(clipLabel) seconds long and its first moment is 00:00:00,000. Every timestamp MUST fall between 00:00:00,000 and \(clipLabel) seconds."
-                        try? await Task.sleep(nanoseconds: jitteredDelayNanos(delay)); delay *= 2
+                        try? await Task.sleep(nanoseconds: TranscriptionSupport.jitteredDelayNanos(delay)); delay *= 2
                         continue
                     }
                     return result
@@ -508,7 +479,7 @@ final class AINamingService {
                         type: .error
                     )
                     hint = "\n\nPRIOR ATTEMPT FAILED: it covered only \(String(format: "%.0f", lastEnd)) seconds of roughly \(String(format: "%.0f", chunk.speechSeconds)) seconds of speech in this clip. Transcribe the ENTIRE clip from beginning to end."
-                    try? await Task.sleep(nanoseconds: jitteredDelayNanos(delay)); delay *= 2
+                    try? await Task.sleep(nanoseconds: TranscriptionSupport.jitteredDelayNanos(delay)); delay *= 2
                     continue
                 }
 
@@ -524,7 +495,7 @@ final class AINamingService {
                     LogManager.shared.log("🤖 Chunk \(chunk.index): ⚠️ \(oob)/\(clamped.count) cues out of bounds", type: .error)
                     if attempt < maxAttempts {
                         hint = "\n\nPRIOR ATTEMPT FAILED: the timestamps were inconsistent (end before start, or outside the clip). Emit strictly increasing timestamps within 00:00:00,000 to \(clipLabel) seconds."
-                        try? await Task.sleep(nanoseconds: jitteredDelayNanos(delay)); delay *= 2
+                        try? await Task.sleep(nanoseconds: TranscriptionSupport.jitteredDelayNanos(delay)); delay *= 2
                         continue
                     }
                     return result
@@ -546,7 +517,7 @@ final class AINamingService {
                 }
                 if attempt < maxAttempts {
                     LogManager.shared.log("🤖 Chunk \(chunk.index): ⏳ attempt \(attempt) failed (\(error)), retrying...", type: .error)
-                    try? await Task.sleep(nanoseconds: jitteredDelayNanos(delay))
+                    try? await Task.sleep(nanoseconds: TranscriptionSupport.jitteredDelayNanos(delay))
                     delay *= 2
                 }
             }
@@ -785,7 +756,7 @@ final class AINamingService {
 
     /// Removes glossary terms from text before language classification.
     ///
-    /// `dominantLanguage` is a raw Latin-vs-Cyrillic character count, so correctly-spelled
+    /// `LanguageDetection.dominantLanguage` is a raw Latin-vs-Cyrillic character count, so correctly-spelled
     /// Latin tech terms — the glossary's SUCCESS case — inflate the Latin side and can
     /// misclassify a jargon-heavy Ukrainian chunk as English, firing a pointless drift retry
     /// whose re-transcription may well be worse than what it replaced.
@@ -800,162 +771,6 @@ final class AINamingService {
 
     // MARK: - Naming from Transcript
 
-
-    private static let maxNamingTranscriptChars = 40_000
-
-    /// Builds the transcript text for the naming call: plain cue text, no timestamps
-    /// (~40% of SRT bytes and useless for naming). Over-long transcripts are sampled with an
-    /// even stride so the title reflects the whole recording, not just the intro.
-    private func namingTranscriptText(_ segments: [SrtSegment]) -> String {
-        let texts = segments.map(\.text).filter { !$0.isEmpty }
-        guard !texts.isEmpty else { return "" }
-
-        let totalChars = texts.reduce(0) { $0 + $1.count + 1 }
-        if totalChars <= Self.maxNamingTranscriptChars {
-            return texts.joined(separator: " ")
-        }
-
-        let keep = max(1, texts.count * Self.maxNamingTranscriptChars / totalChars)
-        let stride = Double(texts.count) / Double(keep)
-        var picked: [String] = []
-        var budget = Self.maxNamingTranscriptChars
-        var cursor = 0.0
-        while Int(cursor) < texts.count {
-            let text = texts[Int(cursor)]
-            if text.count + 1 > budget { break }
-            picked.append(text)
-            budget -= text.count + 1
-            cursor += stride
-        }
-        LogManager.shared.log("🤖 Naming: transcript sampled \(picked.count)/\(texts.count) cues to fit \(Self.maxNamingTranscriptChars) chars")
-        return picked.joined(separator: " ")
-    }
-
-    /// Returns an explicit language for the naming prompt ONLY when detection is confident
-    /// and inside the confusable set this guard exists for.
-    ///
-    /// `dominantLanguage` reports ANY Latin-majority text as "English" by design, so naming
-    /// the language unconditionally would command an English title for Polish/Spanish/etc
-    /// narration — and the mismatch retry could never catch it, since it would be comparing
-    /// two outputs of the same labeller. Ukrainian vs Russian is the case that genuinely
-    /// needs naming: both are Cyrillic, so a script check alone cannot separate them.
-    private func namingLanguageHint(for transcript: String) -> String? {
-        guard let language = dominantLanguage(transcript),
-              language == "Ukrainian" || language == "Russian" else { return nil }
-
-        var latin = 0
-        var cyrillic = 0
-        for u in transcript.unicodeScalars {
-            let v = u.value
-            if (v >= 0x0041 && v <= 0x005A) || (v >= 0x0061 && v <= 0x007A) {
-                latin += 1
-            } else if (v >= 0x0400 && v <= 0x04FF) || (v >= 0x0500 && v <= 0x052F) {
-                cyrillic += 1
-            }
-        }
-        let total = latin + cyrillic
-        guard total > 0, Double(cyrillic) / Double(total) >= 0.7 else { return nil }
-        return language
-    }
-
-    private func generateNameFromTranscript(
-        transcript: String,
-        frames: [Data],
-        glossary: [String]
-    ) async -> NamingCallResult {
-        var result = NamingCallResult()
-
-        let schema: [String: Any] = [
-            "type": "object",
-            "properties": ["name": ["type": "string"]],
-            "required": ["name"]
-        ]
-        let generationConfig: [String: Any] = [
-            "responseMimeType": "application/json",
-            "responseSchema": schema,
-            "temperature": 0
-        ]
-
-        let language = namingLanguageHint(for: transcript)
-        let transcriptScript = dominantScript(transcript)
-        let maxAttempts = 3
-        var delay: Double = 4.0
-        var hint = ""
-        var languageRetryUsed = false
-
-        for attempt in 1...maxAttempts {
-            let prompt = namingPrompt(transcript: transcript, language: language, glossary: glossary) + hint
-            do {
-                let response = try await proxyClient.generateMultimodal(
-                    prompt: prompt, images: frames, generationConfig: generationConfig
-                )
-                result.attempts += 1
-                result.latencyMs += response.latencyMs
-                result.usage.add(response.usage)
-                result.model = response.model
-
-                guard let rawName = parseJSONStringField(response.text, field: "name"),
-                      let cleaned = cleanupName(rawName) else {
-                    result.errorCode = "naming_parse_failed"
-                    if attempt < maxAttempts {
-                        hint = "\n\nPRIOR ATTEMPT FAILED: the response was not strict JSON of the form {\"name\":\"...\"}. Return JSON only."
-                        try? await Task.sleep(nanoseconds: jitteredDelayNanos(delay)); delay *= 2
-                        continue
-                    }
-                    return result
-                }
-
-                // Language check by SCRIPT, comparing the name against the transcript — two
-                // independent signals. Comparing `dominantLanguage(name)` against the label we
-                // injected into the prompt would be a tautology: if the label were wrong and
-                // Gemini obeyed it, the check would pass every time.
-                //
-                // `.mixed` is NOT a mismatch. A Ukrainian title carrying Latin product names
-                // ("Редизайн UI сайту у Figma") is correct, and `dominantScript` needs 85%
-                // Cyrillic before it says `.cyrillic` — two or three Latin words in a short
-                // title push it under that line. Only the opposite PURE script means Gemini
-                // actually translated the title out of the spoken language.
-                let nameScript = dominantScript(cleaned)
-                let mismatch = transcriptScript != .undetermined && transcriptScript != .mixed
-                    && nameScript != .undetermined && nameScript != .mixed
-                    && nameScript != transcriptScript
-                if mismatch && !languageRetryUsed && attempt < maxAttempts {
-                    languageRetryUsed = true
-                    result.errorCode = "naming_language_mismatch"
-                    // Hold the rejected name instead of dropping it. If the retry never lands —
-                    // a 504 from the proxy is routine on these ~1.5 MB multimodal calls — a
-                    // wrong-language title still beats the "Recording · 20 Aug 2026 12:59"
-                    // placeholder the caller falls back to when `name` comes back nil.
-                    result.name = cleaned
-                    LogManager.shared.log("🤖 Naming: ⚠️ name script \(nameScript) ≠ transcript script \(transcriptScript) — one retry with hint, holding \"\(cleaned)\"", type: .error)
-                    let target = language ?? (transcriptScript == .cyrillic ? "the transcript's language" : "the transcript's language")
-                    hint = "\n\nPRIOR ATTEMPT FAILED: the returned `name` was in the wrong language. Write the `name` in \(target), matching the transcript. Do NOT translate it into English or any other language."
-                    try? await Task.sleep(nanoseconds: jitteredDelayNanos(delay)); delay *= 2
-                    continue
-                }
-                if mismatch {
-                    LogManager.shared.log("🤖 Naming: ⚠️ language still mismatched — accepting \"\(cleaned)\" rather than losing the title", type: .error)
-                }
-
-                result.name = cleaned
-                result.errorCode = nil
-                return result
-
-            } catch {
-                result.attempts += 1
-                result.errorCode = String("\(error)".prefix(200))
-                if !isRetryableError(error) {
-                    result.fatal = true
-                    return result
-                }
-                if attempt < maxAttempts {
-                    try? await Task.sleep(nanoseconds: jitteredDelayNanos(delay))
-                    delay *= 2
-                }
-            }
-        }
-        return result
-    }
 
     // MARK: - Chunked Orchestration
 
@@ -983,7 +798,7 @@ final class AINamingService {
         let scratchKey = videoURL.deletingPathExtension().lastPathComponent
 
         func imageOnlyFallback(_ code: String, totalChunks: Int = 1, failedChunks: Int = 0) async -> NamingResult {
-            let fb = await generateNameImageOnly(for: videoURL)
+            let fb = await naming.generateNameImageOnly(for: videoURL)
             usage.add(fb.usage)
             return NamingResult(
                 srt: nil, name: fb.name, usage: usage, model: fb.model,
@@ -1018,7 +833,7 @@ final class AINamingService {
         )
 
         // Frames feed both the glossary call and the naming call.
-        let frames = FramePreparation.fitFramesToBudget(await FramePreparation.extractFrames(from: videoURL), budget: Self.maxInlineMediaBytes)
+        let frames = FramePreparation.fitFramesToBudget(await FramePreparation.extractFrames(from: videoURL), budget: TranscriptionTuning.maxInlineMediaBytes)
 
         // Glossary must resolve before the fan-out — every chunk prompt embeds it.
         let glossaryResult = await buildFrameGlossary(frames: frames)
@@ -1113,7 +928,7 @@ final class AINamingService {
             if allNoSpeech {
                 // Mirrors today's NO_SPEECH behaviour exactly: no transcript, name from frames.
                 // Routed here rather than through the transcript+frames naming call because an
-                // empty transcript gives `dominantLanguage` nothing to work with.
+                // empty transcript gives `LanguageDetection.dominantLanguage` nothing to work with.
                 LogManager.shared.log("🤖 Chunked: 🤫 every chunk reported NO_SPEECH — image-only naming")
                 return await imageOnlyFallback("no_speech", totalChunks: plans.count, failedChunks: failedChunks)
             }
@@ -1123,8 +938,8 @@ final class AINamingService {
         clearChunkScratch(key: scratchKey)
 
         // Naming from the merged transcript + frames.
-        let transcriptText = namingTranscriptText(merged)
-        let naming = await generateNameFromTranscript(
+        let transcriptText = naming.namingTranscriptText(merged)
+        let naming = await naming.generateNameFromTranscript(
             transcript: transcriptText, frames: frames, glossary: glossary
         )
         usage.add(naming.usage)
@@ -1185,7 +1000,7 @@ final class AINamingService {
             // Strip glossary terms first: correctly-spelled Latin tech terms are the
             // glossary's success case, and they would otherwise tip the Latin/Cyrillic count.
             let text = strippingGlossaryTerms(outcome.text, glossary: glossary)
-            guard let language = dominantLanguage(text) else { continue }
+            guard let language = LanguageDetection.dominantLanguage(text) else { continue }
             languageByIndex[plan.index] = language
             weights[language, default: 0] += plan.speechSeconds
         }
@@ -1222,7 +1037,7 @@ final class AINamingService {
             // Accept only if the retry actually resolved the disagreement. A retry that
             // "succeeded" by translating real speech into the majority language would be a
             // silent corruption of a correct transcript, so anything else keeps the original.
-            guard dominantLanguage(text) == majority else {
+            guard LanguageDetection.dominantLanguage(text) == majority else {
                 LogManager.shared.log("🤖 Chunked: chunk \(index) drift retry did not match majority — keeping the original transcript")
                 if var previous = outcomes[index] {
                     previous.usage.add(result.usage)
@@ -1244,63 +1059,6 @@ final class AINamingService {
 
     // MARK: - Image-only Naming Fallback
 
-
-    private func generateNameImageOnly(for videoURL: URL) async -> ImageOnlyResult {
-        var totalUsage = GeminiUsage.zero
-        var totalLatencyMs = 0
-        var totalAttempts = 0
-        var observedModel = "gemini-2.5-flash-lite"
-        var lastError: String? = nil
-
-        let extracted = await FramePreparation.extractFrames(from: videoURL)
-        // This is the fallback everything else lands on, so it MUST fit the budget on its own:
-        // 10 text-heavy screenshots at full quality can exceed the whole request budget, which
-        // would 413 the very path meant to rescue a failed run.
-        let frames = FramePreparation.fitFramesToBudget(extracted, budget: Self.maxInlineMediaBytes)
-        guard !frames.isEmpty else {
-            LogManager.shared.log("🤖 Naming (image-only): ❌ No frames", type: .error)
-            return ImageOnlyResult(name: nil, usage: totalUsage, model: observedModel, latencyMs: 0, attempts: 0, errorCode: extracted.isEmpty ? "no_frames" : "frames_too_large")
-        }
-        LogManager.shared.log("🤖 Naming (image-only): \(frames.count) frames")
-
-        let prompt = """
-        Review these screenshots taken from a screen recording. \
-        Generate a detailed, descriptive filename (5-10 words, no file extension) \
-        that specifically describes the code, application, or topic shown. \
-        Focus on the concrete details of what the user is actually doing. \
-        Use title case. Examples: "Fixing Google Sign-In Crash in Swift", "Analytics Dashboard Overview for Revenue". \
-        Return ONLY the filename, nothing else.
-        """
-
-        let maxRetries = 3
-        var delay: UInt64 = 5_000_000_000
-        for attempt in 1...maxRetries {
-            do {
-                LogManager.shared.log("🤖 Naming (image-only): Gemini call (attempt \(attempt)/\(maxRetries))...")
-                let result = try await proxyClient.generateWithImages(prompt: prompt, images: frames)
-                totalAttempts += 1
-                totalLatencyMs += result.latencyMs
-                totalUsage.add(result.usage)
-                observedModel = result.model
-                let cleaned = cleanupName(result.text.trimmingCharacters(in: .whitespacesAndNewlines))
-                LogManager.shared.log("🤖 Naming (image-only): ✅ \"\(cleaned ?? "nil")\"")
-                return ImageOnlyResult(name: cleaned, usage: totalUsage, model: observedModel, latencyMs: totalLatencyMs, attempts: totalAttempts, errorCode: nil)
-            } catch {
-                totalAttempts += 1
-                lastError = String("\(error)".prefix(200))
-                guard isRetryableError(error) else {
-                    LogManager.shared.log("🤖 Naming (image-only): ❌ Non-retryable failure (\(error)) — giving up", type: .error)
-                    return ImageOnlyResult(name: nil, usage: totalUsage, model: observedModel, latencyMs: totalLatencyMs, attempts: totalAttempts, errorCode: lastError)
-                }
-                if attempt < maxRetries {
-                    LogManager.shared.log("🤖 Naming (image-only): ⏳ retry in \(delay / 1_000_000_000)s (\(error))", type: .error)
-                    try? await Task.sleep(nanoseconds: delay)
-                    delay *= 2
-                }
-            }
-        }
-        return ImageOnlyResult(name: nil, usage: totalUsage, model: observedModel, latencyMs: totalLatencyMs, attempts: totalAttempts, errorCode: lastError)
-    }
 
     // MARK: - Prompts and Cleanup
 
@@ -1374,28 +1132,11 @@ final class AINamingService {
         """
     }
 
-    /// Renders the shared spelling-reference block injected into chunk and naming prompts.
-    ///
-    /// The last two sentences are load-bearing guards, not politeness: without "never insert",
-    /// a glossary term can be force-matched onto acoustically similar speech; without the
-    /// language disclaimer, a Latin-heavy term list biases Gemini into transcribing Cyrillic
-    /// narration as English — the exact failure the web's description prompt already hit.
-    private func glossaryBlock(_ terms: [String]) -> String {
-        guard !terms.isEmpty else { return "" }
-        return """
-
-
-        SPELLING REFERENCE — names visible on screen in this recording: \(terms.joined(separator: ", ")).
-        If the speaker SAYS one of these names, spell it exactly as listed (keep Latin spellings even inside Cyrillic sentences).
-        NEVER insert a listed word that is not actually spoken; transcribe unclear speech as heard.
-        This list does NOT indicate the audio language — use the language actually spoken.
-        """
-    }
 
     /// Transcription-only prompt for one audio chunk of a longer recording.
     ///
     /// Keeps the primary-speaker rules, NO_SPEECH sentinel and formatting block from the
-    /// combined prompt verbatim; the `name` half moves to `namingPrompt`. The clip-relative
+    /// combined prompt verbatim; the `name` half moves to `naming.namingPrompt`. The clip-relative
     /// timestamp rules are new and critical: the model is told it is part k of n, which is
     /// exactly the framing that can tempt it to emit whole-recording timestamps.
     private func chunkTranscriptionPrompt(part: Int, of total: Int, clipSeconds: Double, glossary: [String]) -> String {
@@ -1430,180 +1171,15 @@ final class AINamingService {
         2
         00:00:03,200 --> 00:00:07,800
         Second sentence goes here.
-        \(glossaryBlock(glossary))
+        \(TranscriptionSupport.glossaryBlock(glossary))
 
         Return strict JSON of the form:
         {"srt":"<srt text or NO_SPEECH>"}
         """
     }
 
-    /// Naming prompt for the chunked path: the title is derived from the merged transcript
-    /// plus screenshots, since no single call has heard the whole recording.
-    ///
-    /// `language` is injected only when local detection is confident (see `namingLanguageHint`).
-    /// When it's nil we fall back to the original audio-derived wording — `dominantLanguage`
-    /// reports ANY Latin-script text as "English", so naming a language on that basis would
-    /// order an English title for e.g. Polish narration.
-    private func namingPrompt(transcript: String, language: String?, glossary: [String]) -> String {
-        let languageRule: String
-        if let language {
-            languageRule = """
-            LANGUAGE: write the `name` in \(language) — the language the narrator speaks. Screenshots may show English code, identifiers or interfaces even though the narrator speaks \(language); that is normal and does NOT change the name's language. Do NOT translate into English or any other language.
-            """
-        } else {
-            languageRule = """
-            LANGUAGE: write the `name` in the SAME language as the TRANSCRIPT below — NOT the language of code, UI text, or IDE shown in screenshots. Screenshots may show English code or interfaces even when the narrator speaks another language — that is normal. The transcript ALWAYS determines the name language.
-            - If the transcript is empty → fall back to English.
-            """
-        }
-
-        return """
-        You receive the transcript of a screen recording plus 3-10 screenshots from it. Produce a single JSON object with one field: `name`.
-
-        Generate a SHORT topic-style filename (4-8 words, no file extension, no trailing punctuation) that names the application or topic shown. It's a filename, not a sentence — write a noun phrase or topic header, NOT a full sentence with verbs and conjunctions.
-
-        Base the topic on the TRANSCRIPT first; use the screenshots to identify the app, game, or tool by name.
-
-        Style requirements:
-        - Topic phrasing: "[App or Game]: [What's happening]" or "[Topic] in [Tool]" or just a noun phrase.
-        - Grammar must be correct in the chosen language. Do NOT translate word-for-word from English — write naturally as a native speaker would title a video.
-        - English: title case ("Fixing Google Sign-In Crash in Swift").
-        - Ukrainian/Russian/Polish/etc: standard sentence case (only first word and proper nouns capitalized, the rest lowercase). These languages do NOT use English-style title case.
-        - No file extension, no quotes, no trailing period/exclamation.
-
-        \(languageRule)
-
-        Good examples:
-        - English narration about Swift bug → "Fixing Google Sign-In Crash in Swift"
-        - Russian narration about Swift bug (narrator speaks Russian) → "Отладка ошибки входа в Swift" (Russian, not English, even though code is English)
-        - Russian narration playing RimWorld with caravan → "RimWorld: караван возвращается в колонию"
-        - Ukrainian narration debugging API → "Налагодження помилки 500 у API замовлень"
-        - English silent UI demo → "Slack Team Discussion on Q1 Roadmap"
-
-        Bad examples (do NOT do this):
-        - Russian narrator, English code → "Optimize token usage for video processing" (WRONG: English name for Russian narrator)
-        - "RimWorld игра караван приближается к дому и требуется ремонт кондиционеры" (full sentence, grammar error in last word)
-        - "fixing google signin in swift" (English without title case)
-        - "Виправлення Помилки Авторизації У Swift" (Ukrainian with English-style title case — wrong)
-        \(glossaryBlock(glossary))
-
-        TRANSCRIPT:
-        \(transcript)
-
-        Return strict JSON of the form:
-        {"name":"<filename>"}
-        """
-    }
-
-    /// Maximum length of a cleaned name. The prompt targets a 4-8 word filename; 80 chars
-    /// gives generous slack while keeping the user-visible title from ballooning if Gemini
-    /// returns a whole sentence.
-    private static let maxNameLength = 80
-
-    private func cleanupName(_ raw: String) -> String? {
-        // 1) Strip control characters (newlines, tabs, etc. become nothing here — runs are
-        //    handled by the whitespace collapse below, but stray control chars are removed).
-        var s = String(raw.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) })
-        // 2) Collapse all whitespace runs (including any remaining tabs/newlines) to one space.
-        s = s.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
-        // 3) Drop quotes and remap path-hostile characters.
-        s = s
-            .replacingOccurrences(of: "\"", with: "")
-            .replacingOccurrences(of: "/", with: "-")
-            .replacingOccurrences(of: ":", with: "-")
-        // 4) Strip a real trailing .mp4/.mov extension only (anchored, case-insensitive) —
-        //    never a mid-string ".mov" that is part of a legitimate name.
-        s = s.replacingOccurrences(of: #"(?i)\.(mp4|mov)$"#, with: "", options: .regularExpression)
-        s = s.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !s.isEmpty else { return nil }
-
-        // 5) Enforce the length cap, truncating at the last word boundary ≤ maxNameLength.
-        //    Falls back to a hard cut if there is no boundary (e.g. one very long token).
-        if s.count > Self.maxNameLength {
-            let cap = s.index(s.startIndex, offsetBy: Self.maxNameLength)
-            let head = s[..<cap]
-            if let lastSpace = head.lastIndex(of: " ") {
-                let truncated = head[..<lastSpace].trimmingCharacters(in: .whitespaces)
-                s = truncated.isEmpty ? String(head) : truncated
-            } else {
-                s = String(head)
-            }
-        }
-        return s.isEmpty ? nil : s
-    }
 
     // MARK: - Language Detection
-
-
-    /// Returns whichever of {Cyrillic, Latin} dominates the alphabetic characters in `s`.
-    /// `mixed` if both are present in roughly equal share, `undetermined` if there are no
-    /// alphabetic characters at all.
-    func dominantScript(_ s: String) -> NameScript {
-        var latin = 0
-        var cyrillic = 0
-        for u in s.unicodeScalars {
-            let v = u.value
-            if (v >= 0x0041 && v <= 0x005A) || (v >= 0x0061 && v <= 0x007A) {
-                latin += 1
-            } else if v >= 0x00C0 && v <= 0x024F && u.properties.isAlphabetic {
-                latin += 1
-            } else if (v >= 0x0400 && v <= 0x04FF) || (v >= 0x0500 && v <= 0x052F) {
-                cyrillic += 1
-            }
-        }
-        let total = latin + cyrillic
-        guard total > 0 else { return .undetermined }
-        let latinRatio = Double(latin) / Double(total)
-        let cyrillicRatio = Double(cyrillic) / Double(total)
-        if latinRatio >= 0.85 { return .latin }
-        if cyrillicRatio >= 0.85 { return .cyrillic }
-        return .mixed
-    }
-
-    /// Best-effort dominant-language detection — finer-grained than `dominantScript`.
-    /// Within Cyrillic, distinguishes Russian vs Ukrainian by language-specific letter
-    /// markers (ї/є/ґ → Ukrainian; ы/э/ъ/ё → Russian); otherwise defaults to Russian
-    /// for unmarked Cyrillic. Latin always returns "English" — we don't try to tell
-    /// English apart from Spanish/French/etc.
-    ///
-    /// Returns nil for too-short or unclassifiable input. Used to detect cases like
-    /// Russian narration getting a Ukrainian title (both Cyrillic — `dominantScript`
-    /// flags them as a match even though the language is wrong).
-    func dominantLanguage(_ s: String) -> String? {
-        var latin = 0
-        var cyrillic = 0
-        var hasUkrainianMarker = false
-        var hasRussianMarker = false
-        for u in s.unicodeScalars {
-            let v = u.value
-            if (v >= 0x0041 && v <= 0x005A) || (v >= 0x0061 && v <= 0x007A) {
-                latin += 1
-            } else if (v >= 0x0400 && v <= 0x04FF) || (v >= 0x0500 && v <= 0x052F) {
-                cyrillic += 1
-                // Ukrainian-only letters: і І ї Ї є Є ґ Ґ
-                if v == 0x0456 || v == 0x0406 || v == 0x0457 || v == 0x0407
-                    || v == 0x0454 || v == 0x0404 || v == 0x0491 || v == 0x0490 {
-                    hasUkrainianMarker = true
-                }
-                // Russian-only letters: ы Ы э Э ъ Ъ ё Ё
-                if v == 0x044B || v == 0x042B || v == 0x044D || v == 0x042D
-                    || v == 0x044A || v == 0x042A || v == 0x0451 || v == 0x0401 {
-                    hasRussianMarker = true
-                }
-            }
-        }
-        let total = latin + cyrillic
-        guard total >= 5 else { return nil }
-        if cyrillic > latin {
-            if hasUkrainianMarker && !hasRussianMarker { return "Ukrainian" }
-            if hasRussianMarker && !hasUkrainianMarker { return "Russian" }
-            if hasUkrainianMarker { return "Ukrainian" }
-            // Cyrillic but no language-specific markers — default to Russian
-            // (more common globally; safer fallback than mis-tagging as Ukrainian).
-            return "Russian"
-        }
-        return "English"
-    }
 
 
     private func parseCombinedResponse(_ raw: String) -> CombinedResponse? {

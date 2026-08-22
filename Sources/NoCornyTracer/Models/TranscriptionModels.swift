@@ -167,4 +167,17 @@ enum TranscriptionTuning {
     /// Apply 1.25× speedup to trimmed audio. Phase B — disabled until validated on real ukr/rus recordings.
     static let enableSpeedUp: Bool = false
     static let speedUpFactor: Double = 1.25
+
+    /// Budget for the base64-ENCODED inline media (audio + frames) in one Gemini request.
+    ///
+    /// This was 18 MB, sized against Gemini's ~20 MB inline-data cap — but the request never
+    /// reaches Gemini. It goes through our Vercel-hosted proxy, whose serverless request-body
+    /// limit is 4.5 MB, enforced at the edge before the handler runs. An 18 MB budget meant
+    /// the guard could not fire: a 10-minute recording built a ~6.2 MB body and died with
+    /// `413 FUNCTION_PAYLOAD_TOO_LARGE`, six times over, producing no title and no transcript.
+    ///
+    /// Kept slightly under `GeminiProxyClient.maxRequestBodyBytes` so the prompt and JSON
+    /// scaffolding fit alongside the media; that client-side check on the exact serialized
+    /// body is the real guard, this one is the pre-emptive budget used to degrade gracefully.
+    static let maxInlineMediaBytes = 3_800_000
 }
