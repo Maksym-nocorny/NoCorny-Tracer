@@ -581,6 +581,12 @@ final class TracerAPIClient {
         let recordedAt: Date?
         let createdAt: Date?
         let updatedAt: Date?
+        /// The server sends this on the list endpoint (it selects every column); the DTO
+        /// simply never declared it, so Codable dropped it on the floor. Without it a Mac
+        /// that rebuilds its list from the server has titles and thumbnails but no
+        /// transcript, and anything keyed off having one - re-running speaker separation,
+        /// for instance - stays hidden for no good reason.
+        let transcriptSrt: String?
     }
 
     struct VideosEnvelope: Codable {

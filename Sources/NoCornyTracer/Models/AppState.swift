@@ -1408,6 +1408,12 @@ final class AppState {
                 working[idx].fileSize = v.fileSize.flatMap { $0 >= 0 ? UInt64($0) : nil } ?? working[idx].fileSize
                 working[idx].thumbnailURL = v.thumbnailUrl ?? working[idx].thumbnailURL
                 working[idx].aiGeneratedName = v.title
+                // Never overwrite a local transcript with nothing: this sync also runs
+                // right after a recording is processed, and the server row can lag a beat
+                // behind the PATCH that carried the transcript up.
+                if let srt = v.transcriptSrt, !srt.isEmpty {
+                    working[idx].transcriptSrt = srt
+                }
                 working[idx].tracerURL = "https://tracer.nocorny.com/v/\(v.slug)"
             } else if v.isDeleted != true {
                 let created = v.recordedAt ?? v.createdAt ?? Date()
@@ -1426,6 +1432,7 @@ final class AppState {
                 rec.tracerURL = "https://tracer.nocorny.com/v/\(v.slug)"
                 rec.thumbnailURL = v.thumbnailUrl
                 rec.fileSize = v.fileSize.flatMap { $0 >= 0 ? UInt64($0) : nil }
+                rec.transcriptSrt = v.transcriptSrt
                 working.append(rec)
             }
         }
