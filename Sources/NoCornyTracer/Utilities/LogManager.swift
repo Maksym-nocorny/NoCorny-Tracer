@@ -168,6 +168,31 @@ final class LogManager {
         pattern: "https?://[^\\s]*(dropbox\\.com|dropboxusercontent\\.com|tracer\\.nocorny\\.com)[^\\s]*",
         options: [.caseInsensitive])
 
+    /// The slug is the credential, not a reference: the public page renders for anyone
+    /// holding it, so pasting one after the domain is a working link to somebody's meeting.
+    /// Redacting only full URLs left it in plain sight everywhere the pipeline mentions a
+    /// recording without a host in front of it: the reservation, the Dropbox folder, the
+    /// API path.
+    private static let recordingSlugRegex = try? NSRegularExpression(
+        pattern: "(slug[=/]|/api/videos/|/videos/|/v/)[A-Za-z0-9_-]{7,}",
+        options: [.caseInsensitive])
+
+    /// Two log lines shipped before this naming a recording by a bare slug, with no marker
+    /// in front for the rule above to key off. Those logs are on a user's disk right now and
+    /// a bug report reads them, so the exact phrasings that shipped are matched by name.
+    /// Call sites write `slug=` today, which is why nothing new has to be added here.
+    private static let legacySlugPhraseRegex = try? NSRegularExpression(
+        pattern: "(Tracer: deleted |Tracer: delete |re-labelled )[A-Za-z0-9_-]{7,}",
+        options: [])
+
+    /// A generated title is a summary of what was said, which is most of what a transcript
+    /// would have given away: "Layoff plan review with Sarah" needs no transcript to be a
+    /// leak. Call sites log a length now; this covers logs written by an older build, and
+    /// any future call site that forgets.
+    private static let quotedTitleRegex = try? NSRegularExpression(
+        pattern: "\\b(title|names?|named)\\b\\s*[:=]?\\s*\"[^\"]*\"",
+        options: [.caseInsensitive])
+
     /// Internal rather than private so it can be tested directly. Going through `log()`
     /// does not work: the in-memory buffer is filled on the main queue, so a test reading
     /// it back immediately sees nothing and every "does not contain" assertion passes for
@@ -183,6 +208,14 @@ final class LogManager {
         if let regex = Self.capabilityURLRegex {
             let range = NSRange(result.startIndex..., in: result)
             result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "[LINK]")
+        }
+        for regex in [Self.recordingSlugRegex, Self.legacySlugPhraseRegex].compactMap({ $0 }) {
+            let range = NSRange(result.startIndex..., in: result)
+            result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "$1[SLUG]")
+        }
+        if let regex = Self.quotedTitleRegex {
+            let range = NSRange(result.startIndex..., in: result)
+            result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "$1: \"[TITLE]\"")
         }
         return result
     }

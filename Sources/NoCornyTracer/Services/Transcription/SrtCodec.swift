@@ -173,10 +173,20 @@ enum SrtCodec {
     /// from the source are irrelevant — both our parser and the web's ignore them — so the
     /// chunked path can concatenate segments freely and let this assign final numbering.
     ///
-    /// A labelled cue gets its speaker as a `[Name] ` prefix on the text line. That shape is a
-    /// contract with the web player, which lifts the name out with `/^\[([^\]]{1,40})\]\s+/`
-    /// and renders it as a speaker chip: no brackets, no trailing space, name under 40 chars,
-    /// or the prefix stops being a name and starts being part of what someone said. Players
+    /// The one label shape both ends of the round trip agree on. `serializeSrt` writes it,
+    /// `AppState.strippingSpeakerPrefixes` takes it back off before a re-run, and the web
+    /// player lifts it into a speaker chip. Narrow on purpose: Whisper writes its own
+    /// bracketed asides at the head of a cue -- `[Music]`, `[inaudible]` -- and a stripper
+    /// that ate any bracket ate those instead, taking the cue's only content with it.
+    ///
+    /// `SpeakerSeparation` is the only thing that names a speaker, and it names them
+    /// `Speaker 1`, `Speaker 2` and so on. Anything else in brackets is something a person
+    /// said and stays put.
+    static let speakerLabelPrefixPattern = #"^\[Speaker \d{1,2}\]\s+"#
+
+    /// A labelled cue gets its speaker as a `[Speaker N] ` prefix on the text line -- see
+    /// `speakerLabelPrefixPattern`. That shape is a contract with the web player, which lifts
+    /// the name out with `/^\[([^\]]{1,40})\]\s+/` and renders it as a speaker chip. Players
     /// that know nothing about speakers still show a valid subtitle, which is why the label
     /// lives in the text rather than in an extension SRT has no room for.
     static func serializeSrt(_ segments: [SrtSegment]) -> String? {

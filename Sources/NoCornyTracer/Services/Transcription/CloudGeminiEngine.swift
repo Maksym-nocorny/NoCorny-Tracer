@@ -314,7 +314,7 @@ final class CloudGeminiEngine: TranscriptionEngine {
                 let languageMismatch = !isExplicitNoSpeech && srtLanguage != nil && nameLanguage != nil && srtLanguage != nameLanguage
                 if languageMismatch && attempt < maxRetries {
                     let lang = srtLanguage!
-                    LogManager.shared.log("🤖 Combined: ⚠️ Language mismatch — SRT is \(lang), name \"\(cleanedName ?? "nil")\" is \(nameLanguage ?? "unknown"). Retrying with \(lang) hint.", type: .error)
+                    LogManager.shared.log("🤖 Combined: ⚠️ Language mismatch - SRT is \(lang), name is \(nameLanguage ?? "unknown"). Retrying with \(lang) hint.", type: .error)
                     lastError = "language_mismatch"
                     languageHint = "\n\nPRIOR ATTEMPT FAILED: the returned `name` was in the wrong language. The transcript is in \(lang). The `name` MUST be written in \(lang). Do NOT translate to English, Russian, Ukrainian, or any other language — write it in \(lang) only."
                     try? await Task.sleep(nanoseconds: delay)
@@ -326,7 +326,9 @@ final class CloudGeminiEngine: TranscriptionEngine {
                 }
 
                 // restoredSrt was already computed above (and stored as the best result).
-                LogManager.shared.log("🤖 Combined: ✅ Name: \"\(cleanedName ?? "nil")\", restored SRT length: \(restoredSrt?.count ?? 0)")
+                // Length only: the title is a one-line summary of the meeting, so logging it
+                // gives away what the transcript we deliberately never log was about.
+                LogManager.shared.log("🤖 Combined: ✅ Name (\(cleanedName?.count ?? 0) chars), restored SRT length: \(restoredSrt?.count ?? 0)")
                 return NamingResult(srt: restoredSrt, name: cleanedName, usage: totalUsage, model: observedModel, latencyMs: totalLatencyMs, attempts: totalAttempts, success: true, errorCode: nil)
 
             } catch {
@@ -353,7 +355,7 @@ final class CloudGeminiEngine: TranscriptionEngine {
                 // result, return it rather than discarding good work. Mark success:true but
                 // keep errorCode = lastError so telemetry still records that retries failed.
                 if haveAcceptable {
-                    LogManager.shared.log("🤖 Combined: ⚠️ Attempt \(attempt) failed (\(errorString)) — returning best earlier result \"\(bestName ?? "nil")\"", type: .error)
+                    LogManager.shared.log("🤖 Combined: ⚠️ Attempt \(attempt) failed (\(errorString)) - returning best earlier result (name \(bestName?.count ?? 0) chars)", type: .error)
                     return NamingResult(srt: bestRestoredSrt, name: bestName, usage: totalUsage, model: observedModel, latencyMs: totalLatencyMs, attempts: totalAttempts, success: true, errorCode: lastError)
                 }
                 LogManager.shared.log("🤖 Combined: ❌ All \(maxRetries) attempts failed. Last error: \(errorString)", type: .error)

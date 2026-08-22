@@ -391,6 +391,13 @@ final class LocalWhisperEngine: TranscriptionEngine {
             return Self.failure(code: "local_transcribe_failed", fatal: true, since: t0, attempts: attempts)
         }
 
+        // Whisper decodes in 30-second windows and snaps the last segment of a window to its
+        // edge, so a 148-second recording hands back a cue ending around 168. `SrtCodec` and
+        // the Groq path both bound cues to the recording; do the same here rather than ship a
+        // subtitle that outlives the video. A VAD pass that reported no duration is not a
+        // reason to throw the transcript away, so that case bounds nothing.
+        let recordingEnd = analysis.totalDuration > 0 ? analysis.totalDuration : .infinity
+
         var segments: [SrtSegment] = []
         var dropped = 0
         for result in results {
@@ -402,7 +409,8 @@ final class LocalWhisperEngine: TranscriptionEngine {
                     continue
                 }
                 let start = Double(s.start)
-                let end = Double(s.end)
+                guard start < recordingEnd else { continue }
+                let end = min(Double(s.end), recordingEnd)
                 guard end > start else { continue }
                 segments.append(SrtSegment(start: start, end: end, text: text))
             }

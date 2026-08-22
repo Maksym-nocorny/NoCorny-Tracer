@@ -793,7 +793,7 @@ final class AppState {
         // reasons used to re-run transcription from scratch. Cheap when that meant one
         // cloud call; on-device transcription of a long recording is minutes of CPU.
         let cached = recordings.first(where: { $0.id == id })
-        let cachedTranscript = (cached?.transcriptSrt?.isEmpty == false) ? cached?.transcriptSrt : nil
+        let cachedTranscript = TranscriptStore.shared.load(for: id)
         // Both halves are required: the setting is what the user asked for, the entitlement is
         // what they are allowed. Read here, after the profile refresh above, so a plan change
         // takes effect on this recording rather than the next one.
@@ -841,18 +841,18 @@ final class AppState {
             if generatedSubtitles == nil && aiName == nil {
                 LogManager.shared.log("🤖 Combined: ❌ Both passes failed — proceeding with placeholder name and no transcript", type: .error)
             } else {
-                LogManager.shared.log("🤖 Combined: ✅ Second pass succeeded — name=\"\(aiName ?? "nil")\", srtLen=\(generatedSubtitles?.count ?? 0)")
+                LogManager.shared.log("🤖 Combined: ✅ Second pass succeeded - title \(aiName?.count ?? 0) chars, srtLen=\(generatedSubtitles?.count ?? 0)")
             }
         } else {
-            LogManager.shared.log("🤖 Combined: ✅ First pass — name=\"\(aiName ?? "nil")\", srtLen=\(generatedSubtitles?.count ?? 0)")
+            LogManager.shared.log("🤖 Combined: ✅ First pass - title \(aiName?.count ?? 0) chars, srtLen=\(generatedSubtitles?.count ?? 0)")
         }
 
         // What the labels in this transcript assumed, so the Recordings list shows the answer
         // this recording was given rather than whatever the setting says by then.
         let speakersUsed: ExpectedSpeakers? = shouldDiarize ? expectedSpeakers : nil
         if let generatedSubtitles, !generatedSubtitles.isEmpty {
+            TranscriptStore.shared.save(generatedSubtitles, for: id)
             updateRecording(id: id) {
-                $0.transcriptSrt = generatedSubtitles
                 $0.transcriptEngine = aiModel
                 if let speakersUsed { $0.expectedSpeakers = speakersUsed }
             }
@@ -876,7 +876,10 @@ final class AppState {
             updateRecording(id: id) {
                 $0.aiGeneratedName = aiNameBase
             }
-            LogManager.shared.log("🤖 AI Naming: ✅ Named: \"\(aiNameBase)\"")
+            // The title says what the meeting was about, so it is as private as the
+            // transcript it was written from. A length is enough to tell "named" from
+            // "fell back to the timestamp" when reading a report.
+            LogManager.shared.log("🤖 AI Naming: ✅ Named (\(aiNameBase.count) chars)")
         }
 
         // Step 4: Upload transcript.srt to Dropbox so the user has a complete
@@ -904,7 +907,7 @@ final class AppState {
                 processingStatus: "ready",
                 aiUsage: aiUsagePayload
             )
-            LogManager.shared.log("🌐 Tracer: ✅ Final PATCH — title: \"\(finalTitle)\"")
+            LogManager.shared.log("🌐 Tracer: ✅ Final PATCH - title \(finalTitle.count) chars")
         }
 
         // Step 5.5: keep the audio a later re-run of speaker separation will need. Must happen
@@ -953,10 +956,17 @@ final class AppState {
     /// that would tie every engine to a cache none of them care about. The extra pass is one
     /// read of the audio track, seconds even on an hour-long recording.
     ///
-    /// Gated on the entitlement rather than on the `diarizationEnabled` toggle. Somebody whose
-    /// plan includes separation but who had it switched off is exactly the person who will
-    /// switch it on after reading a transcript, and an empty cache would answer them with
-    /// "no audio" for every recording they already made.
+    /// Not gated on today's entitlement, and that is the whole point. Step 6 deletes the local
+    /// MP4 a few lines from here, so the audio is recoverable for exactly as long as this
+    /// function runs. The entitlement can be granted tomorrow; the audio cannot be recovered
+    /// tomorrow. Gating the cache on it meant every recording made before a tier grant could
+    /// never be re-labelled -- which at release, where everyone is on the free tier, is every
+    /// recording anyone has.
+    ///
+    /// The Dropbox mirror is a different question and does stay gated. It spends the user's own
+    /// storage quota, so it waits until separation is something they have actually turned on
+    /// and are entitled to; the local cache is bounded at 2 GB and evicted, so keeping it
+    /// speculatively costs nothing anybody notices.
     ///
     /// - Returns: the Dropbox paths of the durable copies, when they got there.
     private func preserveDiarizationAudio(
@@ -967,13 +977,13 @@ final class AppState {
         folder: String?,
         token: String
     ) async -> (mic: String?, system: String?) {
-        guard tracerAPIClient.entitlements.diarization else { return (nil, nil) }
+        let mirrorToDropbox = diarizationEnabled && tracerAPIClient.entitlements.diarization
 
         let cache = DiarizationAudioCache.shared
         // A retry re-enters this whole function, and nothing about the audio changes between
         // passes. Re-encoding and re-uploading 15 MB an hour to land on the same bytes is a
         // cost a failed upload should not keep paying.
-        if cache.hasMicAudio(for: id), alreadyInDropboxAt != nil {
+        if cache.hasMicAudio(for: id), !mirrorToDropbox || alreadyInDropboxAt != nil {
             return (nil, nil)
         }
         guard let extracted = await AudioPreparation.extractCompressedAudio(from: videoURL),
@@ -988,7 +998,7 @@ final class AppState {
         cache.evict()
         LogManager.shared.log("🎛️ Diarization cache: kept \(systemURL == nil ? "mic" : "mic + system") audio, cache now \(ByteCountFormatter.string(fromByteCount: Int64(cache.totalBytes()), countStyle: .file))")
 
-        guard let folder, !token.isEmpty else { return (nil, nil) }
+        guard mirrorToDropbox, let folder, !token.isEmpty else { return (nil, nil) }
         var micPath: String? = nil
         var systemPath: String? = nil
         do {
@@ -1029,7 +1039,7 @@ final class AppState {
             speakerReapplyErrors[recordingID] = "Speaker separation is not part of your plan."
             return
         }
-        guard let srt = recording.transcriptSrt, !srt.isEmpty else {
+        guard let srt = recording.transcript else {
             speakerReapplyErrors[recordingID] = "This recording has no transcript to re-label."
             return
         }
@@ -1078,15 +1088,17 @@ final class AppState {
             return
         }
 
+        TranscriptStore.shared.save(rebuilt, for: recordingID)
         if let index = recordings.firstIndex(where: { $0.id == recordingID }) {
-            recordings[index].transcriptSrt = rebuilt
             recordings[index].expectedSpeakers = expected
             saveRecordings()
         }
 
         if let slug = recording.tracerSlug {
             await tracerAPIClient.updateVideo(slug: slug, transcriptSrt: rebuilt)
-            LogManager.shared.log("🎛️ Diarization: ✅ re-labelled \(slug) as \(expected.displayName)")
+            // `slug=` is the marker the log sink redacts on. A bare slug would sail straight
+            // through into a bug report, and the slug is what opens the recording.
+            LogManager.shared.log("🎛️ Diarization: ✅ re-labelled slug=\(slug) as \(expected.displayName)")
         }
 
         // Keep Dropbox's copy of the transcript in step with the one on the site, so the
@@ -1158,12 +1170,17 @@ final class AppState {
         return .ready(mic: micURL, system: systemURL)
     }
 
-    /// Removes the `[Name] ` prefix `SrtCodec.serializeSrt` writes onto a labelled cue, so a
-    /// re-labelled transcript carries one prefix rather than one per run. Loops because a
+    /// Removes the `[Speaker N] ` prefix `SrtCodec.serializeSrt` writes onto a labelled cue, so
+    /// a re-labelled transcript carries one prefix rather than one per run. Loops because a
     /// transcript that already stacked them has to come back clean, and keeps the original text
     /// when stripping would leave a cue with nothing in it.
+    ///
+    /// Matches only the shape we write. It used to take any bracketed opener under forty
+    /// characters, which ate Whisper's own `[Music]` and `[inaudible]` asides -- and those are
+    /// often the entire cue, so the cue came back empty on our side and as a speaker named
+    /// "Music" on the web.
     static func strippingSpeakerPrefixes(from cues: [SrtSegment]) -> [SrtSegment] {
-        let prefix = #"^\[[^\]]{1,40}\]\s+"#
+        let prefix = SrtCodec.speakerLabelPrefixPattern
         return cues.map { cue in
             var text = cue.text
             while let range = text.range(of: prefix, options: .regularExpression) {
@@ -1212,17 +1229,33 @@ final class AppState {
         // killed mid-upload — there is no in-flight task for it now, so it would spin
         // forever. Reconcile to .failed so the UI offers a retry instead.
         recordings = decoded.map { rec in
-            guard rec.uploadStatus == .uploading else { return rec }
             var r = rec
+            // A list written by a build that kept transcripts inline. Move each one into the
+            // store on the way past, then drop it from the value so the next save writes the
+            // list without it. Silent on purpose: nothing about it is the user's problem.
+            if let inline = r.legacyInlineTranscript, !inline.isEmpty {
+                TranscriptStore.shared.save(inline, for: r.id)
+                r.legacyInlineTranscript = nil
+            }
+            guard r.uploadStatus == .uploading else { return r }
             r.uploadStatus = .failed
             r.uploadError = "Upload interrupted — tap to retry"
             return r
+        }
+        if decoded.contains(where: { $0.legacyInlineTranscript?.isEmpty == false }) {
+            // The list on disk still has them until something saves; do it now rather than
+            // wait for the next recording, so the plist stops holding speech today.
+            saveRecordings()
         }
     }
 
     // MARK: - History Management
 
     func clearHistory() {
+        // The transcripts are files now, so clearing the list no longer takes them with it.
+        for recording in recordings {
+            TranscriptStore.shared.remove(for: recording.id)
+        }
         recordings.removeAll()
         saveRecordings()
     }
@@ -1233,7 +1266,7 @@ final class AppState {
         //    directly for deletion anymore.
         if let slug = recording.tracerSlug, tracerAPIClient.isSignedIn {
             let ok = await tracerAPIClient.deleteVideo(slug: slug)
-            LogManager.shared.log(ok ? "🗑️ Tracer: deleted \(slug)" : "❌ Tracer: delete \(slug) failed",
+            LogManager.shared.log(ok ? "🗑️ Tracer: deleted slug=\(slug)" : "❌ Tracer: delete slug=\(slug) failed",
                                   type: ok ? .info : .error)
             guard ok else {
                 // Server delete failed — the video still lives on the server and in
@@ -1254,6 +1287,7 @@ final class AppState {
         }
         // Nothing left to re-label, so the audio kept for that is now just disk.
         DiarizationAudioCache.shared.remove(for: recording.id)
+        TranscriptStore.shared.remove(for: recording.id)
 
         // 3. Drop from local state immediately so UI updates without a re-sync
         DispatchQueue.main.async {
@@ -1271,12 +1305,13 @@ final class AppState {
     func retryUpload(_ recording: Recording) async {
         guard recording.uploadStatus == .failed else { return }
         guard FileManager.default.fileExists(atPath: recording.fileURL.path) else {
-            print("📤 Retry: Local file no longer exists for \(recording.displayName)")
+            print("📤 Retry: Local file no longer exists for slug=\(recording.tracerSlug ?? "none")")
             return
         }
         guard let index = recordings.firstIndex(where: { $0.id == recording.id }) else { return }
 
-        LogManager.shared.log("🔄 Retry: Retrying previous upload for \(recording.displayName)", type: .info)
+        // displayName is the generated title once naming has run, so it names the meeting.
+        LogManager.shared.log("🔄 Retry: Retrying previous upload for slug=\(recording.tracerSlug ?? "none")", type: .info)
         recordings[index].uploadStatus = .uploading
         saveRecordings()
 
@@ -1388,6 +1423,9 @@ final class AppState {
         for v in envelope.videos {
             if let idx = working.firstIndex(where: { $0.tracerSlug == v.slug }) {
                 if v.isDeleted == true {
+                    // Deleted on the web. The row goes, and so does the transcript file it
+                    // was the only pointer to.
+                    TranscriptStore.shared.remove(for: working[idx].id)
                     working.remove(at: idx)
                     continue
                 }
@@ -1412,7 +1450,7 @@ final class AppState {
                 // right after a recording is processed, and the server row can lag a beat
                 // behind the PATCH that carried the transcript up.
                 if let srt = v.transcriptSrt, !srt.isEmpty {
-                    working[idx].transcriptSrt = srt
+                    TranscriptStore.shared.save(srt, for: working[idx].id)
                 }
                 working[idx].tracerURL = "https://tracer.nocorny.com/v/\(v.slug)"
             } else if v.isDeleted != true {
@@ -1432,7 +1470,7 @@ final class AppState {
                 rec.tracerURL = "https://tracer.nocorny.com/v/\(v.slug)"
                 rec.thumbnailURL = v.thumbnailUrl
                 rec.fileSize = v.fileSize.flatMap { $0 >= 0 ? UInt64($0) : nil }
-                rec.transcriptSrt = v.transcriptSrt
+                TranscriptStore.shared.save(v.transcriptSrt, for: rec.id)
                 working.append(rec)
             }
         }
@@ -1459,6 +1497,11 @@ final class AppState {
     /// signs in does a fresh full sync instead of inheriting another user's rows.
     @MainActor
     func resetTracerLibraryState() {
+        // Same reasoning as the rows themselves: the next account to sign in must not find
+        // the previous one's meetings sitting in Application Support.
+        for recording in recordings {
+            TranscriptStore.shared.remove(for: recording.id)
+        }
         recordings.removeAll()
         saveRecordings()
         dropboxUsedSpace = 0

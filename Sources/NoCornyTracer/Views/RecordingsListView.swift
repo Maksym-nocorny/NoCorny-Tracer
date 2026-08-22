@@ -375,7 +375,7 @@ struct RecordingRowView: View {
     /// here or in Dropbox. Anything less and the control would be a button that fails.
     private var canReapplySpeakers: Bool {
         guard appState.tracerAPIClient.entitlements.diarization else { return false }
-        guard let srt = recording.transcriptSrt, !srt.isEmpty else { return false }
+        guard recording.hasTranscript else { return false }
         return DiarizationAudioCache.shared.hasMicAudio(for: recording.id)
             || recording.diarizationMicPath != nil
     }

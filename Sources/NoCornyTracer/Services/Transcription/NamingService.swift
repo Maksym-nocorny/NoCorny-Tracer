@@ -160,14 +160,14 @@ final class NamingService {
                     // wrong-language title still beats the "Recording · 20 Aug 2026 12:59"
                     // placeholder the caller falls back to when `name` comes back nil.
                     result.name = cleaned
-                    LogManager.shared.log("🤖 Naming: ⚠️ name script \(nameScript) ≠ transcript script \(transcriptScript) — one retry with hint, holding \"\(cleaned)\"", type: .error)
+                    LogManager.shared.log("🤖 Naming: ⚠️ name script \(nameScript) ≠ transcript script \(transcriptScript) - one retry with hint, holding the \(cleaned.count)-char title", type: .error)
                     let target = language ?? (transcriptScript == .cyrillic ? "the transcript's language" : "the transcript's language")
                     hint = "\n\nPRIOR ATTEMPT FAILED: the returned `name` was in the wrong language. Write the `name` in \(target), matching the transcript. Do NOT translate it into English or any other language."
                     try? await Task.sleep(nanoseconds: TranscriptionSupport.jitteredDelayNanos(delay)); delay *= 2
                     continue
                 }
                 if mismatch {
-                    LogManager.shared.log("🤖 Naming: ⚠️ language still mismatched — accepting \"\(cleaned)\" rather than losing the title", type: .error)
+                    LogManager.shared.log("🤖 Naming: ⚠️ language still mismatched - accepting the title rather than losing it", type: .error)
                 }
 
                 result.name = cleaned
@@ -228,7 +228,7 @@ final class NamingService {
                 totalUsage.add(result.usage)
                 observedModel = result.model
                 let cleaned = cleanupName(result.text.trimmingCharacters(in: .whitespacesAndNewlines))
-                LogManager.shared.log("🤖 Naming (image-only): ✅ \"\(cleaned ?? "nil")\"")
+                LogManager.shared.log("🤖 Naming (image-only): ✅ title \(cleaned?.count ?? 0) chars")
                 return ImageOnlyResult(name: cleaned, usage: totalUsage, model: observedModel, latencyMs: totalLatencyMs, attempts: totalAttempts, errorCode: nil)
             } catch {
                 totalAttempts += 1

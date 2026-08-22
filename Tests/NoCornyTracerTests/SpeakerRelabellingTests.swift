@@ -33,11 +33,30 @@ final class SpeakerRelabellingTests: XCTestCase {
         XCTAssertEqual(stripped("hello [Speaker 1] there"), "hello [Speaker 1] there")
     }
 
-    /// The web player lifts the name with `/^\[([^\]]{1,40})\]\s+/`, so anything longer than
-    /// forty characters was never a label to begin with.
+    /// Only the shape `SrtCodec.serializeSrt` writes counts as a label, so a bracket holding
+    /// anything else was never one.
     func testAnOverlongBracketIsNotALabel() {
         let long = "[" + String(repeating: "x", count: 41) + "] hello"
         XCTAssertEqual(stripped(long), long)
+    }
+
+    /// Whisper writes its own bracketed asides at the head of a cue, and they are usually the
+    /// whole cue. A stripper that took any bracket deleted them here and, because the web
+    /// player reads a leading bracket as a speaker name, turned them into people over there.
+    func testWhisperAsidesAreNotLabels() {
+        XCTAssertEqual(stripped("[Music] Hello"), "[Music] Hello")
+        XCTAssertEqual(stripped("[inaudible] and then we shipped it"), "[inaudible] and then we shipped it")
+        XCTAssertEqual(stripped("[BLANK_AUDIO]"), "[BLANK_AUDIO]")
+    }
+
+    /// A name that is not one of ours is somebody's words, not a label.
+    func testANamedBracketIsNotALabel() {
+        XCTAssertEqual(stripped("[Sarah] hello there"), "[Sarah] hello there")
+    }
+
+    /// Two-digit counts are still labels: separation numbers speakers as it finds them.
+    func testATwoDigitSpeakerIsStillALabel() {
+        XCTAssertEqual(stripped("[Speaker 12] hello"), "hello")
     }
 
     /// A cue that is nothing but a label would be stripped to an empty line, and an SRT entry

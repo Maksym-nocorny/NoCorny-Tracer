@@ -48,6 +48,11 @@ final class AINamingService {
     /// would make "which service is this recording billed to" arbitrary.
     private static let fallbackOrder: [TranscriptionEngineKind] = [.cloudGemini, .cloudGroq, .localWhisper]
 
+    /// Error codes that mean "this engine will not answer for this account", as opposed to
+    /// "this engine tried and failed". An admin switch and a plan gate are both decisions
+    /// about who is asking, not about the recording, so another engine may well answer.
+    private static let refusalCodes: Set<String> = ["engine_disabled", "premium_required"]
+
     /// Injection point for tests.
     init(engine: TranscriptionEngine, namingService: NamingService) {
         self.engines = [engine.kind: engine]
@@ -102,14 +107,27 @@ final class AINamingService {
         // transcript that has nobody to separate.
         var result = await engine.transcribe(videoURL: videoURL, multiSpeaker: diarize)
 
-        // An engine an admin has switched off server-side has said nothing about the
-        // recording, so it is worth asking someone else instead of returning nothing.
-        // Narrow on purpose: only this one code, only when no cues came back, and only one
-        // alternative -- anything broader turns a billing decision into a retry loop.
-        if result.srt == nil, result.errorCode == "engine_disabled",
-           let alternative = readyEngines.first(where: { $0.kind != engine.kind }) {
-            LogManager.shared.log("🎛️ Engine: \(engine.kind.rawValue) is switched off server-side, falling back to \(alternative.kind.rawValue)")
-            result = await alternative.transcribe(videoURL: videoURL, multiSpeaker: diarize)
+        // A refusal says nothing about the recording, so it is worth asking someone else
+        // instead of returning nothing. `premium_required` belongs here as much as
+        // `engine_disabled` does: with the cloud-premium gate switched on, a free user who
+        // has already downloaded the 1.5 GB local model got nothing at all, which is exactly
+        // the case the on-device engine exists for.
+        //
+        // Every cloud engine sits behind the same account gate, so a plan refusal repeats
+        // until the list reaches one that does not ask the server for permission. Walking the
+        // remaining engines is therefore the difference between falling back and only looking
+        // like it. Still narrow: only when no cues came back, and it stops the moment an
+        // engine answers or fails for a reason that is about the recording rather than the
+        // account.
+        if result.srt == nil, Self.refusalCodes.contains(result.errorCode ?? "") {
+            var refusedBy = engine.kind
+            for alternative in readyEngines where alternative.kind != engine.kind {
+                LogManager.shared.log("🎛️ Engine: \(refusedBy.rawValue) refused (\(result.errorCode ?? "unknown")), falling back to \(alternative.kind.rawValue)")
+                result = await alternative.transcribe(videoURL: videoURL, multiSpeaker: diarize)
+                if result.srt != nil { break }
+                guard Self.refusalCodes.contains(result.errorCode ?? "") else { break }
+                refusedBy = alternative.kind
+            }
         }
 
         // Only Gemini's single-call path names a recording while transcribing it. Every
