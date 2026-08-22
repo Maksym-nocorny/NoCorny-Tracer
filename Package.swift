@@ -9,12 +9,23 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0"),
+        // Local Whisper (Core ML). PINNED EXACT, and NOT to 1.x on purpose:
+        // every 1.x tag declares two executable products (argmax-cli and
+        // whisperkit-cli) pointing at the SAME ArgmaxCLI target, which makes a
+        // multi-arch build fail with "duplicate key found: ID(moduleName:
+        // "ArgmaxCLI", packageIdentity: whisperkit)". Single-arch builds are
+        // fine, so the breakage only shows up when packaging a release.
+        // 0.18.0 has one executable product, builds universal, and exposes the
+        // same API surface we use (WhisperKit.download, ModelUtilities.loadTokenizer,
+        // DecodingOptions.chunkingStrategy) plus the SpeakerKit diarization library.
+        .package(url: "https://github.com/argmaxinc/WhisperKit.git", exact: "0.18.0"),
     ],
     targets: [
         .executableTarget(
             name: "NoCornyTracer",
             dependencies: [
                 .product(name: "Sparkle", package: "Sparkle"),
+                .product(name: "WhisperKit", package: "WhisperKit"),
             ],
             path: "Sources/NoCornyTracer",
             exclude: ["NoCornyTracer.entitlements", "Secrets.swift.template", "Info.plist"],
@@ -38,6 +49,11 @@ let package = Package(
                     "-Xlinker", "Sources/NoCornyTracer/Info.plist"
                 ])
             ]
+        ),
+        .testTarget(
+            name: "NoCornyTracerTests",
+            dependencies: ["NoCornyTracer"],
+            path: "Tests/NoCornyTracerTests"
         ),
     ]
 )

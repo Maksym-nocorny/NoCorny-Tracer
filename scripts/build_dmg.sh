@@ -76,10 +76,17 @@ cp "$BUILD_DIR/$BINARY_NAME" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 # Copy the SPM resource bundle to Contents/Resources and symlink from Contents/MacOS/
 # SPM's auto-generated Bundle.module accessor looks in Bundle.main.bundleURL which
 # resolves to Contents/MacOS/ for an executable. The symlink bridges the two locations.
-if [ -d "$BUILD_DIR/NoCornyTracer_NoCornyTracer.bundle" ]; then
-    cp -R "$BUILD_DIR/NoCornyTracer_NoCornyTracer.bundle" "$APP_BUNDLE/Contents/Resources/"
-    ln -s "../Resources/NoCornyTracer_NoCornyTracer.bundle" "$APP_BUNDLE/Contents/MacOS/NoCornyTracer_NoCornyTracer.bundle"
-fi
+# Copy EVERY SPM resource bundle, not just our own: dependencies ship their own
+# (swift-transformers_Hub.bundle, swift-crypto_Crypto.bundle, ...) and Bundle.module
+# TRAPS at runtime when one is missing. A hardcoded single-bundle copy silently
+# shipped a broken app the moment a dependency with resources was added.
+for _bundle in "$BUILD_DIR"/*.bundle; do
+    [ -d "$_bundle" ] || continue
+    _name="$(basename "$_bundle")"
+    cp -R "$_bundle" "$APP_BUNDLE/Contents/Resources/"
+    ln -s "../Resources/$_name" "$APP_BUNDLE/Contents/MacOS/$_name"
+    echo "   📦 bundle: $_name"
+done
 
 # Copy Info.plist
 cp "$PROJECT_DIR/Sources/NoCornyTracer/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
