@@ -411,10 +411,37 @@ struct SettingsView: View {
                 Spacer(minLength: 0)
             }
 
+            if unlocked && appState.diarizationEnabled {
+                HStack {
+                    Text("People in the recording")
+                        .font(Theme.Typography.body(12))
+                    Spacer()
+                    CustomDropdownButton(
+                        id: "expectedSpeakers",
+                        options: ExpectedSpeakers.allCases.map {
+                            DropdownOption(id: $0.rawValue, label: $0.displayName, value: $0)
+                        },
+                        selection: $appState.expectedSpeakers,
+                        activeDropdownID: $activeDropdownID,
+                        minWidth: 150
+                    )
+                }
+            }
+
             Text("Marks who said what in the transcript. Works best when \"Record system audio\" is on - the other side of a call then arrives on its own track instead of through your microphone.")
                 .font(Theme.Typography.body(10, weight: .light))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+
+            if unlocked && appState.diarizationEnabled && appState.expectedSpeakers != .auto {
+                // Worth saying out loud, because it is the one setting here that cannot be
+                // corrected after the fact: the local file is deleted once it uploads, so a
+                // wrong count is only fixable by recording again.
+                Text("Set this before you record. Tracer deletes its local copy once a recording uploads, so the count cannot be changed afterwards.")
+                    .font(Theme.Typography.body(10, weight: .light))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 

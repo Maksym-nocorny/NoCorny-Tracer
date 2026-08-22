@@ -24,7 +24,8 @@ final class AppState {
         transcriptionClient: TranscriptionProxyClient(
             tokenProvider: { [weak self] in self?.tracerAPIClient.apiToken }
         ),
-        preferredKind: { [weak self] in self?.transcriptionEngine ?? .cloudGemini }
+        preferredKind: { [weak self] in self?.transcriptionEngine ?? .cloudGemini },
+        expectedSpeakers: { [weak self] in self?.expectedSpeakers ?? .auto }
     )
     let hotkeyManager = HotkeyManager()
     let cameraManager = CameraManager()
@@ -86,6 +87,14 @@ final class AppState {
     /// Which engine transcribes. Defaults to the cloud so nothing changes for anyone
     /// already using the app; on-device is opt-in until its model is downloaded, which is
     /// a deliberate 1.5 GB decision rather than something that happens on first launch.
+    /// How many people the user expects in a recording. Asked up front because the local
+    /// file is deleted once it uploads, so there is no second chance to re-run separation
+    /// against a wrong answer.
+    var expectedSpeakers: ExpectedSpeakers = .auto {
+        didSet {
+            UserDefaults.standard.set(expectedSpeakers.rawValue, forKey: "expectedSpeakers")
+        }
+    }
     var transcriptionEngine: TranscriptionEngineKind = .cloudGemini {
         didSet {
             UserDefaults.standard.set(transcriptionEngine.rawValue, forKey: "transcriptionEngine")
@@ -184,6 +193,10 @@ final class AppState {
         self.reduceBackgroundNoise = UserDefaults.standard.bool(forKey: "reduceBackgroundNoise")
         self.recordSystemAudio = UserDefaults.standard.bool(forKey: "recordSystemAudio")
         self.diarizationEnabled = UserDefaults.standard.bool(forKey: "diarizationEnabled")
+        if let speakersRaw = UserDefaults.standard.string(forKey: "expectedSpeakers"),
+           let speakers = ExpectedSpeakers(rawValue: speakersRaw) {
+            self.expectedSpeakers = speakers
+        }
         if let engineRaw = UserDefaults.standard.string(forKey: "transcriptionEngine"),
            let engine = TranscriptionEngineKind(rawValue: engineRaw) {
             self.transcriptionEngine = engine

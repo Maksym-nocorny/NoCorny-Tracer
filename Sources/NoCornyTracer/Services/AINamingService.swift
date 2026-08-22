@@ -23,15 +23,19 @@ final class AINamingService {
     /// and a lazily-built service that resolved this at init would keep using whatever was
     /// selected the first time the app transcribed anything.
     private let preferredKind: () -> TranscriptionEngineKind
+    /// Read per run for the same reason the engine is: it is a per-recording answer.
+    private let expectedSpeakers: () -> ExpectedSpeakers
 
     init(
         proxyClient: GeminiProxyClient,
         transcriptionClient: TranscriptionProxyClient,
-        preferredKind: @escaping () -> TranscriptionEngineKind = { .cloudGemini }
+        preferredKind: @escaping () -> TranscriptionEngineKind = { .cloudGemini },
+        expectedSpeakers: @escaping () -> ExpectedSpeakers = { .auto }
     ) {
         let naming = NamingService(proxyClient: proxyClient)
         self.namingService = naming
         self.preferredKind = preferredKind
+        self.expectedSpeakers = expectedSpeakers
         self.engines = [
             .cloudGemini: CloudGeminiEngine(proxyClient: proxyClient, namingService: naming),
             .cloudGroq: CloudGroqEngine(proxyClient: transcriptionClient),
@@ -49,6 +53,7 @@ final class AINamingService {
         self.engines = [engine.kind: engine]
         self.namingService = namingService
         self.preferredKind = { engine.kind }
+        self.expectedSpeakers = { .auto }
     }
 
     /// The engine that will actually run: the chosen one when it can, otherwise anything
@@ -140,7 +145,7 @@ final class AINamingService {
         // people said rather than from "[Speaker 1] " prefixes, and separation cannot delay a
         // title that costs one call while it spends minutes on Core ML.
         if diarize, let srt = result.srt, !srt.isEmpty {
-            result.srt = await labelSpeakers(in: srt, videoURL: videoURL, systemAudioURL: systemAudioURL)
+            result.srt = await labelSpeakers(in: srt, videoURL: videoURL, systemAudioURL: systemAudioURL, expected: expectedSpeakers())
         }
 
         return NamingResult(
@@ -161,7 +166,7 @@ final class AINamingService {
     /// Runs speaker separation over a finished transcript and re-serializes it. Returns the
     /// transcript it was given whenever that produces nothing better, which is every failure
     /// mode separation has.
-    private func labelSpeakers(in srt: String, videoURL: URL, systemAudioURL: URL?) async -> String {
+    private func labelSpeakers(in srt: String, videoURL: URL, systemAudioURL: URL?, expected: ExpectedSpeakers) async -> String {
         let cues = SrtCodec.parseAndRepairSrt(srt)
         guard !cues.isEmpty else { return srt }
 
@@ -177,7 +182,8 @@ final class AINamingService {
             cues: cues,
             videoURL: videoURL,
             systemAudioURL: systemAudioURL,
-            recordingDuration: duration
+            recordingDuration: duration,
+            expected: expected
         )
         guard labelled.contains(where: { $0.speaker != nil }) else { return srt }
         return SrtCodec.serializeSrt(labelled) ?? srt

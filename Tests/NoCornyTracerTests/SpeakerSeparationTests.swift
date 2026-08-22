@@ -51,3 +51,57 @@ final class SpeakerSeparationTests: XCTestCase {
         )
     }
 }
+
+/// The headcount arithmetic. People count themselves in ("a call with two of us"), and
+/// what clustering sees depends on whether the user's own voice is on a different track -
+/// so the same answer has to mean two different things.
+final class ExpectedSpeakersTests: XCTestCase {
+
+    func testAutoAsksForARange() {
+        let r = ExpectedSpeakers.auto.clusterRange(userIsOnAnotherTrack: true)
+        XCTAssertEqual(r.min, 1)
+        XCTAssertGreaterThan(r.max, r.min)
+    }
+
+    /// Two people, system audio on: the mic holds the user, so the track being clustered
+    /// contains exactly one voice.
+    func testTwoPeopleWithSystemAudioMeansOneFarEndVoice() {
+        let r = ExpectedSpeakers.two.clusterRange(userIsOnAnotherTrack: true)
+        XCTAssertEqual(r.min, 1)
+        XCTAssertEqual(r.max, 1)
+    }
+
+    /// Same answer, one microphone: now everyone is in the same audio.
+    func testTwoPeopleOnOneTrackMeansTwoVoices() {
+        let r = ExpectedSpeakers.two.clusterRange(userIsOnAnotherTrack: false)
+        XCTAssertEqual(r.min, 2)
+        XCTAssertEqual(r.max, 2)
+    }
+
+    func testFivePeopleWithSystemAudioMeansFourFarEndVoices() {
+        let r = ExpectedSpeakers.five.clusterRange(userIsOnAnotherTrack: true)
+        XCTAssertEqual(r.min, 4)
+        XCTAssertEqual(r.max, 4)
+    }
+
+    /// "Just me" on a two-track recording leaves nothing on the far end. Asking for zero
+    /// clusters is meaningless, so it must still ask for one and come back with no spans.
+    func testJustMeNeverAsksForZeroClusters() {
+        let r = ExpectedSpeakers.justMe.clusterRange(userIsOnAnotherTrack: true)
+        XCTAssertEqual(r.min, 1)
+        XCTAssertEqual(r.max, 1)
+    }
+
+    /// Past a handful of voices an exact number is a worse guess than a range.
+    func testSixOrMoreAsksForARangeRatherThanANumber() {
+        let r = ExpectedSpeakers.manyMore.clusterRange(userIsOnAnotherTrack: true)
+        XCTAssertLessThan(r.min, r.max)
+        XCTAssertGreaterThanOrEqual(r.min, 2)
+    }
+
+    func testEveryCaseHasAName() {
+        for c in ExpectedSpeakers.allCases {
+            XCTAssertFalse(c.displayName.isEmpty, "\(c.rawValue) has no label")
+        }
+    }
+}

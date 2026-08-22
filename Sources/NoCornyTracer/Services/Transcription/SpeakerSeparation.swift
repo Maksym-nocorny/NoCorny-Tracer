@@ -13,8 +13,6 @@ enum SpeakerSeparation {
     /// stops being a call and starts being a meeting, and an over-wide range is the failure
     /// mode that matters here - VBx splits one person into two on a bad mic long before it
     /// merges two people into one.
-    private static let minSpeakers = 1
-    private static let maxSpeakers = 3
 
     /// Share of the recording's own length we are willing to spend on labelling it.
     private static let deadlineFraction = 0.15
@@ -38,7 +36,8 @@ enum SpeakerSeparation {
         cues: [SrtSegment],
         videoURL: URL,
         systemAudioURL: URL?,
-        recordingDuration: Double
+        recordingDuration: Double,
+        expected: ExpectedSpeakers = .auto
     ) async -> [SrtSegment] {
         guard !cues.isEmpty else { return cues }
 
@@ -51,7 +50,7 @@ enum SpeakerSeparation {
         // gave up on. An abandoned Task finishes into a result nobody reads instead.
         let box = FirstOutcome()
         let work = Task.detached(priority: .utility) {
-            let outcome = await run(cues: cues, videoURL: videoURL, systemAudioURL: systemAudioURL)
+            let outcome = await run(cues: cues, videoURL: videoURL, systemAudioURL: systemAudioURL, expected: expected)
             box.settle(outcome)
         }
         let timer = Task {
@@ -82,11 +81,11 @@ enum SpeakerSeparation {
 
     // MARK: - Choosing a source
 
-    private static func run(cues: [SrtSegment], videoURL: URL, systemAudioURL: URL?) async -> Outcome {
+    private static func run(cues: [SrtSegment], videoURL: URL, systemAudioURL: URL?, expected: ExpectedSpeakers) async -> Outcome {
         if let systemAudioURL, FileManager.default.fileExists(atPath: systemAudioURL.path) {
-            return await labelFromSystemTrack(cues: cues, systemAudioURL: systemAudioURL)
+            return await labelFromSystemTrack(cues: cues, systemAudioURL: systemAudioURL, expected: expected)
         }
-        return await labelFromMicOnly(cues: cues, videoURL: videoURL)
+        return await labelFromMicOnly(cues: cues, videoURL: videoURL, expected: expected)
     }
 
     /// The good case. The sidecar holds only what the Mac was playing, so "who is this?" stops
@@ -94,11 +93,14 @@ enum SpeakerSeparation {
     /// the far end is on the system track by construction, and the user is everything else.
     /// Diarizing that track is then only about telling several far-end voices apart, which is
     /// the job clustering is actually good at.
-    private static func labelFromSystemTrack(cues: [SrtSegment], systemAudioURL: URL) async -> Outcome {
+    private static func labelFromSystemTrack(cues: [SrtSegment], systemAudioURL: URL, expected: ExpectedSpeakers) async -> Outcome {
+        // The user's own voice is on the mic track, so their headcount has to lose one
+        // before it describes this audio.
+        let range = expected.clusterRange(userIsOnAnotherTrack: true)
         let spans: [DiarizedSpan]
         do {
             spans = try await SpeakerDiarizer.shared.diarize(
-                audioURL: systemAudioURL, minSpeakers: minSpeakers, maxSpeakers: maxSpeakers
+                audioURL: systemAudioURL, minSpeakers: range.min, maxSpeakers: range.max
             )
         } catch {
             return .failed("system track: \(error.localizedDescription)")
@@ -113,16 +115,18 @@ enum SpeakerSeparation {
     /// separate speakers from audio the recorder has already done its best to reduce to one.
     /// It stays because a labelled guess beats no labels at all on a recording made before
     /// system audio was ever switched on.
-    private static func labelFromMicOnly(cues: [SrtSegment], videoURL: URL) async -> Outcome {
+    private static func labelFromMicOnly(cues: [SrtSegment], videoURL: URL, expected: ExpectedSpeakers) async -> Outcome {
         guard let audioURL = await AudioPreparation.extractCompressedAudio(from: videoURL) else {
             return .failed("could not extract audio")
         }
         defer { try? FileManager.default.removeItem(at: audioURL) }
 
+        // One track, so everyone the user counted is in this audio, themselves included.
+        let range = expected.clusterRange(userIsOnAnotherTrack: false)
         let spans: [DiarizedSpan]
         do {
             spans = try await SpeakerDiarizer.shared.diarize(
-                audioURL: audioURL, minSpeakers: minSpeakers, maxSpeakers: maxSpeakers
+                audioURL: audioURL, minSpeakers: range.min, maxSpeakers: range.max
             )
         } catch {
             return .failed("mic track: \(error.localizedDescription)")

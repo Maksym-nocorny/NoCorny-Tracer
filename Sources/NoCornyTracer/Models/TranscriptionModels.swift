@@ -196,3 +196,67 @@ enum TranscriptionTuning {
     /// body is the real guard, this one is the pre-emptive budget used to degrade gracefully.
     static let maxInlineMediaBytes = 3_800_000
 }
+
+/// How many people the user says were in a recording, counted as a total including
+/// themselves - which is how anyone thinks about it ("it was a call with two of us"),
+/// not as a count of the far end.
+///
+/// It has to be set BEFORE recording rather than chosen afterwards from the result, the
+/// way Corder does it: Tracer deletes the local file once the upload finishes, so by the
+/// time anyone could look at a wrong transcript there is no audio left to re-run.
+enum ExpectedSpeakers: String, CaseIterable, Identifiable, Codable {
+    /// Let clustering decide, bounded to a sane range. Right for a screen recording, and
+    /// the only honest answer when the count genuinely varies.
+    case auto
+    case justMe
+    case two
+    case three
+    case four
+    case five
+    /// Anything larger. Clustering is asked for a range rather than a number, because past
+    /// a handful of voices an exact count is a worse guess than no guess.
+    case manyMore
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .auto: return "Detect automatically"
+        case .justMe: return "Just me"
+        case .two: return "2 people"
+        case .three: return "3 people"
+        case .four: return "4 people"
+        case .five: return "5 people"
+        case .manyMore: return "6 or more"
+        }
+    }
+
+    /// Total headcount, when the user named one.
+    var totalPeople: Int? {
+        switch self {
+        case .auto, .manyMore: return nil
+        case .justMe: return 1
+        case .two: return 2
+        case .three: return 3
+        case .four: return 4
+        case .five: return 5
+        }
+    }
+
+    /// The constraint handed to clustering, for the audio it will actually see.
+    ///
+    /// - Parameter userIsOnAnotherTrack: true when system audio was recorded, so the user's
+    ///   own voice is on the mic track and the audio being clustered contains only the far
+    ///   end. Their headcount then has to lose one before it means anything here.
+    func clusterRange(userIsOnAnotherTrack: Bool) -> (min: Int, max: Int) {
+        guard let total = totalPeople else {
+            return self == .manyMore ? (2, 8) : (1, 3)
+        }
+        let voices = userIsOnAnotherTrack ? total - 1 : total
+        // "Just me" on a two-track recording leaves nothing to separate; asking for zero
+        // clusters is meaningless, so ask for one and let the caller find no far-end spans.
+        let clamped = max(1, voices)
+        return (clamped, clamped)
+    }
+}
+
