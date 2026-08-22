@@ -14,11 +14,18 @@ final class TracerAPIClient {
     private static let emailKey = "TracerUserEmail"
     private static let nameKey = "TracerUserName"
     private static let imageKey = "TracerUserImage"
+    private static let tierKey = "TracerUserTier"
+    private static let cloudTranscriptionKey = "TracerFeatureCloudTranscription"
+    private static let diarizationKey = "TracerFeatureDiarization"
 
     // MARK: - State
     var isSignedIn: Bool = false
     var userName: String?
     var userEmail: String?
+    /// Cached so the UI is not blank on launch. A network failure never downgrades it:
+    /// the server decides, and briefly showing an unlocked control is a smaller mistake
+    /// than telling a paying user their feature is gone because the wifi dropped.
+    var entitlements = Entitlements()
     var userImageURL: String?
     var errorMessage: String?
     var isLoading: Bool = false
@@ -38,6 +45,7 @@ final class TracerAPIClient {
             self.isSignedIn = true
             self.userEmail = Self.nonEmpty(UserDefaults.standard.string(forKey: Self.emailKey))
             self.userName = Self.nonEmpty(UserDefaults.standard.string(forKey: Self.nameKey))
+            self.entitlements = Self.loadCachedEntitlements()
             self.userImageURL = Self.nonEmpty(UserDefaults.standard.string(forKey: Self.imageKey))
 
             // Refresh profile from server in the background so renames/avatar changes
@@ -86,6 +94,7 @@ final class TracerAPIClient {
             self.isSignedIn = true
             self.userEmail = info.email
             self.userName = Self.nonEmpty(info.name)
+            self.applyEntitlements(from: info)
             self.userImageURL = Self.nonEmpty(info.image)
             LogManager.shared.log("🔐 Tracer: Signed in as \(info.email)")
             return true
@@ -168,6 +177,10 @@ final class TracerAPIClient {
         self.isSignedIn = false
         self.userEmail = nil
         self.userName = nil
+        self.entitlements = Entitlements()
+        UserDefaults.standard.removeObject(forKey: Self.tierKey)
+        UserDefaults.standard.removeObject(forKey: Self.cloudTranscriptionKey)
+        UserDefaults.standard.removeObject(forKey: Self.diarizationKey)
         self.userImageURL = nil
         AvatarCache.shared.clear()
         LogManager.shared.log("🔐 Tracer: Signed out")
@@ -207,6 +220,7 @@ final class TracerAPIClient {
 
             self.userEmail = info.email
             self.userName = Self.nonEmpty(info.name)
+            self.applyEntitlements(from: info)
             self.userImageURL = Self.nonEmpty(info.image)
         } catch {
             LogManager.shared.log(error: error, message: "🌐 Tracer: refresh profile failed")
@@ -598,9 +612,51 @@ final class TracerAPIClient {
         let url: String                // e.g. "https://tracer.nocorny.com/v/xFel134"
     }
 
+    private static func loadCachedEntitlements() -> Entitlements {
+        let d = UserDefaults.standard
+        return Entitlements(
+            cloudTranscription: d.object(forKey: cloudTranscriptionKey) as? Bool ?? true,
+            diarization: d.object(forKey: diarizationKey) as? Bool ?? false,
+            tier: d.string(forKey: tierKey) ?? "free"
+        )
+    }
+
+    private func applyEntitlements(from info: TokenInfo) {
+        var next = Entitlements()
+        next.tier = info.tier ?? "free"
+        next.cloudTranscription = info.features?.cloudTranscription ?? true
+        next.diarization = info.features?.diarization ?? false
+        entitlements = next
+        let d = UserDefaults.standard
+        d.set(next.tier, forKey: Self.tierKey)
+        d.set(next.cloudTranscription, forKey: Self.cloudTranscriptionKey)
+        d.set(next.diarization, forKey: Self.diarizationKey)
+    }
+
     struct TokenInfo: Codable {
         let email: String
         let name: String?
         let image: String?
+        // Optional on purpose: a server rollback that drops these must not stop anyone
+        // signing in. Absent means "assume everything is allowed", which is what the
+        // world looked like before tiers existed.
+        let tier: String?
+        let features: Features?
+    }
+
+    struct Features: Codable {
+        let cloudTranscription: Bool?
+        let diarization: Bool?
+    }
+
+    /// What this account may do. Defaults to permissive when the server said nothing:
+    /// the server enforces anyway, so a client guessing "allowed" costs a clear 403 while
+    /// a client guessing "denied" locks someone out of a feature they are paying for.
+    struct Entitlements {
+        var cloudTranscription: Bool = true
+        var diarization: Bool = false
+        var tier: String = "free"
+
+        var isPremium: Bool { tier == "premium" }
     }
 }

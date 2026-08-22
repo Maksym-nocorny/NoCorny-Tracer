@@ -66,6 +66,40 @@ final class LocalWhisperEngine: TranscriptionEngine {
         #endif
     }
 
+    /// No windowing by default. WhisperKit's `.vad` strategy skips stretches it judges
+    /// quiet, and on a real 148-second recording it dropped 30 seconds of actual speech --
+    /// the opening and the closing, both of which the cloud path transcribed fine. Decoding
+    /// straight through took the same time and covered 142 seconds instead of 88.
+    /// Overridable to "vad" so the comparison can be repeated.
+    static var chunkingStrategy: ChunkingStrategy? {
+        UserDefaults.standard.string(forKey: "whisperChunking") == "vad" ? .vad : nil
+    }
+
+    /// An explicit language, or nil for "work it out".
+    ///
+    /// Working it out has to happen ONCE, up front -- see `resolveLanguage`. Left to
+    /// decide per window, Whisper guesses wrong on short or noisy ones and then
+    /// "transcribe" quietly becomes "translate": a Russian recording came back in English,
+    /// drifting into Spanish halfway through.
+    static var preferredLanguage: String? {
+        let raw = UserDefaults.standard.string(forKey: "transcriptionLanguage") ?? "auto"
+        return raw == "auto" ? nil : raw
+    }
+
+    /// Decide the language once over the first 30 seconds and then hold it for the whole
+    /// recording. One decision on 30 seconds of speech beats a fresh guess on every window.
+    private static func resolveLanguage(_ pipe: WhisperKit, audioPath: String) async -> String? {
+        if let explicit = preferredLanguage { return explicit }
+        do {
+            let detected = try await pipe.detectLanguage(audioPath: audioPath)
+            LogManager.shared.log("🎙️ Local: detected language \(detected.language)")
+            return detected.language
+        } catch {
+            LogManager.shared.log("🎙️ Local: language detection failed (\(error)) - letting the model decide per window", type: .error)
+            return nil
+        }
+    }
+
     /// Ready means the model is already on disk. Never "ready, will fetch 1.5 GB first":
     /// the orchestrator uses this to choose an engine, and a choice that silently turns
     /// into a long download is not a choice.
@@ -326,15 +360,16 @@ final class LocalWhisperEngine: TranscriptionEngine {
         // cost and WhisperKit's own `.vad` chunking already skips quiet windows) while
         // adding the one bug class that no bounds check catches: cues that are plausible,
         // in range, and drift. So: do not trim.
+        let forcedLanguage = await Self.resolveLanguage(pipe, audioPath: audioURL.path)
         let decodeOptions = DecodingOptions(
             verbose: false,
             task: .transcribe,
-            language: nil,
-            detectLanguage: true,
+            language: forcedLanguage,
+            detectLanguage: forcedLanguage == nil,
             skipSpecialTokens: true,
             withoutTimestamps: false,
             wordTimestamps: false,
-            chunkingStrategy: .vad
+            chunkingStrategy: Self.chunkingStrategy
         )
 
         let results: [TranscriptionResult]
@@ -375,6 +410,12 @@ final class LocalWhisperEngine: TranscriptionEngine {
         // Chunked decoding hands back one result per window and the windows are not
         // guaranteed to arrive in order.
         segments.sort { $0.start < $1.start }
+
+        // Decoding straight through yields long cues -- eight seconds and more of speech in
+        // one block, which is unreadable as a subtitle. The cloud path already splits these
+        // on sentence boundaries; reuse it so both engines produce transcripts of the same
+        // shape rather than ones that merely contain the same words.
+        segments = segments.flatMap { SrtCodec.splitLongSegmentBySentences($0) }
 
         if dropped > 0 {
             LogManager.shared.log("🎙️ Local: dropped \(dropped) hallucinated cue(s)")
