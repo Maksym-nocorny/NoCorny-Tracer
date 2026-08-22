@@ -651,7 +651,9 @@ final class AppState {
                     path: uploadedPath,
                     accessToken: token
                 )
-                LogManager.shared.log("🔗 Shared link: ✅ \(sharedURL)")
+                // The URL itself is the capability: anyone holding it can watch the
+                // recording, so it does not belong in a log we ask people to send us.
+                LogManager.shared.log("🔗 Shared link: ✅ (\(sharedURL.count) chars)")
 
                 let currentSize = recordings.first(where: { $0.id == id })?.fileSize
                 let currentDuration = recordings.first(where: { $0.id == id })?.duration ?? recording.duration

@@ -139,13 +139,29 @@ final class LogManager {
     private static let emailRegex = try? NSRegularExpression(
         pattern: "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}", options: [])
 
-    private func sanitize(_ message: String) -> String {
+    /// A Dropbox share link is not a reference to the recording, it IS access to it --
+    /// the `rlkey` query parameter is the credential. Same for a /v/{slug} page. Callers
+    /// are expected not to log these, but the log is now something users send us, so the
+    /// sink redacts them too rather than trusting every future call site.
+    private static let capabilityURLRegex = try? NSRegularExpression(
+        pattern: "https?://[^\\s]*(dropbox\\.com|dropboxusercontent\\.com|tracer\\.nocorny\\.com)[^\\s]*",
+        options: [.caseInsensitive])
+
+    /// Internal rather than private so it can be tested directly. Going through `log()`
+    /// does not work: the in-memory buffer is filled on the main queue, so a test reading
+    /// it back immediately sees nothing and every "does not contain" assertion passes for
+    /// the wrong reason.
+    func sanitize(_ message: String) -> String {
         var result = message.replacingOccurrences(of: NSHomeDirectory(), with: "/Users/[USER]")
         // Redact email addresses so user PII never lands in the plaintext diagnostic
         // log (e.g. "Signed in as alice@example.com").
         if let regex = Self.emailRegex {
             let range = NSRange(result.startIndex..., in: result)
             result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "[EMAIL]")
+        }
+        if let regex = Self.capabilityURLRegex {
+            let range = NSRange(result.startIndex..., in: result)
+            result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "[LINK]")
         }
         return result
     }

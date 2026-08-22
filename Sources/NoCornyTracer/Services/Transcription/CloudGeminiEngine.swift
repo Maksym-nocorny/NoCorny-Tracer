@@ -252,8 +252,10 @@ final class CloudGeminiEngine: TranscriptionEngine {
                 }
 
                 let cleanedName = namingService.cleanupName(parsed.name)
-                let srtPreview = parsed.srt.prefix(120).replacingOccurrences(of: "\n", with: "⏎")
-                LogManager.shared.log("🤖 Combined: Raw SRT (\(parsed.srt.count) chars) preview: \(srtPreview)")
+                // Length only. This used to log the first 120 characters of the transcript,
+                // which is the user's own speech -- and the diagnostic log is something we
+                // now ask people to send us.
+                LogManager.shared.log("🤖 Combined: Raw SRT (\(parsed.srt.count) chars)")
 
                 // Restore the SRT timestamps once for this attempt so it can be stored as the
                 // best result (and reused at the success return) without recomputing.
