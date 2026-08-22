@@ -37,7 +37,33 @@ final class AINamingService {
     var isReady: Bool { engine.isReady || namingService.isReady }
 
     func generateSubtitlesAndName(for videoURL: URL) async -> NamingResult {
-        let result = await engine.transcribe(videoURL: videoURL)
+        var result = await engine.transcribe(videoURL: videoURL)
+
+        // Only Gemini's single-call path names a recording while transcribing it. Every
+        // other engine returns cues alone, so the title is a second, separate call --
+        // otherwise on-device transcription would leave every recording named after its
+        // timestamp, which reads as the feature being broken rather than free.
+        //
+        // Sent without frames on purpose. Naming normally ships stills alongside the
+        // transcript and they dominate its cost; with a real transcript in hand the text
+        // carries the meaning, and this keeps the one call a free-tier recording still
+        // makes down to a rounding error.
+        if result.name == nil, let srt = result.srt, !srt.isEmpty, namingService.isReady {
+            let transcript = namingService.namingTranscriptText(SrtCodec.parseAndRepairSrt(srt))
+            if !transcript.isEmpty {
+                let call = await namingService.generateNameFromTranscript(
+                    transcript: transcript, frames: [], glossary: []
+                )
+                result.name = call.name
+                result.usage.add(call.usage)
+                result.latencyMs += call.latencyMs
+                result.attempts += call.attempts
+                if call.name == nil {
+                    LogManager.shared.log("🤖 Naming: ⚠️ Could not title a transcript from \(engine.kind.rawValue) — keeping the placeholder", type: .error)
+                    result.errorCode = result.errorCode ?? call.errorCode ?? "naming_failed"
+                }
+            }
+        }
 
         return NamingResult(
             srt: result.srt,
