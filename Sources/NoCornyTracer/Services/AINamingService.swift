@@ -17,11 +17,11 @@ final class AINamingService {
 
     /// Naming is a separate service so a non-Gemini transcription engine can still get
     /// a real title: the two calls are independent, and only this one has to be Gemini.
-    private let naming: NamingService
+    private let namingService: NamingService
 
     init(proxyClient: GeminiProxyClient) {
         self.proxyClient = proxyClient
-        self.naming = NamingService(proxyClient: proxyClient)
+        self.namingService = NamingService(proxyClient: proxyClient)
     }
 
     /// True when the underlying proxy is ready to make calls (i.e. the user is
@@ -61,7 +61,7 @@ final class AINamingService {
         // Step 1: extract a tiny m4a (32 kbps mono 16 kHz). Independent of original audio quality.
         guard let audioURL = await AudioPreparation.extractCompressedAudio(from: videoURL) else {
             LogManager.shared.log("🤖 Combined: ❌ Failed to extract audio — falling back to image-only naming", type: .error)
-            let fb = await naming.generateNameImageOnly(for: videoURL)
+            let fb = await namingService.generateNameImageOnly(for: videoURL)
             return NamingResult(
                 srt: nil, name: fb.name,
                 usage: fb.usage, model: fb.model,
@@ -78,7 +78,7 @@ final class AINamingService {
 
         if analysis.shouldSkipTranscription {
             LogManager.shared.log("🤖 Combined: 🤫 Skipping transcription (no clear speech detected)")
-            let fb = await naming.generateNameImageOnly(for: videoURL)
+            let fb = await namingService.generateNameImageOnly(for: videoURL)
             return NamingResult(
                 srt: nil, name: fb.name,
                 usage: fb.usage, model: fb.model,
@@ -145,7 +145,7 @@ final class AINamingService {
         // Step 4: read audio bytes and check size.
         guard let audioData = try? Data(contentsOf: audioForGemini) else {
             LogManager.shared.log("🤖 Combined: ❌ Failed to read audio at \(audioForGemini.path)", type: .error)
-            let fb = await naming.generateNameImageOnly(for: videoURL)
+            let fb = await namingService.generateNameImageOnly(for: videoURL)
             return NamingResult(srt: nil, name: fb.name, usage: fb.usage, model: fb.model, latencyMs: fb.latencyMs, attempts: fb.attempts, success: fb.name != nil, errorCode: fb.errorCode ?? "audio_read_failed")
         }
         let sizeKB = audioData.count / 1024
@@ -172,7 +172,7 @@ final class AINamingService {
             // on the single-call path means the audio was under `ChunkPlanner.singleCallMaxAudioSeconds`
             // yet still too big — unusual, but bail to image-only rather than send a doomed request.
             LogManager.shared.log("🤖 Combined: ❌ Audio alone (\(audioBase64Bytes / 1024)KB b64) exceeds the media budget — falling back to image-only naming", type: .error)
-            let fb = await naming.generateNameImageOnly(for: videoURL)
+            let fb = await namingService.generateNameImageOnly(for: videoURL)
             return NamingResult(srt: nil, name: fb.name, usage: fb.usage, model: fb.model, latencyMs: fb.latencyMs, attempts: fb.attempts, success: fb.name != nil, errorCode: fb.errorCode ?? "audio_too_large")
         }
         frames = FramePreparation.fitFramesToBudget(frames, budget: framesBudget)
@@ -243,7 +243,7 @@ final class AINamingService {
                     return NamingResult(srt: nil, name: nil, usage: totalUsage, model: observedModel, latencyMs: totalLatencyMs, attempts: totalAttempts, success: false, errorCode: lastError)
                 }
 
-                let cleanedName = naming.cleanupName(parsed.name)
+                let cleanedName = namingService.cleanupName(parsed.name)
                 let srtPreview = parsed.srt.prefix(120).replacingOccurrences(of: "\n", with: "⏎")
                 LogManager.shared.log("🤖 Combined: Raw SRT (\(parsed.srt.count) chars) preview: \(srtPreview)")
 
@@ -798,7 +798,7 @@ final class AINamingService {
         let scratchKey = videoURL.deletingPathExtension().lastPathComponent
 
         func imageOnlyFallback(_ code: String, totalChunks: Int = 1, failedChunks: Int = 0) async -> NamingResult {
-            let fb = await naming.generateNameImageOnly(for: videoURL)
+            let fb = await namingService.generateNameImageOnly(for: videoURL)
             usage.add(fb.usage)
             return NamingResult(
                 srt: nil, name: fb.name, usage: usage, model: fb.model,
@@ -823,7 +823,11 @@ final class AINamingService {
         }
 
         let sourceAsset = AVAsset(url: audioURL)
-        guard let sourceTrack = try? await sourceAsset.loadTracks(withMediaType: .audio).first else {
+        // Spelled out rather than chained: `try? await ….loadTracks(…).first` in one
+        // expression crashes the 6.3.3 type-checker inside this function (SIGTRAP while
+        // type-checking the target). Explicit types keep inference off that path.
+        let sourceTracks: [AVAssetTrack]? = try? await sourceAsset.loadTracks(withMediaType: .audio)
+        guard let sourceTrack: AVAssetTrack = sourceTracks?.first else {
             LogManager.shared.log("🤖 Chunked: ❌ Could not load the extracted audio track", type: .error)
             return await imageOnlyFallback("chunk_source_track_missing")
         }
@@ -938,33 +942,33 @@ final class AINamingService {
         clearChunkScratch(key: scratchKey)
 
         // Naming from the merged transcript + frames.
-        let transcriptText = naming.namingTranscriptText(merged)
-        let naming = await naming.generateNameFromTranscript(
+        let transcriptText = namingService.namingTranscriptText(merged)
+        let namingCall = await namingService.generateNameFromTranscript(
             transcript: transcriptText, frames: frames, glossary: glossary
         )
-        usage.add(naming.usage)
-        latencyMs += naming.latencyMs
-        attempts += naming.attempts
-        if let m = naming.model { model = m }
+        usage.add(namingCall.usage)
+        latencyMs += namingCall.latencyMs
+        attempts += namingCall.attempts
+        if let m = namingCall.model { model = m }
 
         // errorCode precedence: the most user-visible loss wins.
         var errorCode: String? = nil
         if failedChunks > 0 {
             errorCode = "partial_chunks_failed_\(failedChunks)_of_\(plans.count)"
-        } else if naming.name == nil {
-            errorCode = naming.errorCode ?? "naming_failed"
+        } else if namingCall.name == nil {
+            errorCode = namingCall.errorCode ?? "naming_failed"
         }
 
         // success is telemetry, not a gate on storing data: a holey transcript is still saved
         // and still generates a description. It reports false when we lost most of the speech.
-        let success = (speechCoverage >= 0.5) || naming.name != nil
+        let success = (speechCoverage >= 0.5) || namingCall.name != nil
 
         LogManager.shared.log(
-            "🤖 Chunked: ✅ name=\"\(naming.name ?? "nil")\", srt \(srt.count) chars from \(merged.count) cues"
+            "🤖 Chunked: ✅ name=\"\(namingCall.name ?? "nil")\", srt \(srt.count) chars from \(merged.count) cues"
         )
 
         return NamingResult(
-            srt: srt, name: naming.name, usage: usage, model: model,
+            srt: srt, name: namingCall.name, usage: usage, model: model,
             latencyMs: latencyMs, attempts: attempts,
             success: success, errorCode: errorCode,
             // The internal retry wave already did everything the caller's second pass would,
@@ -1136,7 +1140,7 @@ final class AINamingService {
     /// Transcription-only prompt for one audio chunk of a longer recording.
     ///
     /// Keeps the primary-speaker rules, NO_SPEECH sentinel and formatting block from the
-    /// combined prompt verbatim; the `name` half moves to `naming.namingPrompt`. The clip-relative
+    /// combined prompt verbatim; the `name` half moves to `namingService.namingPrompt`. The clip-relative
     /// timestamp rules are new and critical: the model is told it is part k of n, which is
     /// exactly the framing that can tempt it to emit whole-recording timestamps.
     private func chunkTranscriptionPrompt(part: Int, of total: Int, clipSeconds: Double, glossary: [String]) -> String {
