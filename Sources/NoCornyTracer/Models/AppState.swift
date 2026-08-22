@@ -725,6 +725,13 @@ final class AppState {
         // Audio is locally trimmed of silence before sending (Phase A); SRT timestamps are
         // mapped back onto the original timeline so they sync with the unmodified video.
         // Outer retry: if the combined call returns both nil, wait 10s and retry once.
+        // Re-read entitlements before choosing an engine. Without this the app can decide
+        // to use cloud transcription on a tier the server will refuse, and find out one
+        // expensive encode later.
+        if tracerAPIClient.isSignedIn {
+            await tracerAPIClient.refreshProfile()
+        }
+
         LogManager.shared.log("🤖 Starting combined subtitle + naming generation...")
         var generatedSubtitles: String? = nil
         var aiName: String? = nil

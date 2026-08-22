@@ -332,6 +332,7 @@ struct SettingsView: View {
     // MARK: - Transcription
 
     @State private var modelDownloadError: String?
+    @State private var lockedEngineNotice: String?
 
     private var transcriptionSection: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
@@ -347,7 +348,8 @@ struct SettingsView: View {
                         id: "transcriptionEngine",
                         options: engineOptions,
                         selection: $appState.transcriptionEngine,
-                        activeDropdownID: $activeDropdownID
+                        activeDropdownID: $activeDropdownID,
+                        onLockedTap: handleLockedEngine
                     )
                 }
 
@@ -359,22 +361,50 @@ struct SettingsView: View {
                     .font(Theme.Typography.body(10, weight: .light))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+
+                if let lockedEngineNotice {
+                    Text(lockedEngineNotice)
+                        .font(Theme.Typography.body(10, weight: .light))
+                        .foregroundStyle(Theme.Colors.brandPurple)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
     }
 
-    /// On Intel the on-device option is shown but locked rather than hidden: an option that
-    /// silently does not exist reads as a missing feature, not an unsupported one.
+    /// Unavailable options are shown locked rather than hidden. An option that silently
+    /// does not exist reads as a missing feature; one with a padlock and a reason reads as
+    /// a choice you have not unlocked yet.
     private var engineOptions: [DropdownOption<TranscriptionEngineKind>] {
-        TranscriptionEngineKind.allCases.map { kind in
-            let unsupported = kind == .localWhisper && !LocalWhisperEngine.isAvailable
-            return DropdownOption(
-                id: kind.rawValue,
-                label: kind.displayName,
-                value: kind,
-                isLocked: unsupported,
-                badge: unsupported ? "Apple Silicon" : nil
-            )
+        let entitlements = appState.tracerAPIClient.entitlements
+        return TranscriptionEngineKind.allCases.map { kind in
+            switch kind {
+            case .localWhisper where !LocalWhisperEngine.isAvailable:
+                return DropdownOption(
+                    id: kind.rawValue, label: kind.displayName, value: kind,
+                    isLocked: true, badge: "Apple Silicon"
+                )
+            case .cloudGemini where !entitlements.cloudTranscription:
+                return DropdownOption(
+                    id: kind.rawValue, label: kind.displayName, value: kind,
+                    isLocked: true, badge: "Premium"
+                )
+            default:
+                return DropdownOption(id: kind.rawValue, label: kind.displayName, value: kind)
+            }
+        }
+    }
+
+    /// Sends people to where the decision is actually made rather than pretending to
+    /// switch and failing later.
+    private func handleLockedEngine(_ kind: TranscriptionEngineKind) {
+        switch kind {
+        case .cloudGemini:
+            if let url = URL(string: "\(TracerAPIClient.baseURL)/settings#plan") {
+                NSWorkspace.shared.open(url)
+            }
+        case .localWhisper:
+            lockedEngineNotice = "On-device transcription needs a Mac with Apple Silicon."
         }
     }
 
@@ -383,7 +413,9 @@ struct SettingsView: View {
         case .cloudGemini:
             return "Transcribes in the cloud. Needs a Tracer account and an internet connection."
         case .localWhisper:
-            return "Transcribes on this Mac. Nothing is uploaded and there is nothing to pay for. Titles are still generated in the cloud."
+            return OnDeviceNaming.isAvailable
+                ? "Transcribes on this Mac. Nothing is uploaded and there is nothing to pay for."
+                : "Transcribes on this Mac. Nothing is uploaded and there is nothing to pay for. Titles are still generated in the cloud."
         }
     }
 

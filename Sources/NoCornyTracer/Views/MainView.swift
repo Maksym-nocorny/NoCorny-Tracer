@@ -95,6 +95,12 @@ struct MainView: View {
             if appState.tracerAPIClient.isSignedIn && appState.selectedTab == .recordings {
                 Task { await appState.reloadRecordingsFromTracer() }
             }
+            // Entitlements too, on any tab. Someone who just upgraded in the browser
+            // switches straight back here expecting it to have taken effect, and this used
+            // to only happen at launch -- so the padlock stayed until the app restarted.
+            if appState.tracerAPIClient.isSignedIn {
+                Task { await appState.tracerAPIClient.refreshProfile() }
+            }
         }
         .alert("Start at Login?", isPresented: $appState.showLaunchAtLoginPrompt) {
             Button("Yes, start at login") {
