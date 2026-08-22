@@ -14,9 +14,12 @@ import AVFoundation
 /// for audio the models throw away. Both files here are the same 32 kbps mono 16 kHz m4a the
 /// transcription path already produces: roughly 14 MB per hour per track.
 ///
-/// Eviction below is a disk-space policy, never an availability one. Every file kept here also
-/// goes to the recording's own Dropbox folder, so an evicted, reinstalled or moved-to-another-Mac
-/// cache costs a download, not the feature.
+/// Eviction is a disk-space policy. It stops being an availability policy only for
+/// accounts entitled to speaker separation, whose files are also mirrored to the
+/// recording's own Dropbox folder. For everyone else this cache is the only copy, so a
+/// recording evicted at 90 days or over the size budget can no longer be re-labelled -
+/// the honest trade for not spending someone's Dropbox quota on a feature they cannot
+/// use yet.
 final class DiarizationAudioCache {
     static let shared = DiarizationAudioCache()
 

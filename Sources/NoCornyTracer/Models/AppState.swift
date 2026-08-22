@@ -977,7 +977,10 @@ final class AppState {
         folder: String?,
         token: String
     ) async -> (mic: String?, system: String?) {
-        let mirrorToDropbox = diarizationEnabled && tracerAPIClient.entitlements.diarization
+        // Entitlement only, not the toggle: someone who is entitled but has separation
+        // switched off today is exactly the person likeliest to switch it on tomorrow, and
+        // by then the local cache may have been evicted.
+        let mirrorToDropbox = tracerAPIClient.entitlements.diarization
 
         let cache = DiarizationAudioCache.shared
         // A retry re-enters this whole function, and nothing about the audio changes between

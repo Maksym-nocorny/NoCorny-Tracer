@@ -186,7 +186,7 @@ enum SrtCodec {
 
     /// A labelled cue gets its speaker as a `[Speaker N] ` prefix on the text line -- see
     /// `speakerLabelPrefixPattern`. That shape is a contract with the web player, which lifts
-    /// the name out with `/^\[([^\]]{1,40})\]\s+/` and renders it as a speaker chip. Players
+    /// the name out with `/^\[(Speaker \d{1,2})\]\s+/` and renders it as a speaker chip. Players
     /// that know nothing about speakers still show a valid subtitle, which is why the label
     /// lives in the text rather than in an extension SRT has no room for.
     static func serializeSrt(_ segments: [SrtSegment]) -> String? {
