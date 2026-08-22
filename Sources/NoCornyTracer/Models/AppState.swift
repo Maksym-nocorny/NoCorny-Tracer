@@ -721,21 +721,36 @@ final class AppState {
         var aiLastError: String? = nil
         var aiSucceeded = false
 
-        let firstPass = await aiNamingService.generateSubtitlesAndName(for: fileURL)
-        generatedSubtitles = firstPass.srt
-        aiName = firstPass.name
-        aiUsage.add(firstPass.usage)
-        aiTotalLatencyMs += firstPass.latencyMs
-        aiTotalAttempts += firstPass.attempts
-        aiModel = firstPass.model
-        aiLastError = firstPass.errorCode
-        aiSucceeded = firstPass.success
+        // A retry re-enters this whole function, so an upload that failed for network
+        // reasons used to re-run transcription from scratch. Cheap when that meant one
+        // cloud call; on-device transcription of a long recording is minutes of CPU.
+        let cached = recordings.first(where: { $0.id == id })
+        let cachedTranscript = (cached?.transcriptSrt?.isEmpty == false) ? cached?.transcriptSrt : nil
+
+        var firstPass: NamingResult? = nil
+        if let cachedTranscript {
+            LogManager.shared.log("🤖 Reusing the transcript from an earlier pass (\(cachedTranscript.count) chars) — skipping transcription")
+            generatedSubtitles = cachedTranscript
+            aiName = cached?.aiGeneratedName
+            aiSucceeded = true
+        } else {
+            let pass = await aiNamingService.generateSubtitlesAndName(for: fileURL)
+            firstPass = pass
+            generatedSubtitles = pass.srt
+            aiName = pass.name
+            aiUsage.add(pass.usage)
+            aiTotalLatencyMs += pass.latencyMs
+            aiTotalAttempts += pass.attempts
+            aiModel = pass.model
+            aiLastError = pass.errorCode
+            aiSucceeded = pass.success
+        }
 
         // Only retry when a retry could plausibly help. `fatal` marks deterministic failures
         // (oversized request, signed out, bad request) and chunked runs that already did their
         // own internal retry wave — re-running those costs a full re-encode plus N more calls
         // to fail identically. Before this gate, a 413 burned six doomed POSTs and ~45s.
-        if generatedSubtitles == nil && aiName == nil && !firstPass.fatal {
+        if let firstPass, generatedSubtitles == nil, aiName == nil, !firstPass.fatal {
             LogManager.shared.log("🤖 Combined: ⚠️ First pass returned nothing — waiting 10s before second pass...", type: .error)
             try? await Task.sleep(nanoseconds: 10_000_000_000)
             let secondPass = await aiNamingService.generateSubtitlesAndName(for: fileURL)
@@ -754,6 +769,13 @@ final class AppState {
             }
         } else {
             LogManager.shared.log("🤖 Combined: ✅ First pass — name=\"\(aiName ?? "nil")\", srtLen=\(generatedSubtitles?.count ?? 0)")
+        }
+
+        if let generatedSubtitles, !generatedSubtitles.isEmpty {
+            updateRecording(id: id) {
+                $0.transcriptSrt = generatedSubtitles
+                $0.transcriptEngine = aiModel
+            }
         }
 
         let aiUsagePayload = TracerAPIClient.AIUsagePayload(

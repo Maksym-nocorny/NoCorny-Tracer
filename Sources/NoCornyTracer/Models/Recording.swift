@@ -19,6 +19,15 @@ struct Recording: Identifiable, Codable {
     var fileSize: UInt64?
     var uploadCompletedAt: Date?
     var uploadError: String?
+    /// Transcript kept with the recording once produced, so a retry does not pay for it
+    /// twice. Cheap when the work was a cloud call; on-device transcription of a long
+    /// recording is minutes of CPU, and retryUpload re-enters the same pipeline -- an
+    /// upload that failed for network reasons should not re-transcribe anything.
+    /// Optional with a default so an older cached recordings list still decodes.
+    var transcriptSrt: String?
+    /// Which engine produced `transcriptSrt`. Kept for support: "the transcript is bad"
+    /// is a different bug depending on the answer.
+    var transcriptEngine: String?
 
     init(
         id: UUID = UUID(),
