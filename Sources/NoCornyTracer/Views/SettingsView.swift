@@ -605,6 +605,16 @@ struct SettingsView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
+                VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+                    Toggle("Record system audio", isOn: $appState.recordSystemAudio)
+                        .controlSize(.small)
+                        .font(Theme.Typography.body(12))
+                    Text("Also records what your Mac plays - calls, videos, app sound - so the other side of a conversation is in the recording too.")
+                        .font(Theme.Typography.body(10, weight: .light))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
                 HStack {
                     Text("Camera")
                         .font(Theme.Typography.body(12))

@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import CoreMedia
 import ScreenCaptureKit
 
 /// Coordinates the full recording lifecycle: screen capture + audio + writing to file
@@ -22,6 +23,9 @@ final class RecordingManager {
 
     // MARK: - Private
     private var videoWriter: VideoWriter?
+    /// Opt-in sidecar for system audio. Nil for every recording that did not ask for it,
+    /// and nil again the moment anything on that path goes wrong.
+    private var systemAudioWriter: SystemAudioWriter?
     private var durationTimer: Timer?
     private var recordingStartTime: Date?
 
@@ -52,6 +56,7 @@ final class RecordingManager {
         microphoneEnabled: Bool,
         microphoneDeviceID: String?,
         reduceBackgroundNoise: Bool = false,
+        recordSystemAudio: Bool = false,
         videoWidth: Int = 1920,
         videoHeight: Int = 1080,
         fps: Int = 30,
@@ -80,7 +85,12 @@ final class RecordingManager {
 
         do {
             // Start screen capture first — returns the actual output size (matched to display aspect ratio)
-            let actualSize = try await screenRecorder.startCapture(width: videoWidth, height: videoHeight, fps: fps)
+            let actualSize = try await screenRecorder.startCapture(
+                width: videoWidth,
+                height: videoHeight,
+                fps: fps,
+                captureSystemAudio: recordSystemAudio
+            )
 
             // Create video writer sized to the capture output so frames aren't letterboxed.
             let writer = VideoWriter(
@@ -118,6 +128,31 @@ final class RecordingManager {
                 }
             }
 
+            // System audio, when the user opted in and the stream agreed to deliver it.
+            // Everything about this block is best-effort: a sidecar that refuses to open,
+            // or a stream that never sends a buffer, leaves exactly the mic-only recording
+            // the app made before this feature existed.
+            if recordSystemAudio && screenRecorder.isCapturingSystemAudio {
+                let sidecar = SystemAudioWriter(outputURL: SystemAudioWriter.sidecarURL(for: outputURL))
+                do {
+                    try sidecar.startWriting()
+                    systemAudioWriter = sidecar
+                    screenRecorder.onSystemAudioSampleBuffer = { [weak writer, weak sidecar] sampleBuffer in
+                        guard let writer, let sidecar else { return }
+                        let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+                        // The video writer owns the timeline; the sidecar only ever writes
+                        // where it is told to, so the two files cannot drift apart.
+                        guard let timing = writer.systemAudioTimeline(for: pts) else { return }
+                        sidecar.append(sampleBuffer, presentationTime: timing.presentationTime, anchor: timing.anchor)
+                    }
+                    LogManager.shared.log("🔊 System audio: capturing to sidecar \(SystemAudioWriter.sidecarURL(for: outputURL).lastPathComponent)")
+                } catch {
+                    sidecar.cancel()
+                    systemAudioWriter = nil
+                    LogManager.shared.log("🔊 System audio: sidecar could not be opened (\(error.localizedDescription)) - recording the microphone only", type: .error)
+                }
+            }
+
             // Start microphone if enabled
             if microphoneEnabled {
                 audioCaptureManager.refreshDevices()
@@ -137,7 +172,10 @@ final class RecordingManager {
             audioCaptureManager.stopCapture()
             screenRecorder.onVideoSampleBuffer = nil
             screenRecorder.onStreamError = nil
+            screenRecorder.onSystemAudioSampleBuffer = nil
             audioCaptureManager.onAudioSampleBuffer = nil
+            systemAudioWriter?.cancel()
+            systemAudioWriter = nil
             videoWriter?.cancelWriting()
             videoWriter = nil
             currentFileURL = nil
@@ -168,8 +206,10 @@ final class RecordingManager {
 
     // MARK: - Stop Recording
 
+    /// - Parameter mergeSystemAudio: false when the caller is about to throw the file
+    ///   away (abort), so a discarded take does not pay for an export first.
     @MainActor
-    func stopRecording(playSound: Bool = true) async -> Recording? {
+    func stopRecording(playSound: Bool = true, mergeSystemAudio: Bool = true) async -> Recording? {
         guard isRecording else { return nil }
 
         // Stop timer
@@ -178,6 +218,12 @@ final class RecordingManager {
         // Stop captures
         await screenRecorder.stopCapture()
         audioCaptureManager.stopCapture()
+        screenRecorder.onSystemAudioSampleBuffer = nil
+
+        // Close the sidecar before touching the MP4, so both paths below (normal finish
+        // and salvage) get a finished file rather than a half-written one.
+        let systemAudio = await systemAudioWriter?.finish()
+        systemAudioWriter = nil
 
         // Finalize file
         guard let outputURL = await videoWriter?.stopWriting() else {
@@ -197,27 +243,21 @@ final class RecordingManager {
             lastStartTime = nil
             videoWriter = nil
             currentFileURL = nil
-            return await salvagePartialRecording(at: partialURL, startedAt: startedAt)
+            var salvaged = await salvagePartialRecording(at: partialURL, startedAt: startedAt)
+            // No merge onto a salvaged partial - it is already damaged goods and the swap
+            // is the one step that could lose it. The sidecar is still handed over.
+            salvaged?.systemAudioURL = systemAudio?.url
+            return salvaged
         }
 
         let finalDuration = lastStartTime != nil ? accumulatedDuration + Date().timeIntervalSince(lastStartTime!) : accumulatedDuration
+        let startedAt = recordingStartTime ?? Date()
 
-        // Read the on-disk file size now so we can pass it to the backend at
-        // registration time. Without this, fileSize stays nil for fresh recordings.
-        var fileSize: UInt64? = nil
-        if let attrs = try? FileManager.default.attributesOfItem(atPath: outputURL.path),
-           let size = attrs[.size] as? NSNumber {
-            fileSize = size.uint64Value
-        }
-
-        var recording = Recording(
-            fileURL: outputURL,
-            createdAt: recordingStartTime ?? Date(),
-            duration: finalDuration
-        )
-        recording.fileSize = fileSize
-
-
+        // Clear live state BEFORE the merge below. The capture is over either way, and an
+        // export that runs for a minute on a long take would otherwise leave the UI sitting
+        // in "recording" with a frozen timer - a stop that looks like it did not work. It
+        // also pins the values this take needs (start time, output URL) into locals, so a
+        // recording started while the merge runs cannot rewrite them underneath us.
         isRecording = false
         isPaused = false
         recordingDuration = 0
@@ -226,11 +266,40 @@ final class RecordingManager {
         videoWriter = nil
         currentFileURL = nil
 
-
         // Play stop sound
         if playSound {
             SoundManager.shared.play(.stop)
         }
+
+        // Mix the sidecar into the saved file. Offline, after capture, and only when
+        // something was actually playing: a silent sidecar is minutes of export for a
+        // file nobody would hear a difference in. On failure the merge leaves the
+        // original alone, so the worst case is the mic-only recording we already had.
+        if let systemAudio, systemAudio.hasAudibleContent, mergeSystemAudio {
+            _ = await SystemAudioMerger.mergeInPlace(recording: outputURL, systemAudio: systemAudio.url)
+        } else if systemAudio != nil && mergeSystemAudio {
+            LogManager.shared.log("🔊 System audio: sidecar holds only silence - skipping the merge")
+        }
+
+        // Read the on-disk file size now so we can pass it to the backend at
+        // registration time. Without this, fileSize stays nil for fresh recordings.
+        // Read after the merge, so the size is the one the uploader will actually send.
+        var fileSize: UInt64? = nil
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: outputURL.path),
+           let size = attrs[.size] as? NSNumber {
+            fileSize = size.uint64Value
+        }
+
+        var recording = Recording(
+            fileURL: outputURL,
+            createdAt: startedAt,
+            duration: finalDuration
+        )
+        recording.fileSize = fileSize
+        // TODO: speaker separation will consume this track - "me" (the MP4's mic track)
+        // against "everyone else" (this file) is a much stronger split than diarizing one
+        // mixed mic. Nothing cleans it up yet, on purpose.
+        recording.systemAudioURL = systemAudio?.url
 
         return recording
     }

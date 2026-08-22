@@ -73,6 +73,13 @@ final class AppState {
             UserDefaults.standard.set(reduceBackgroundNoise, forKey: "reduceBackgroundNoise")
         }
     }
+    /// Off by default: system audio is other people talking, so recording it is a
+    /// deliberate choice rather than something a screen recorder quietly starts doing.
+    var recordSystemAudio: Bool = false {
+        didSet {
+            UserDefaults.standard.set(recordSystemAudio, forKey: "recordSystemAudio")
+        }
+    }
     /// Which engine transcribes. Defaults to the cloud so nothing changes for anyone
     /// already using the app; on-device is opt-in until its model is downloaded, which is
     /// a deliberate 1.5 GB decision rather than something that happens on first launch.
@@ -164,6 +171,7 @@ final class AppState {
         }
         self.launchAtLogin = UserDefaults.standard.bool(forKey: "launchAtLogin")
         self.reduceBackgroundNoise = UserDefaults.standard.bool(forKey: "reduceBackgroundNoise")
+        self.recordSystemAudio = UserDefaults.standard.bool(forKey: "recordSystemAudio")
         if let engineRaw = UserDefaults.standard.string(forKey: "transcriptionEngine"),
            let engine = TranscriptionEngineKind(rawValue: engineRaw) {
             self.transcriptionEngine = engine
@@ -448,6 +456,7 @@ final class AppState {
             microphoneEnabled: isMicrophoneEnabled,
             microphoneDeviceID: selectedMicrophoneID,
             reduceBackgroundNoise: reduceBackgroundNoise,
+            recordSystemAudio: recordSystemAudio,
             videoWidth: videoResolution.width,
             videoHeight: videoResolution.height,
             fps: videoFrameRate.rawValue,
@@ -457,13 +466,19 @@ final class AppState {
 
     /// Abort recording: stops and discards the file without saving or uploading
     func abortRecording() async {
-        guard let recording = await recordingManager.stopRecording(playSound: false) else { return }
+        // Nothing to merge into a file that is about to be deleted.
+        guard let recording = await recordingManager.stopRecording(playSound: false, mergeSystemAudio: false) else { return }
         
         // Play abort sound
         SoundManager.shared.play(.abort)
         
         // Delete the local file immediately
         try? FileManager.default.removeItem(at: recording.fileURL)
+        // The sidecar belongs to the take the user just threw away - leaving it would
+        // strand a -system.m4a next to nothing.
+        if let systemAudioURL = recording.systemAudioURL {
+            try? FileManager.default.removeItem(at: systemAudioURL)
+        }
         LogManager.shared.log("🗑️ Recording aborted and file deleted", type: .info)
     }
 

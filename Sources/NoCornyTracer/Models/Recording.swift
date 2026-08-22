@@ -28,6 +28,11 @@ struct Recording: Identifiable, Codable {
     /// Which engine produced `transcriptSrt`. Kept for support: "the transcript is bad"
     /// is a different bug depending on the answer.
     var transcriptEngine: String?
+    /// Sidecar file holding the system audio of this recording, when it was captured.
+    /// The MP4 already plays everything mixed; this keeps the far end on its own track,
+    /// which is what speaker separation will want to work from.
+    /// Optional with a default so an older cached recordings list still decodes.
+    var systemAudioURL: URL?
 
     init(
         id: UUID = UUID(),

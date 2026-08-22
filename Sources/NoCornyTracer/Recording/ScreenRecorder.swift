@@ -12,6 +12,11 @@ final class ScreenRecorder: NSObject {
     var selectedDisplay: SCDisplay?
     var hasPermission = false
 
+    /// True once the running stream is actually delivering system audio. Asked after
+    /// `startCapture` so the caller knows whether opening a sidecar file is worth it -
+    /// requesting audio and getting it are two different things.
+    private(set) var isCapturingSystemAudio = false
+
     // MARK: - Private
     private var stream: SCStream?
     private var streamOutput: StreamOutput?
@@ -21,8 +26,17 @@ final class ScreenRecorder: NSObject {
     /// queue guarantees ordered, one-at-a-time delivery.
     private let sampleHandlerQueue = DispatchQueue(label: "com.nocorny.tracer.screenrecorder.samples", qos: .userInitiated)
 
+    /// System audio gets its own serial queue. Audio buffers arrive several times per
+    /// frame interval, and sharing the screen queue would make every one of them wait
+    /// behind a frame append (and vice versa).
+    private let audioSampleHandlerQueue = DispatchQueue(label: "com.nocorny.tracer.screenrecorder.audio", qos: .userInitiated)
+
     // Callback for video frames
     var onVideoSampleBuffer: ((CMSampleBuffer) -> Void)?
+
+    /// Callback for system audio (everything the Mac plays), delivered by the same
+    /// stream as the frames when `startCapture(captureSystemAudio:)` asked for it.
+    var onSystemAudioSampleBuffer: ((CMSampleBuffer) -> Void)?
 
     /// Fired when ScreenCaptureKit kills the stream mid-recording (display
     /// disconnected, permission revoked, WindowServer hiccup). Without this the
@@ -62,7 +76,7 @@ final class ScreenRecorder: NSObject {
 
     @MainActor
     @discardableResult
-    func startCapture(width: Int = 1920, height: Int = 1080, fps: Int = 30) async throws -> (width: Int, height: Int) {
+    func startCapture(width: Int = 1920, height: Int = 1080, fps: Int = 30, captureSystemAudio: Bool = false) async throws -> (width: Int, height: Int) {
         // Refuse to start a second capture over a live one — that used to overwrite
         // `stream`/`streamOutput` and leak the first still-running SCStream.
         guard !isCapturing, stream == nil else {
@@ -90,6 +104,19 @@ final class ScreenRecorder: NSObject {
         config.showsCursor = true
         config.pixelFormat = kCVPixelFormatType_32BGRA
 
+        // System audio rides on THIS stream instead of a second one: a second SCStream
+        // over the same display pays the capture cost twice and, worse, gives audio and
+        // video independent stream clocks - precisely the drift the sidecar is designed
+        // to avoid.
+        if captureSystemAudio {
+            config.capturesAudio = true
+            config.sampleRate = 48000
+            config.channelCount = 2
+            // Our own start/stop chimes and anything the app itself plays would otherwise
+            // be recorded as if they were part of the call.
+            config.excludesCurrentProcessAudio = true
+        }
+
         // Create output handler
         let output = StreamOutput()
         output.onVideoSampleBuffer = { [weak self] sampleBuffer in
@@ -98,15 +125,31 @@ final class ScreenRecorder: NSObject {
         output.onStreamError = { [weak self] error in
             self?.onStreamError?(error)
         }
+        output.onSystemAudioSampleBuffer = { [weak self] sampleBuffer in
+            self?.onSystemAudioSampleBuffer?(sampleBuffer)
+        }
         streamOutput = output
 
         // Create and start stream
         let captureStream = SCStream(filter: filter, configuration: config, delegate: output)
         try captureStream.addStreamOutput(output, type: .screen, sampleHandlerQueue: sampleHandlerQueue)
 
+        // A stream that refuses the audio output still records the screen perfectly well,
+        // so a failure here downgrades the take to mic-only instead of killing it.
+        var systemAudioAttached = false
+        if captureSystemAudio {
+            do {
+                try captureStream.addStreamOutput(output, type: .audio, sampleHandlerQueue: audioSampleHandlerQueue)
+                systemAudioAttached = true
+            } catch {
+                LogManager.shared.log("🔊 System audio: stream refused the audio output (\(error.localizedDescription)) - recording the microphone only", type: .error)
+            }
+        }
+
         try await captureStream.startCapture()
         stream = captureStream
         isCapturing = true
+        isCapturingSystemAudio = systemAudioAttached
         return (outWidth, outHeight)
     }
 
@@ -121,6 +164,7 @@ final class ScreenRecorder: NSObject {
         self.stream = nil
         streamOutput = nil
         isCapturing = false
+        isCapturingSystemAudio = false
     }
 }
 
@@ -145,20 +189,29 @@ enum ScreenRecorderError: LocalizedError {
 private final class StreamOutput: NSObject, SCStreamOutput, SCStreamDelegate {
 
     var onVideoSampleBuffer: ((CMSampleBuffer) -> Void)?
+    var onSystemAudioSampleBuffer: ((CMSampleBuffer) -> Void)?
     var onStreamError: ((Error) -> Void)?
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
-        guard type == .screen else { return }
-
-        // Validate frame status
-        guard let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
-              let statusValue = attachments.first?[.status] as? Int,
-              let status = SCFrameStatus(rawValue: statusValue),
-              status == .complete else {
+        switch type {
+        case .screen:
+            // Validate frame status
+            guard let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
+                  let statusValue = attachments.first?[.status] as? Int,
+                  let status = SCFrameStatus(rawValue: statusValue),
+                  status == .complete else {
+                return
+            }
+            onVideoSampleBuffer?(sampleBuffer)
+        case .audio:
+            // Audio carries no frame-status attachment; an empty buffer is simply
+            // silence and the writer decides what to do with it.
+            onSystemAudioSampleBuffer?(sampleBuffer)
+        default:
+            // .microphone (macOS 15+) and anything Apple adds later: we do not ask for
+            // them, and the mic has its own capture path.
             return
         }
-
-        onVideoSampleBuffer?(sampleBuffer)
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {

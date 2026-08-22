@@ -259,6 +259,32 @@ final class VideoWriter {
         }
     }
     
+    /// Maps a system-audio buffer's timestamp onto the timeline this writer is recording,
+    /// or returns nil when the buffer belongs nowhere and must be dropped.
+    ///
+    /// The sidecar file is written by another object, but it must not invent its own zero
+    /// point. All three sources are already stamped against the host clock (SCStream video
+    /// and audio natively, the mic tap via `AVAudioTime.seconds(forHostTime:)`), so the
+    /// only thing standing between them and alignment is knowing WHICH host instant became
+    /// t=0 and how much paused time has been cut out since - and this writer is the only
+    /// place that knows both. Reading them here, on the queue that owns them, is the same
+    /// reasoning `appendAudioBuffer` uses to keep the mic in step with the picture.
+    func systemAudioTimeline(for pts: CMTime) -> (anchor: CMTime, presentationTime: CMTime)? {
+        writingQueue.sync { () -> (anchor: CMTime, presentationTime: CMTime)? in
+            guard isWriting, !isPaused, armed, sessionStarted else { return nil }
+            // A resume whose gap has not been folded into ptsOffset yet would stamp this
+            // buffer with the paused time still in it - a jump forward, followed by
+            // correctly-stamped buffers landing BEFORE it. Drop the frame interval or so
+            // it takes the video/mic path to absorb the gap instead.
+            guard !needsResumeAdjustment else { return nil }
+            guard pts >= sessionStartTime else { return nil }
+            // ptsOffset is zero at the anchor and only grows as paused gaps are removed,
+            // so subtracting it puts the sidecar on the same trimmed timeline as the MP4's
+            // own tracks, while sessionStartTime stays the zero of both files.
+            return (sessionStartTime, pts - ptsOffset)
+        }
+    }
+
     /// Reports a mid-recording writer death to the owner, once. Runs on writingQueue.
     private func reportFailureIfNeeded(_ writer: AVAssetWriter) {
         guard writer.status == .failed, !failureReported else { return }
