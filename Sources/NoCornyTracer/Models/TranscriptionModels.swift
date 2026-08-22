@@ -201,9 +201,10 @@ enum TranscriptionTuning {
 /// themselves - which is how anyone thinks about it ("it was a call with two of us"),
 /// not as a count of the far end.
 ///
-/// It has to be set BEFORE recording rather than chosen afterwards from the result, the
-/// way Corder does it: Tracer deletes the local file once the upload finishes, so by the
-/// time anyone could look at a wrong transcript there is no audio left to re-run.
+/// The setting picks the default for new recordings; the real answer is usually the one given
+/// afterwards, from the Recordings list, once the transcript shows how many people the
+/// clustering actually found. That correction is possible because `DiarizationAudioCache` keeps
+/// the 16 kHz audio a re-run needs long after the local MP4 is deleted.
 enum ExpectedSpeakers: String, CaseIterable, Identifiable, Codable {
     /// Let clustering decide, bounded to a sane range. Right for a screen recording, and
     /// the only honest answer when the count genuinely varies.

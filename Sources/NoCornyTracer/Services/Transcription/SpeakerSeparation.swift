@@ -7,12 +7,11 @@ import Foundation
 /// here that is not a clean success returns the cues exactly as they arrived.
 enum SpeakerSeparation {
 
-    /// Nothing in the app knows how many people are in a recording, and there is no honest
-    /// way to ask: the setting is flipped once and then every recording goes through it. So
-    /// the clustering gets a range instead of a count. Three is where a screen recording
-    /// stops being a call and starts being a meeting, and an over-wide range is the failure
-    /// mode that matters here - VBx splits one person into two on a bad mic long before it
-    /// merges two people into one.
+    /// Nobody has to know the headcount up front: an unanswered "how many people?" hands
+    /// clustering a range instead of a count, and the answer can arrive later, from someone
+    /// reading a finished transcript. Three is where a screen recording stops being a call and
+    /// starts being a meeting, and an over-wide range is the failure mode that matters here -
+    /// VBx splits one person into two on a bad mic long before it merges two people into one.
 
     /// Share of the recording's own length we are willing to spend on labelling it.
     private static let deadlineFraction = 0.15
@@ -27,14 +26,44 @@ enum SpeakerSeparation {
         case deadline
     }
 
+    /// Labels a transcript from the recording's video file.
+    ///
+    /// The audio is extracted before the deadline race below rather than inside it, because the
+    /// extracted file has to outlive a run that gives up: an abandoned task holding the only
+    /// reference to it would delete it out from under nothing, or not at all.
+    static func label(
+        cues: [SrtSegment],
+        videoURL: URL,
+        systemAudioURL: URL?,
+        recordingDuration: Double,
+        expected: ExpectedSpeakers = .auto
+    ) async -> [SrtSegment] {
+        guard !cues.isEmpty else { return cues }
+        guard let micAudioURL = await AudioPreparation.extractCompressedAudio(from: videoURL) else {
+            LogManager.shared.log("🎛️ Diarization: skipped (could not extract audio)", type: .error)
+            return cues
+        }
+        defer { try? FileManager.default.removeItem(at: micAudioURL) }
+        return await label(
+            cues: cues,
+            micAudioURL: micAudioURL,
+            systemAudioURL: systemAudioURL,
+            recordingDuration: recordingDuration,
+            expected: expected
+        )
+    }
+
     /// - Parameters:
-    ///   - systemAudioURL: the `-system.m4a` sidecar when the recording has one. Its presence
-    ///     is what decides which of the two sources below we work from.
+    ///   - micAudioURL: the recording's own microphone track, already encoded as 16 kHz mono.
+    ///     Taken as audio rather than as a video on purpose: a re-run happens long after the
+    ///     local MP4 was deleted, so there is nothing left to extract from.
+    ///   - systemAudioURL: the system track when the recording has one. Its presence is what
+    ///     decides which of the two sources below we work from.
     ///   - recordingDuration: used only to size the deadline.
     /// - Returns: the cues, labelled when that succeeded and untouched otherwise.
     static func label(
         cues: [SrtSegment],
-        videoURL: URL,
+        micAudioURL: URL,
         systemAudioURL: URL?,
         recordingDuration: Double,
         expected: ExpectedSpeakers = .auto
@@ -50,7 +79,7 @@ enum SpeakerSeparation {
         // gave up on. An abandoned Task finishes into a result nobody reads instead.
         let box = FirstOutcome()
         let work = Task.detached(priority: .utility) {
-            let outcome = await run(cues: cues, videoURL: videoURL, systemAudioURL: systemAudioURL, expected: expected)
+            let outcome = await run(cues: cues, micAudioURL: micAudioURL, systemAudioURL: systemAudioURL, expected: expected)
             box.settle(outcome)
         }
         let timer = Task {
@@ -81,11 +110,11 @@ enum SpeakerSeparation {
 
     // MARK: - Choosing a source
 
-    private static func run(cues: [SrtSegment], videoURL: URL, systemAudioURL: URL?, expected: ExpectedSpeakers) async -> Outcome {
+    private static func run(cues: [SrtSegment], micAudioURL: URL, systemAudioURL: URL?, expected: ExpectedSpeakers) async -> Outcome {
         if let systemAudioURL, FileManager.default.fileExists(atPath: systemAudioURL.path) {
             return await labelFromSystemTrack(cues: cues, systemAudioURL: systemAudioURL, expected: expected)
         }
-        return await labelFromMicOnly(cues: cues, videoURL: videoURL, expected: expected)
+        return await labelFromMicOnly(cues: cues, micAudioURL: micAudioURL, expected: expected)
     }
 
     /// The good case. The sidecar holds only what the Mac was playing, so "who is this?" stops
@@ -115,18 +144,13 @@ enum SpeakerSeparation {
     /// separate speakers from audio the recorder has already done its best to reduce to one.
     /// It stays because a labelled guess beats no labels at all on a recording made before
     /// system audio was ever switched on.
-    private static func labelFromMicOnly(cues: [SrtSegment], videoURL: URL, expected: ExpectedSpeakers) async -> Outcome {
-        guard let audioURL = await AudioPreparation.extractCompressedAudio(from: videoURL) else {
-            return .failed("could not extract audio")
-        }
-        defer { try? FileManager.default.removeItem(at: audioURL) }
-
+    private static func labelFromMicOnly(cues: [SrtSegment], micAudioURL: URL, expected: ExpectedSpeakers) async -> Outcome {
         // One track, so everyone the user counted is in this audio, themselves included.
         let range = expected.clusterRange(userIsOnAnotherTrack: false)
         let spans: [DiarizedSpan]
         do {
             spans = try await SpeakerDiarizer.shared.diarize(
-                audioURL: audioURL, minSpeakers: range.min, maxSpeakers: range.max
+                audioURL: micAudioURL, minSpeakers: range.min, maxSpeakers: range.max
             )
         } catch {
             return .failed("mic track: \(error.localizedDescription)")

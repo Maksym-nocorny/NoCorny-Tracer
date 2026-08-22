@@ -64,6 +64,12 @@ final class AppState {
 
     // MARK: - State
     var recordings: [Recording] = []
+    /// Recordings whose speaker labels are being recomputed right now. Drives the row spinner
+    /// and stops a second re-run being started on top of a running one.
+    private(set) var reapplyingSpeakers: Set<UUID> = []
+    /// Why the last re-run for a recording produced nothing, in words meant for the person
+    /// reading the row. Cleared when a re-run starts.
+    private(set) var speakerReapplyErrors: [UUID: String] = [:]
     var dropboxUsedSpace: UInt64 = 0
     var dropboxAllocatedSpace: UInt64 = 0
     var isSyncingDropbox: Bool = false
@@ -87,9 +93,9 @@ final class AppState {
     /// Which engine transcribes. Defaults to the cloud so nothing changes for anyone
     /// already using the app; on-device is opt-in until its model is downloaded, which is
     /// a deliberate 1.5 GB decision rather than something that happens on first launch.
-    /// How many people the user expects in a recording. Asked up front because the local
-    /// file is deleted once it uploads, so there is no second chance to re-run separation
-    /// against a wrong answer.
+    /// How many people the user expects in a recording. A default for new recordings only:
+    /// `DiarizationAudioCache` keeps the audio, so a wrong answer is corrected per recording
+    /// from the Recordings list rather than by recording again.
     var expectedSpeakers: ExpectedSpeakers = .auto {
         didSet {
             UserDefaults.standard.set(expectedSpeakers.rawValue, forKey: "expectedSpeakers")
@@ -841,10 +847,14 @@ final class AppState {
             LogManager.shared.log("🤖 Combined: ✅ First pass — name=\"\(aiName ?? "nil")\", srtLen=\(generatedSubtitles?.count ?? 0)")
         }
 
+        // What the labels in this transcript assumed, so the Recordings list shows the answer
+        // this recording was given rather than whatever the setting says by then.
+        let speakersUsed: ExpectedSpeakers? = shouldDiarize ? expectedSpeakers : nil
         if let generatedSubtitles, !generatedSubtitles.isEmpty {
             updateRecording(id: id) {
                 $0.transcriptSrt = generatedSubtitles
                 $0.transcriptEngine = aiModel
+                if let speakersUsed { $0.expectedSpeakers = speakersUsed }
             }
         }
 
@@ -897,11 +907,271 @@ final class AppState {
             LogManager.shared.log("🌐 Tracer: ✅ Final PATCH — title: \"\(finalTitle)\"")
         }
 
+        // Step 5.5: keep the audio a later re-run of speaker separation will need. Must happen
+        // before Step 6 deletes the video, and only pays off when there is a transcript to
+        // re-label in the first place.
+        if let srt = generatedSubtitles, !srt.isEmpty {
+            let kept = await preserveDiarizationAudio(
+                id: id,
+                videoURL: fileURL,
+                systemAudioURL: cached?.systemAudioURL,
+                alreadyInDropboxAt: recordings.first(where: { $0.id == id })?.diarizationMicPath,
+                folder: uploadFolder,
+                token: token
+            )
+            if kept.mic != nil || kept.system != nil {
+                updateRecording(id: id) {
+                    $0.diarizationMicPath = kept.mic ?? $0.diarizationMicPath
+                    $0.diarizationSystemPath = kept.system ?? $0.diarizationSystemPath
+                }
+            }
+        }
+
         // Step 6: Delete local file after everything is done
         if didUploadVideo {
             try? FileManager.default.removeItem(at: fileURL)
             LogManager.shared.log("🗑️ Local file deleted: \(fileURL.lastPathComponent)")
+            // The sidecar was kept alive only for this pipeline, and nothing cleaned it up
+            // before: 128 kbps stereo of a call is ~58 MB an hour piling up next to a video
+            // that no longer exists. Whatever a re-run needs from it now lives in the
+            // diarization cache at a quarter of the size.
+            if let sidecarURL = cached?.systemAudioURL {
+                try? FileManager.default.removeItem(at: sidecarURL)
+                updateRecording(id: id) { $0.systemAudioURL = nil }
+                LogManager.shared.log("🗑️ System audio sidecar deleted: \(sidecarURL.lastPathComponent)")
+            }
             await reloadRecordingsFromTracer()
+        }
+    }
+
+    // MARK: - Speaker separation, after the fact
+
+    /// Keeps this recording's audio for a future re-run and mirrors it into Dropbox.
+    ///
+    /// The mic track is extracted here rather than borrowed from the transcription engine that
+    /// just used it: each engine builds its own copy inside its own `defer`, and reaching into
+    /// that would tie every engine to a cache none of them care about. The extra pass is one
+    /// read of the audio track, seconds even on an hour-long recording.
+    ///
+    /// Gated on the entitlement rather than on the `diarizationEnabled` toggle. Somebody whose
+    /// plan includes separation but who had it switched off is exactly the person who will
+    /// switch it on after reading a transcript, and an empty cache would answer them with
+    /// "no audio" for every recording they already made.
+    ///
+    /// - Returns: the Dropbox paths of the durable copies, when they got there.
+    private func preserveDiarizationAudio(
+        id: UUID,
+        videoURL: URL,
+        systemAudioURL: URL?,
+        alreadyInDropboxAt: String?,
+        folder: String?,
+        token: String
+    ) async -> (mic: String?, system: String?) {
+        guard tracerAPIClient.entitlements.diarization else { return (nil, nil) }
+
+        let cache = DiarizationAudioCache.shared
+        // A retry re-enters this whole function, and nothing about the audio changes between
+        // passes. Re-encoding and re-uploading 15 MB an hour to land on the same bytes is a
+        // cost a failed upload should not keep paying.
+        if cache.hasMicAudio(for: id), alreadyInDropboxAt != nil {
+            return (nil, nil)
+        }
+        guard let extracted = await AudioPreparation.extractCompressedAudio(from: videoURL),
+              let micURL = cache.install(extracted, as: .mic, for: id) else {
+            LogManager.shared.log("🎛️ Diarization cache: ❌ could not keep the mic track - re-running separation later will need Dropbox", type: .error)
+            return (nil, nil)
+        }
+        var systemURL: URL? = nil
+        if let systemAudioURL {
+            systemURL = await cache.storeSystemAudio(from: systemAudioURL, for: id)
+        }
+        cache.evict()
+        LogManager.shared.log("🎛️ Diarization cache: kept \(systemURL == nil ? "mic" : "mic + system") audio, cache now \(ByteCountFormatter.string(fromByteCount: Int64(cache.totalBytes()), countStyle: .file))")
+
+        guard let folder, !token.isEmpty else { return (nil, nil) }
+        var micPath: String? = nil
+        var systemPath: String? = nil
+        do {
+            micPath = try await dropboxUploadManager.upload(
+                fileURL: micURL,
+                dropboxPath: "\(folder)/\(DiarizationAudioCache.Kind.mic.filename)",
+                mode: .overwrite,
+                accessToken: token
+            )
+            if let systemURL {
+                systemPath = try await dropboxUploadManager.upload(
+                    fileURL: systemURL,
+                    dropboxPath: "\(folder)/\(DiarizationAudioCache.Kind.system.filename)",
+                    mode: .overwrite,
+                    accessToken: token
+                )
+            }
+            LogManager.shared.log("🎛️ Diarization cache: ✅ durable copy in Dropbox → \(folder)")
+        } catch {
+            // A missing durable copy costs a re-run only after the local cache is gone, so it
+            // is not worth failing the recording over.
+            LogManager.shared.log(error: error, message: "🎛️ Diarization cache: Dropbox copy failed (continuing)")
+        }
+        return (micPath, systemPath)
+    }
+
+    /// Re-runs speaker separation over a finished transcript with a new headcount.
+    ///
+    /// Only the labels change: the cues, their text and their timings are the ones the engine
+    /// produced, parsed straight back out of the stored transcript. Every failure path leaves
+    /// the transcript exactly as it was and says why in `speakerReapplyErrors`, because a
+    /// correction that quietly destroys a good transcript is worse than a wrong label.
+    @MainActor
+    func reapplySpeakers(recordingID: UUID, expected: ExpectedSpeakers) async {
+        guard !reapplyingSpeakers.contains(recordingID) else { return }
+        guard let recording = recordings.first(where: { $0.id == recordingID }) else { return }
+        guard tracerAPIClient.entitlements.diarization else {
+            speakerReapplyErrors[recordingID] = "Speaker separation is not part of your plan."
+            return
+        }
+        guard let srt = recording.transcriptSrt, !srt.isEmpty else {
+            speakerReapplyErrors[recordingID] = "This recording has no transcript to re-label."
+            return
+        }
+
+        reapplyingSpeakers.insert(recordingID)
+        speakerReapplyErrors[recordingID] = nil
+        defer { reapplyingSpeakers.remove(recordingID) }
+
+        // Strip first, always. The labels live in the cue text as a "[Speaker 1] " prefix, so
+        // re-labelling text that still carries the old prefix stacks them.
+        let cues = Self.strippingSpeakerPrefixes(from: SrtCodec.parseAndRepairSrt(srt))
+        guard !cues.isEmpty else {
+            speakerReapplyErrors[recordingID] = "This transcript could not be read back."
+            return
+        }
+
+        var relabelled = cues
+        if expected == .justMe {
+            // One person total is an answer, not a clustering problem: the right transcript is
+            // the one with no speaker chips at all, and it needs no audio and no Core ML.
+            LogManager.shared.log("🎛️ Diarization: \(recordingID) marked as one voice - dropping speaker labels")
+        } else {
+            let audio = await diarizationAudio(for: recording)
+            guard case .ready(let micURL, let systemURL) = audio else {
+                if case .missing(let reason) = audio { speakerReapplyErrors[recordingID] = reason }
+                return
+            }
+            relabelled = await SpeakerSeparation.label(
+                cues: cues,
+                micAudioURL: micURL,
+                systemAudioURL: systemURL,
+                recordingDuration: recording.duration,
+                expected: expected
+            )
+            // Separation hands back what it was given on every unhappy path - one voice found,
+            // a model that would not load, the deadline. None of those is a reason to publish
+            // a transcript stripped of the labels it already had.
+            guard relabelled.contains(where: { $0.speaker != nil }) else {
+                speakerReapplyErrors[recordingID] = "Could not tell the voices apart this time. The transcript is unchanged."
+                return
+            }
+        }
+
+        guard let rebuilt = SrtCodec.serializeSrt(relabelled) else {
+            speakerReapplyErrors[recordingID] = "Could not rebuild the transcript. Nothing was changed."
+            return
+        }
+
+        if let index = recordings.firstIndex(where: { $0.id == recordingID }) {
+            recordings[index].transcriptSrt = rebuilt
+            recordings[index].expectedSpeakers = expected
+            saveRecordings()
+        }
+
+        if let slug = recording.tracerSlug {
+            await tracerAPIClient.updateVideo(slug: slug, transcriptSrt: rebuilt)
+            LogManager.shared.log("🎛️ Diarization: ✅ re-labelled \(slug) as \(expected.displayName)")
+        }
+
+        // Keep Dropbox's copy of the transcript in step with the one on the site, so the
+        // recovery copy is not quietly a version behind.
+        if let folder = recording.dropboxFolder {
+            let token = await dropboxAuthManager.refreshTokenIfNeeded() ?? dropboxAuthManager.accessToken ?? ""
+            if !token.isEmpty {
+                do {
+                    _ = try await dropboxUploadManager.uploadText(
+                        rebuilt, dropboxPath: "\(folder)/transcript.srt", accessToken: token
+                    )
+                } catch {
+                    LogManager.shared.log(error: error, message: "📝 Transcript: re-upload after re-labelling failed (continuing)")
+                }
+            }
+        }
+    }
+
+    /// Where a re-run gets its audio: the local cache first, Dropbox when the cache has been
+    /// evicted or this Mac has never seen the recording.
+    private enum DiarizationAudioLookup {
+        case ready(mic: URL, system: URL?)
+        case missing(String)
+    }
+
+    @MainActor
+    private func diarizationAudio(for recording: Recording) async -> DiarizationAudioLookup {
+        let cache = DiarizationAudioCache.shared
+        if let mic = cache.existingURL(.mic, for: recording.id) {
+            return .ready(mic: mic, system: cache.existingURL(.system, for: recording.id))
+        }
+
+        guard let micPath = recording.diarizationMicPath else {
+            return .missing("The audio for this recording is no longer available, so the speakers cannot be worked out again.")
+        }
+        let token = await dropboxAuthManager.refreshTokenIfNeeded() ?? dropboxAuthManager.accessToken ?? ""
+        guard !token.isEmpty else {
+            return .missing("Connect Dropbox to fetch this recording's audio back.")
+        }
+
+        LogManager.shared.log("🎛️ Diarization cache: nothing local for \(recording.id) - fetching the audio back from Dropbox")
+        do {
+            try await dropboxUploadManager.download(
+                path: micPath, to: cache.url(.mic, for: recording.id), accessToken: token
+            )
+        } catch {
+            LogManager.shared.log(error: error, message: "🎛️ Diarization cache: Dropbox fetch failed")
+            return .missing("Could not fetch this recording's audio from Dropbox.")
+        }
+
+        var systemURL: URL? = nil
+        if let systemPath = recording.diarizationSystemPath {
+            do {
+                try await dropboxUploadManager.download(
+                    path: systemPath, to: cache.url(.system, for: recording.id), accessToken: token
+                )
+                systemURL = cache.existingURL(.system, for: recording.id)
+            } catch {
+                // The mic track alone still separates, just less well. Worth continuing rather
+                // than refusing the whole re-run.
+                LogManager.shared.log(error: error, message: "🎛️ Diarization cache: system track fetch failed (continuing on the mic track)")
+            }
+        }
+        cache.evict()
+
+        guard let micURL = cache.existingURL(.mic, for: recording.id) else {
+            return .missing("Could not fetch this recording's audio from Dropbox.")
+        }
+        return .ready(mic: micURL, system: systemURL)
+    }
+
+    /// Removes the `[Name] ` prefix `SrtCodec.serializeSrt` writes onto a labelled cue, so a
+    /// re-labelled transcript carries one prefix rather than one per run. Loops because a
+    /// transcript that already stacked them has to come back clean, and keeps the original text
+    /// when stripping would leave a cue with nothing in it.
+    static func strippingSpeakerPrefixes(from cues: [SrtSegment]) -> [SrtSegment] {
+        let prefix = #"^\[[^\]]{1,40}\]\s+"#
+        return cues.map { cue in
+            var text = cue.text
+            while let range = text.range(of: prefix, options: .regularExpression) {
+                let stripped = String(text[range.upperBound...])
+                if stripped.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { break }
+                text = stripped
+            }
+            return SrtSegment(start: cue.start, end: cue.end, text: text, speaker: nil)
         }
     }
 
@@ -982,6 +1252,8 @@ final class AppState {
         if FileManager.default.fileExists(atPath: recording.fileURL.path) {
             try? FileManager.default.removeItem(at: recording.fileURL)
         }
+        // Nothing left to re-label, so the audio kept for that is now just disk.
+        DiarizationAudioCache.shared.remove(for: recording.id)
 
         // 3. Drop from local state immediately so UI updates without a re-sync
         DispatchQueue.main.async {

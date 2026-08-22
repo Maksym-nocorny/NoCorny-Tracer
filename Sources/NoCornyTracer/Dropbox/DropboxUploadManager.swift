@@ -506,6 +506,47 @@ final class DropboxUploadManager {
         return newPath
     }
 
+    // MARK: - Download
+
+    /// Pulls a file back out of Dropbox and writes it to `destination`.
+    ///
+    /// Streamed to a temporary file by URLSession rather than buffered as `Data`: the one
+    /// caller is speaker separation fetching an hour or more of cached audio, and holding
+    /// that in memory to write it straight back out helps nobody.
+    func download(path: String, to destination: URL, accessToken: String) async throws {
+        guard !accessToken.isEmpty else { throw DropboxError.invalidToken }
+
+        try await withRetry(taskName: "Download") {
+            var request = URLRequest(url: URL(string: "https://content.dropboxapi.com/2/files/download")!)
+            request.httpMethod = "POST"
+            request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+            try self.setDropboxAPIArg(request: &request, arguments: ["path": path])
+
+            let (tempURL, response) = try await URLSession.shared.download(for: request)
+            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+                let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+                // The body of a failed download is the error JSON, and it is small; on
+                // success it is the file, which is why this only reads it when we already
+                // know the request failed.
+                let body = (try? Data(contentsOf: tempURL)).flatMap { String(data: $0, encoding: .utf8) } ?? ""
+                try? FileManager.default.removeItem(at: tempURL)
+                throw DropboxError.httpError(
+                    status: statusCode,
+                    retryAfter: Self.retryAfter(from: response, body: nil),
+                    body: body
+                )
+            }
+
+            try FileManager.default.createDirectory(
+                at: destination.deletingLastPathComponent(), withIntermediateDirectories: true
+            )
+            if FileManager.default.fileExists(atPath: destination.path) {
+                try FileManager.default.removeItem(at: destination)
+            }
+            try FileManager.default.moveItem(at: tempURL, to: destination)
+        }
+    }
+
     /// Fetches a thumbnail for a file
     func getThumbnail(path: String, accessToken: String) async throws -> Data {
         guard !accessToken.isEmpty else { throw DropboxError.invalidToken }

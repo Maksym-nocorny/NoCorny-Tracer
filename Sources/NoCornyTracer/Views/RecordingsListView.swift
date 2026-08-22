@@ -3,6 +3,9 @@ import SwiftUI
 /// List of recent recordings with upload status and actions
 struct RecordingsListView: View {
     @Bindable var appState: AppState
+    /// Hoisted to the list because the dropdown overlay has to sit outside the card, or the
+    /// menu is clipped by it. One id at a time across the whole list, same as in Settings.
+    @State private var activeDropdownID: String? = nil
 
     var body: some View {
         VStack(spacing: Theme.Spacing.md) {
@@ -74,7 +77,11 @@ struct RecordingsListView: View {
                         ScrollView(.vertical) {
                             LazyVStack(spacing: Theme.Spacing.xs) {
                                 ForEach(appState.recordings) { recording in
-                                    RecordingRowView(appState: appState, recording: recording)
+                                    RecordingRowView(
+                                        appState: appState,
+                                        recording: recording,
+                                        activeDropdownID: $activeDropdownID
+                                    )
                                 }
                             }
                             .padding(.bottom, Theme.Spacing.xxl)
@@ -104,6 +111,7 @@ struct RecordingsListView: View {
                     .cardStyle()
             }
         }
+        .customDropdownOverlay(activeDropdownID: $activeDropdownID)
     }
 
     // MARK: - Storage Bar
@@ -159,6 +167,7 @@ struct RecordingsListView: View {
 struct RecordingRowView: View {
     @Bindable var appState: AppState
     let recording: Recording
+    @Binding var activeDropdownID: String?
     @State private var showCopied = false
     @State private var isLinkHovered = false
     @State private var isHovered = false
@@ -180,6 +189,15 @@ struct RecordingRowView: View {
     }
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            mainRow
+            if canReapplySpeakers {
+                speakersRow
+            }
+        }
+    }
+
+    private var mainRow: some View {
         HStack(spacing: Theme.Spacing.md) {
             // Play icon / thumbnail
             Button {
@@ -348,6 +366,73 @@ struct RecordingRowView: View {
                 }
             }
         )
+    }
+
+    // MARK: - Speakers
+
+    /// The count can only be corrected where all three hold: the plan includes separation,
+    /// there is a transcript to re-label, and the audio to re-run against still exists either
+    /// here or in Dropbox. Anything less and the control would be a button that fails.
+    private var canReapplySpeakers: Bool {
+        guard appState.tracerAPIClient.entitlements.diarization else { return false }
+        guard let srt = recording.transcriptSrt, !srt.isEmpty else { return false }
+        return DiarizationAudioCache.shared.hasMicAudio(for: recording.id)
+            || recording.diarizationMicPath != nil
+    }
+
+    /// No equality check on the way in: picking the value that is already selected is how you
+    /// retry a run that failed, and refusing it would look like the control was stuck.
+    private var speakersBinding: Binding<ExpectedSpeakers> {
+        Binding(
+            get: { recording.expectedSpeakers ?? appState.expectedSpeakers },
+            set: { newValue in
+                Task { await appState.reapplySpeakers(recordingID: recording.id, expected: newValue) }
+            }
+        )
+    }
+
+    private var speakersRow: some View {
+        let isRunning = appState.reapplyingSpeakers.contains(recording.id)
+        return VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: Theme.Spacing.sm) {
+                Image(systemName: "person.2")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+
+                Text("Speakers")
+                    .font(Theme.Typography.body(11, weight: .light))
+                    .foregroundStyle(.secondary)
+
+                Spacer(minLength: Theme.Spacing.xs)
+
+                if isRunning {
+                    ProgressView()
+                        .controlSize(.mini)
+                } else {
+                    CustomDropdownButton(
+                        id: "speakers-\(recording.id.uuidString)",
+                        options: ExpectedSpeakers.allCases.map {
+                            DropdownOption(id: $0.rawValue, label: $0.displayName, value: $0)
+                        },
+                        selection: speakersBinding,
+                        activeDropdownID: $activeDropdownID,
+                        minWidth: 128
+                    )
+                }
+            }
+
+            if let failure = appState.speakerReapplyErrors[recording.id] {
+                Text(failure)
+                    .font(Theme.Typography.body(10, weight: .light))
+                    .foregroundStyle(Theme.Colors.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        // Full row width, inset to the same edges as the row above it. Indenting it under the
+        // title would leave the dropdown 190pt to live in inside a 380pt window, which is how
+        // a label ends up reading "Spea...".
+        .padding(.horizontal, Theme.Spacing.sm)
+        .padding(.bottom, Theme.Spacing.xs)
     }
 
     @ViewBuilder

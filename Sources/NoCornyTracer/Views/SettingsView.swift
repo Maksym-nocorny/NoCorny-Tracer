@@ -413,7 +413,7 @@ struct SettingsView: View {
 
             if unlocked && appState.diarizationEnabled {
                 HStack {
-                    Text("People in the recording")
+                    Text("People in new recordings")
                         .font(Theme.Typography.body(12))
                     Spacer()
                     CustomDropdownButton(
@@ -433,11 +433,11 @@ struct SettingsView: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            if unlocked && appState.diarizationEnabled && appState.expectedSpeakers != .auto {
-                // Worth saying out loud, because it is the one setting here that cannot be
-                // corrected after the fact: the local file is deleted once it uploads, so a
-                // wrong count is only fixable by recording again.
-                Text("Set this before you record. Tracer deletes its local copy once a recording uploads, so the count cannot be changed afterwards.")
+            if unlocked && appState.diarizationEnabled {
+                // The count used to be final, so this line used to be a warning. It is a
+                // starting point now: the audio is kept, so the real answer is the one given
+                // after reading the transcript.
+                Text("This is the starting point for new recordings. If a transcript comes back with the wrong number of people, correct it on that recording in the Recordings list.")
                     .font(Theme.Typography.body(10, weight: .light))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

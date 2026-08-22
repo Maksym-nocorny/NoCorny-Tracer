@@ -33,6 +33,16 @@ struct Recording: Identifiable, Codable {
     /// which is what speaker separation will want to work from.
     /// Optional with a default so an older cached recordings list still decodes.
     var systemAudioURL: URL?
+    /// Durable copies of the two 16 kHz tracks speaker separation re-runs from, sitting in this
+    /// recording's own Dropbox folder. The local cache is the fast path; these are what make a
+    /// re-run survive cache eviction, a reinstall, or a different Mac.
+    /// Optional with a default so an older cached recordings list still decodes.
+    var diarizationMicPath: String?
+    var diarizationSystemPath: String?
+    /// The headcount the current speaker labels were produced with, so the Recordings list can
+    /// show what was assumed rather than what the settings happen to say today.
+    /// Optional with a default so an older cached recordings list still decodes.
+    var expectedSpeakers: ExpectedSpeakers?
 
     init(
         id: UUID = UUID(),
