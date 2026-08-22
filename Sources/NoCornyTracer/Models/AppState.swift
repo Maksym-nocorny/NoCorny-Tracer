@@ -20,7 +20,8 @@ final class AppState {
     lazy var aiNamingService: AINamingService = AINamingService(
         proxyClient: GeminiProxyClient(
             tokenProvider: { [weak self] in self?.tracerAPIClient.apiToken }
-        )
+        ),
+        preferredKind: { [weak self] in self?.transcriptionEngine ?? .cloudGemini }
     )
     let hotkeyManager = HotkeyManager()
     let cameraManager = CameraManager()
@@ -70,6 +71,14 @@ final class AppState {
     var reduceBackgroundNoise: Bool = false {
         didSet {
             UserDefaults.standard.set(reduceBackgroundNoise, forKey: "reduceBackgroundNoise")
+        }
+    }
+    /// Which engine transcribes. Defaults to the cloud so nothing changes for anyone
+    /// already using the app; on-device is opt-in until its model is downloaded, which is
+    /// a deliberate 1.5 GB decision rather than something that happens on first launch.
+    var transcriptionEngine: TranscriptionEngineKind = .cloudGemini {
+        didSet {
+            UserDefaults.standard.set(transcriptionEngine.rawValue, forKey: "transcriptionEngine")
         }
     }
     var appTheme: AppTheme = .light {
@@ -155,6 +164,10 @@ final class AppState {
         }
         self.launchAtLogin = UserDefaults.standard.bool(forKey: "launchAtLogin")
         self.reduceBackgroundNoise = UserDefaults.standard.bool(forKey: "reduceBackgroundNoise")
+        if let engineRaw = UserDefaults.standard.string(forKey: "transcriptionEngine"),
+           let engine = TranscriptionEngineKind(rawValue: engineRaw) {
+            self.transcriptionEngine = engine
+        }
         self.noiseSuggestionDismissedForever = UserDefaults.standard.bool(forKey: Self.noiseSuggestionDismissedKey)
         self.isCameraEnabled = UserDefaults.standard.bool(forKey: "isCameraEnabled")
         self.selectedCameraDeviceID = UserDefaults.standard.string(forKey: "selectedCameraDeviceID")

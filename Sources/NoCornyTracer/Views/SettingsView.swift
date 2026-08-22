@@ -26,6 +26,9 @@ struct SettingsView: View {
                 inputDevicesSection
                     .cardStyle()
 
+                transcriptionSection
+                    .cardStyle()
+
                 generalSection
                     .cardStyle()
 
@@ -276,6 +279,143 @@ struct SettingsView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // MARK: - Transcription
+
+    @State private var modelDownloadError: String?
+
+    private var transcriptionSection: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
+            Label("Transcription", systemImage: "waveform")
+                .font(Theme.Typography.body(13, weight: .semibold))
+
+            VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+                HStack {
+                    Text("Engine")
+                        .font(Theme.Typography.body(12))
+                    Spacer()
+                    CustomDropdownButton(
+                        id: "transcriptionEngine",
+                        options: engineOptions,
+                        selection: $appState.transcriptionEngine,
+                        activeDropdownID: $activeDropdownID
+                    )
+                }
+
+                if appState.transcriptionEngine == .localWhisper {
+                    localModelRow
+                }
+
+                Text(engineExplanation)
+                    .font(Theme.Typography.body(10, weight: .light))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    /// On Intel the on-device option is shown but locked rather than hidden: an option that
+    /// silently does not exist reads as a missing feature, not an unsupported one.
+    private var engineOptions: [DropdownOption<TranscriptionEngineKind>] {
+        TranscriptionEngineKind.allCases.map { kind in
+            let unsupported = kind == .localWhisper && !LocalWhisperEngine.isAvailable
+            return DropdownOption(
+                id: kind.rawValue,
+                label: kind.displayName,
+                value: kind,
+                isLocked: unsupported,
+                badge: unsupported ? "Apple Silicon" : nil
+            )
+        }
+    }
+
+    private var engineExplanation: String {
+        switch appState.transcriptionEngine {
+        case .cloudGemini:
+            return "Transcribes in the cloud. Needs a Tracer account and an internet connection."
+        case .localWhisper:
+            return "Transcribes on this Mac. Nothing is uploaded and there is nothing to pay for. Titles are still generated in the cloud."
+        }
+    }
+
+    private var localModelRow: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+            HStack(spacing: Theme.Spacing.md) {
+                Text("Model")
+                    .font(Theme.Typography.body(12))
+                Spacer()
+                modelStatusControl(LocalModelState.shared.phase)
+            }
+
+            if case .failed(let message) = LocalModelState.shared.phase {
+                Text(message)
+                    .font(Theme.Typography.body(10, weight: .light))
+                    .foregroundStyle(Theme.Colors.brandPurple)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let modelDownloadError {
+                Text(modelDownloadError)
+                    .font(Theme.Typography.body(10, weight: .light))
+                    .foregroundStyle(Theme.Colors.brandPurple)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func modelStatusControl(_ phase: LocalModelState.Phase) -> some View {
+        switch phase {
+        case .ready:
+            HStack(spacing: Theme.Spacing.xs) {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(Theme.Colors.brandPurple)
+                    .font(.system(size: 11))
+                Text("Ready")
+                    .font(Theme.Typography.body(12, weight: .light))
+            }
+            Button("Remove") {
+                LocalWhisperEngine.deleteModel()
+                LocalModelState.pushRefresh()
+            }
+            .buttonStyle(SettingsButtonStyle())
+
+        case .downloading:
+            VStack(alignment: .trailing, spacing: 2) {
+                ProgressView(value: LocalModelState.shared.downloadProgress ?? 0)
+                    .progressViewStyle(.linear)
+                    .frame(width: 120)
+                Text("\(Int((LocalModelState.shared.downloadProgress ?? 0) * 100))%")
+                    .font(Theme.Typography.body(10, weight: .light))
+                    .foregroundStyle(.secondary)
+            }
+
+        case .preparing:
+            // The bytes are down and nothing visible happens for minutes while Core ML
+            // compiles. Without saying so, a finished download looks like a hang.
+            HStack(spacing: Theme.Spacing.xs) {
+                ProgressView().controlSize(.small)
+                Text("Preparing model…")
+                    .font(Theme.Typography.body(11, weight: .light))
+                    .foregroundStyle(.secondary)
+            }
+
+        case .notDownloaded, .failed:
+            Button("Download (1.5 GB)") { startModelDownload() }
+                .buttonStyle(SettingsButtonStyle())
+                .disabled(!LocalWhisperEngine.isAvailable)
+        }
+    }
+
+    private func startModelDownload() {
+        modelDownloadError = nil
+        Task {
+            do {
+                try await LocalWhisperEngine.downloadModel()
+            } catch {
+                modelDownloadError = error.localizedDescription
+            }
+        }
     }
 
     // MARK: - Recording Settings

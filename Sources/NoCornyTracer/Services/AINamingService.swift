@@ -17,26 +17,61 @@ import ImageIO
 /// response that transcribes it.
 final class AINamingService {
 
-    private let engine: TranscriptionEngine
+    private let engines: [TranscriptionEngineKind: TranscriptionEngine]
     private let namingService: NamingService
+    /// Read per run, not captured once: the user can change engines between recordings,
+    /// and a lazily-built service that resolved this at init would keep using whatever was
+    /// selected the first time the app transcribed anything.
+    private let preferredKind: () -> TranscriptionEngineKind
 
-    init(proxyClient: GeminiProxyClient) {
+    init(
+        proxyClient: GeminiProxyClient,
+        preferredKind: @escaping () -> TranscriptionEngineKind = { .cloudGemini }
+    ) {
         let naming = NamingService(proxyClient: proxyClient)
         self.namingService = naming
-        self.engine = CloudGeminiEngine(proxyClient: proxyClient, namingService: naming)
+        self.preferredKind = preferredKind
+        self.engines = [
+            .cloudGemini: CloudGeminiEngine(proxyClient: proxyClient, namingService: naming),
+            .localWhisper: LocalWhisperEngine(),
+        ]
     }
 
-    /// Injection point for a different engine (tests, and the on-device path).
+    /// Injection point for tests.
     init(engine: TranscriptionEngine, namingService: NamingService) {
-        self.engine = engine
+        self.engines = [engine.kind: engine]
         self.namingService = namingService
+        self.preferredKind = { engine.kind }
+    }
+
+    /// The engine that will actually run: the chosen one when it can, otherwise anything
+    /// that can. Falling back matters most for the on-device engine, which reports itself
+    /// unready until its model is downloaded -- a recording made before that finishes
+    /// should still get transcribed rather than silently produce nothing.
+    private var activeEngine: TranscriptionEngine? {
+        let wanted = preferredKind()
+        if let engine = engines[wanted], engine.isReady { return engine }
+        if let fallback = engines.values.first(where: { $0.isReady }) {
+            LogManager.shared.log("🎛️ Engine: \(wanted.rawValue) is not ready, falling back to \(fallback.kind.rawValue)")
+            return fallback
+        }
+        return nil
     }
 
     /// True when the pipeline can run at all. Callers use it to skip the work up front
     /// rather than to discover the failure one expensive step in.
-    var isReady: Bool { engine.isReady || namingService.isReady }
+    var isReady: Bool { activeEngine != nil || namingService.isReady }
 
     func generateSubtitlesAndName(for videoURL: URL) async -> NamingResult {
+        guard let engine = activeEngine else {
+            LogManager.shared.log("🎛️ Engine: no engine is ready — sign in, or download the on-device model", type: .error)
+            return NamingResult(
+                srt: nil, name: nil, usage: .zero, model: "none",
+                latencyMs: 0, attempts: 0, success: false,
+                errorCode: "no_engine_available", fatal: true
+            )
+        }
+
         var result = await engine.transcribe(videoURL: videoURL)
 
         // Only Gemini's single-call path names a recording while transcribing it. Every
