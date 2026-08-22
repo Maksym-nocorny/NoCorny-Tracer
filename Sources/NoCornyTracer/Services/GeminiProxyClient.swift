@@ -34,6 +34,17 @@ final class GeminiProxyClient {
     /// Default safety settings — relaxed because we're summarizing the user's own recordings.
     /// If they curse or use rough language, transcription/naming should still go through.
     /// Without this, Gemini's defaults silently return empty responses on transcripts with mat.
+    /// Stamped on every proxy call so the server can tell how far a release has spread.
+    /// That number gates turning on server-side entitlement checks: an older build knows
+    /// only the cloud path, so switching the gate on while those are still out there
+    /// breaks them with nothing to point at.
+    private static let appVersion: String = {
+        let bundle = Bundle.main
+        let short = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        let build = bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+        return "\(short) (\(build))"
+    }()
+
     private static let defaultSafetySettings: [[String: Any]] = [
         ["category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"],
         ["category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"],
@@ -58,6 +69,7 @@ final class GeminiProxyClient {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue(Self.appVersion, forHTTPHeaderField: "X-Tracer-App-Version")
         request.timeoutInterval = 120 // Gemini can be slow for large media
 
         var body: [String: Any] = [

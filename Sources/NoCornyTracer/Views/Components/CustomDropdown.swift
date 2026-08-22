@@ -7,6 +7,12 @@ struct DropdownOption<Value: Hashable>: Identifiable {
     let id: String
     let label: String
     let value: Value
+    /// Shown but not selectable. Picking it calls `onLockedTap` instead of changing the
+    /// selection, so an unavailable choice can still be visible and explain itself
+    /// rather than quietly not existing.
+    var isLocked: Bool = false
+    /// Small trailing tag, e.g. "Premium" or a download size.
+    var badge: String? = nil
 }
 
 /// Type-erased option item for the overlay (no generics needed)
@@ -14,6 +20,8 @@ struct DropdownOptionItem: Identifiable {
     let id: String
     let label: String
     let isSelected: Bool
+    var isLocked: Bool = false
+    var badge: String? = nil
 }
 
 /// Anchor data for positioning the dropdown menu relative to its trigger button
@@ -41,6 +49,8 @@ struct CustomDropdownButton<Value: Hashable>: View {
     @Binding var selection: Value
     @Binding var activeDropdownID: String?
     var minWidth: CGFloat = 120
+    /// Called when a locked option is picked, instead of selecting it.
+    var onLockedTap: ((Value) -> Void)? = nil
 
     @State private var isHovered = false
 
@@ -94,10 +104,16 @@ struct CustomDropdownButton<Value: Hashable>: View {
                 id: id,
                 anchor: anchor,
                 options: options.map { opt in
-                    DropdownOptionItem(id: opt.id, label: opt.label, isSelected: opt.value == selection)
+                    DropdownOptionItem(
+                        id: opt.id, label: opt.label, isSelected: opt.value == selection,
+                        isLocked: opt.isLocked, badge: opt.badge
+                    )
                 },
                 onSelect: { selectedID in
-                    if let option = options.first(where: { $0.id == selectedID }) {
+                    guard let option = options.first(where: { $0.id == selectedID }) else { return }
+                    if option.isLocked {
+                        onLockedTap?(option.value)
+                    } else {
                         selection = option.value
                     }
                 }
@@ -171,8 +187,10 @@ struct CustomDropdownOverlay: View {
     }
 
     private func menuHeight(optionCount: Int) -> CGFloat {
-        CGFloat(optionCount) * 28
+        CGFloat(optionCount) * Self.rowHeight
     }
+
+    static let rowHeight: CGFloat = 28
 }
 
 // MARK: - Option Row
@@ -194,14 +212,31 @@ private struct DropdownOptionRow: View {
 
                 Text(option.label)
                     .font(Theme.Typography.body(12))
-                    .foregroundStyle(Theme.Colors.textPrimary)
+                    .foregroundStyle(option.isLocked ? Theme.Colors.textPrimary.opacity(0.55) : Theme.Colors.textPrimary)
                     .lineLimit(1)
                     .truncationMode(.tail)
 
-                Spacer()
+                Spacer(minLength: Theme.Spacing.sm)
+
+                if let badge = option.badge {
+                    Text(badge)
+                        .font(Theme.Typography.body(10))
+                        .foregroundStyle(Theme.Colors.brandPurple)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1)
+                        .background(
+                            Capsule().fill(Theme.Colors.brandPurple.opacity(0.12))
+                        )
+                }
+
+                if option.isLocked {
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(Theme.Colors.textPrimary.opacity(0.55))
+                }
             }
             .padding(.horizontal, Theme.Spacing.md)
-            .frame(height: 28)
+            .frame(height: CustomDropdownOverlay.rowHeight)
             .background(
                 RoundedRectangle(cornerRadius: Theme.Radius.sm - 2)
                     .fill(isHovered ? Theme.Colors.brandPurple.opacity(0.12) : Color.clear)
