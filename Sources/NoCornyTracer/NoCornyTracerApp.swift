@@ -113,6 +113,13 @@ private struct MainWindowHost: View {
                     openWindow(id: "permissions")
                 }
 
+                // A start refusal arriving from the hotkey has no window to appear on, and
+                // an alert on a closed window is "nothing at all happened" with extra steps.
+                appState.presentStartFailure = {
+                    NSApp.activate(ignoringOtherApps: true)
+                    openWindow(id: "main")
+                }
+
                 // Opt the main window out of Cocoa state restoration. With
                 // NSQuitAlwaysKeepsWindows enabled, quitting while the window is closed would
                 // otherwise relaunch the app with no window — so MainWindowHost never appears,

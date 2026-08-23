@@ -47,24 +47,71 @@ final class BugReportComposerTests: XCTestCase {
         XCTAssertFalse(redacted.contains("First 200 chars:"))
     }
 
+    /// The privacy test above reads `productionLogFileURL`, and nothing else pins what that
+    /// is. Pointed at the test scratch log - which is exactly the mutation that would undo
+    /// the log-isolation fix - the privacy test finds a clean file and SKIPS, and a skip
+    /// counts as green. This is the second time that test would have died silently; the
+    /// first time, three skips instead of one was the only visible symptom, and nothing
+    /// asserts the skip count.
+    func testTheProductionLogPathIsTheInstalledAppsNotOurs() {
+        let path = LogManager.productionLogFileURL.path
+        XCTAssertTrue(path.contains("/Library/Application Support/NoCornyTracer/Logs/"),
+                      "productionLogFileURL does not point at the installed app's log: \(path)")
+        XCTAssertNotEqual(LogManager.productionLogFileURL, LogManager.shared.getLogFileURL(),
+                          "under tests the logger writes to scratch; if these are equal, either the "
+                          + "isolation is off or the privacy test is reading the scratch file")
+        XCTAssertFalse(path.contains(FileManager.default.temporaryDirectory.path),
+                       "the production path resolved into a temporary directory")
+    }
+
+    /// These three run the composer against a log THIS TEST wrote, through the same
+    /// injection the scope tests use. They used to read whatever the process's logger had
+    /// on disk, and the log-isolation change broke them in a way that only showed on a cold
+    /// machine: the guard checked the shipped app's log while the composer read the test
+    /// scratch log, whose first write was still sitting in the logger's queue. First run on
+    /// a fresh clone: red. Second run: green. A suite that fails only on machines that have
+    /// never run it is worse than one that fails everywhere.
+    private func withComposerLog(lines: [String], _ body: () throws -> Void) throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("composer-log-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let current = dir.appendingPathComponent("app.log")
+        let previous = dir.appendingPathComponent("app.old.log")
+        try "".write(to: previous, atomically: true, encoding: .utf8)
+        let (v, b) = LogManager.sessionIdentity
+        let header = "[2026-08-01T10:00:00Z] 📝: 🚀 NoCorny Tracer v\(v) (\(b)) Started"
+        try ([header] + lines).joined(separator: "\n")
+            .write(to: current, atomically: true, encoding: .utf8)
+        BugReportComposer.logSourceOverride = (current, previous)
+        defer { BugReportComposer.logSourceOverride = nil }
+        try body()
+    }
+
     func testReportStaysUnderTheServerCap() throws {
-        try XCTSkipUnless(logExists, "no app.log on this machine")
-        let bytes = Data(BugReportComposer.composeLogTail().utf8).count
-        XCTAssertLessThanOrEqual(bytes, 220_000, "over the 200 KB cap plus truncation notice")
+        // Enough of our own session to blow well past the cap.
+        let line = "[2026-08-01T11:00:00Z] 📝: 📤 Upload: chunk sent (1.2 MB in 0.8s)"
+        try withComposerLog(lines: Array(repeating: line, count: 6_000)) {
+            let bytes = Data(BugReportComposer.composeLogTail().utf8).count
+            XCTAssertLessThanOrEqual(bytes, 220_000, "over the 200 KB cap plus truncation notice")
+            XCTAssertGreaterThan(bytes, 150_000, "the cap test did not actually reach the cap")
+        }
     }
 
     func testReportIsNotEmptyWhenALogExists() throws {
-        try XCTSkipUnless(logExists, "no app.log on this machine")
-        let report = BugReportComposer.composeLogTail()
-        XCTAssertFalse(report.isEmpty)
-        XCTAssertNotEqual(report, "(log file missing or unreadable)")
+        try withComposerLog(lines: ["[2026-08-01T11:00:00Z] 📝: 🎬 Recording: started"]) {
+            let report = BugReportComposer.composeLogTail()
+            XCTAssertTrue(report.contains("Recording: started"))
+            XCTAssertNotEqual(report, "(log file missing or unreadable)")
+        }
     }
 
     /// Availability must not depend on finding errors. Gating the button on an error count
     /// hides it exactly when it is needed, because the reports worth having are the quiet
     /// ones: a short transcript, a title in the wrong language, nothing thrown anywhere.
     func testAvailabilityDoesNotRequireErrors() throws {
-        try XCTSkipUnless(logExists, "no app.log on this machine")
-        XCTAssertTrue(BugReportComposer.hasAnythingToReport())
+        try withComposerLog(lines: ["[2026-08-01T11:00:00Z] 📝: 🎬 Recording: started"]) {
+            XCTAssertTrue(BugReportComposer.hasAnythingToReport())
+        }
     }
 }

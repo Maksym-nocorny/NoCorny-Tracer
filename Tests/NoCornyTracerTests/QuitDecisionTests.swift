@@ -57,3 +57,22 @@ final class InputFormatTests: XCTestCase {
         XCTAssertFalse(AudioCaptureManager.isUsableInputFormat(sampleRate: 0, channelCount: 2))
     }
 }
+
+/// What the user is told when a recording refuses to start. Nothing covered this: emptying
+/// the message or never setting the field passed the whole suite, and either one turns a
+/// refused start back into "nothing at all happened".
+final class StartFailureMessageTests: XCTestCase {
+
+    func testAVanishedMicrophoneGetsAnActionableMessage() {
+        let message = AppState.startFailureMessage(for: AudioCaptureError.deviceVanished)
+        XCTAssertTrue(message.contains("microphone"), "the one failure a person can act on does not name the thing to act on")
+        XCTAssertTrue(message.contains("Settings"), "no pointer to where the fix lives")
+    }
+
+    func testAnyOtherFailureStillSaysSomething() {
+        let generic = AppState.startFailureMessage(for: AudioCaptureError.engineStartFailed)
+        XCTAssertFalse(generic.isEmpty, "an empty message is an alert with a title and no body")
+        let unknown = AppState.startFailureMessage(for: NSError(domain: "x", code: 1))
+        XCTAssertFalse(unknown.isEmpty)
+    }
+}

@@ -46,7 +46,6 @@ final class LogManager {
         let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let logDir = appSupport.appendingPathComponent("NoCornyTracer/Logs", isDirectory: true)
         
-        try? fileManager.createDirectory(at: logDir, withIntermediateDirectories: true)
         // Tests write to a throwaway file. They still READ the real log where they mean to -
         // proving no credential or speech survives into a report is worth doing against real
         // data - but nothing they write ends up in it.
@@ -56,6 +55,9 @@ final class LogManager {
             try? fileManager.createDirectory(at: scratch, withIntermediateDirectories: true)
             self.logFileURL = scratch.appendingPathComponent("app.log")
         } else {
+            // Only here: creating it above the branch left a test run planting an empty
+            // NoCornyTracer directory tree on machines that never ran the app.
+            try? fileManager.createDirectory(at: logDir, withIntermediateDirectories: true)
             self.logFileURL = logDir.appendingPathComponent("app.log")
         }
         

@@ -206,6 +206,10 @@ final class AppState {
     /// (both Start paths `orderOut` the window before awaiting `startRecording`).
     @ObservationIgnored
     var presentPermissionsGate: (([PermissionsManager.RecordingPermission]) -> Void)?
+    /// Brings the app and the main window forward so `startRecordingFailure` has somewhere
+    /// to be seen. Same shape as the two above, and needed for the same reason: the failure
+    /// can arrive from the hotkey with every window closed.
+    var presentStartFailure: (() -> Void)?
 
     /// Polls Tracer for the current Dropbox connection state. Lets the macOS app
     /// notice within ~60s when the user disconnects (or switches accounts) on the
@@ -556,6 +560,12 @@ final class AppState {
         } catch {
             // Said out loud here rather than left to the callers, all of which discard it.
             startRecordingFailure = Self.startFailureMessage(for: error)
+            // Through the same door as the permissions gate, and for the same reason: the
+            // alert lives on the main window, and the hotkey works with that window closed.
+            // Setting the field alone put the alert on a window that was not on screen -
+            // "nothing at all happened" again, which is the exact experience this exists to
+            // end. The closure activates the app and opens the window first.
+            presentStartFailure?()
             LogManager.shared.log("🔴 Recording: refused to start — \(error.localizedDescription)", type: .error)
             throw error
         }
