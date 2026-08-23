@@ -9,6 +9,7 @@ enum BugReportClient {
 
     enum ReportError: LocalizedError {
         case nothingToSend
+        case onlyOlderVersions
         case rateLimited
         case server(Int)
         case transport(String)
@@ -17,6 +18,8 @@ enum BugReportClient {
             switch self {
             case .nothingToSend:
                 return "There is nothing in the log to send yet."
+            case .onlyOlderVersions:
+                return "Everything in the log so far was written by the previous version, and reports only carry entries from the current one. Use the app for a moment and try again."
             case .rateLimited:
                 return "You have sent several reports recently. Try again in an hour."
             case .server(let code):
@@ -52,8 +55,10 @@ enum BugReportClient {
     }
 
     static func send(_ payload: Payload, token: String?) async throws {
-        guard payload.logTail != "(log file missing or unreadable)" else {
-            throw ReportError.nothingToSend
+        switch BugReportComposer.availability {
+        case .ready: break
+        case .noLogYet: throw ReportError.nothingToSend
+        case .onlyOlderVersions: throw ReportError.onlyOlderVersions
         }
 
         var request = URLRequest(url: URL(string: "\(TracerAPIClient.baseURL)/api/bug-reports")!)

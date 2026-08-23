@@ -39,7 +39,24 @@ enum BugReportComposer {
     /// Deliberately not "are there errors". Gating on an error count hid the button exactly
     /// when it was most needed, because the bugs worth reporting are the quiet ones.
     static func hasAnythingToReport() -> Bool {
-        !readScopedLines().isEmpty
+        if case .ready = availability { return true }
+        return false
+    }
+
+    /// Why a report can or cannot be made right now. "Nothing yet" and "everything in the
+    /// log predates this version" are different facts, and telling someone the log is empty
+    /// when it is full of an older build's lines is simply untrue.
+    enum Availability: Equatable {
+        case ready
+        case noLogYet
+        /// The log exists but holds nothing this build wrote - normal right after updating,
+        /// until the app has run long enough to log something of its own.
+        case onlyOlderVersions
+    }
+
+    static var availability: Availability {
+        if readTail(maxLines: maxScanLines).isEmpty { return .noLogYet }
+        return readScopedLines().isEmpty ? .onlyOlderVersions : .ready
     }
 
     /// The report payload: filtered matches with context, always followed by the raw tail.

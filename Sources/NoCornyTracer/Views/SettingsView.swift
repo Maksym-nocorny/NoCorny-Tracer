@@ -749,7 +749,17 @@ struct SettingsView: View {
                 }
 
                 Button(isSendingReport ? "Sending…" : "Report a Problem") {
-                    pendingReport = BugReportClient.makePayload()
+                    switch BugReportComposer.availability {
+                    case .ready:
+                        pendingReport = BugReportClient.makePayload()
+                    case .noLogYet:
+                        reportOutcome = "There is nothing in the log to send yet."
+                    case .onlyOlderVersions:
+                        // Normal right after an update, and worth saying plainly: a report
+                        // only carries entries this version wrote, and it has not written
+                        // any yet.
+                        reportOutcome = "Everything logged so far came from the previous version. Reports only include entries from the current one - use the app for a moment and try again."
+                    }
                 }
                 .buttonStyle(SettingsButtonStyle())
                 .disabled(isSendingReport)

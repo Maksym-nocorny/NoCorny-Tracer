@@ -111,3 +111,29 @@ final class RecordingEncodingTests: XCTestCase {
         XCTAssertEqual(back.first?.aiGeneratedName, "Some meeting")
     }
 }
+
+/// Scoping a report to this version turns "leaked someone's speech" into "sent nothing".
+/// That is the right trade only if the app says which of the two happened - an empty
+/// report that claims the log is empty, while the log is full of an older build's lines,
+/// is a different untrue statement to the one we started with.
+final class ReportAvailabilityTests: XCTestCase {
+
+    func testAvailabilityIsNeverGuessed() {
+        let hasLog = FileManager.default.fileExists(atPath: LogManager.shared.getLogFileURL().path)
+        switch BugReportComposer.availability {
+        case .noLogYet:
+            XCTAssertFalse(hasLog, "said there is no log while one exists")
+        case .onlyOlderVersions, .ready:
+            XCTAssertTrue(hasLog, "claimed to have log content with no log file")
+        }
+    }
+
+    func testHasAnythingToReportAgreesWithAvailability() {
+        XCTAssertEqual(BugReportComposer.hasAnythingToReport(), BugReportComposer.availability == .ready)
+    }
+
+    /// The two empty cases must be distinguishable, or the UI cannot tell the truth.
+    func testTheTwoEmptyCasesAreDifferent() {
+        XCTAssertNotEqual(BugReportComposer.Availability.noLogYet, .onlyOlderVersions)
+    }
+}
