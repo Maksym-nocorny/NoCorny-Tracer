@@ -155,6 +155,17 @@ final class AudioCaptureManager: NSObject {
         // node's output format.
         let inputFormat = input.outputFormat(forBus: 0)
 
+        // The same check the recovery path makes, and for the same reason: a device that
+        // disappeared between listing it and building the graph - headphones dying in that
+        // window - reports 0 Hz and 0 channels, and installing a tap on it raises rather
+        // than failing. The recovery path has guarded this since it was written; the start
+        // path never did, so the one place it could crash outright was starting a recording.
+        guard Self.isUsableInputFormat(sampleRate: inputFormat.sampleRate,
+                                       channelCount: inputFormat.channelCount) else {
+            LogManager.shared.log("⚠️ Audio: the selected input reports no usable format - refusing to start", type: .error)
+            throw AudioCaptureError.deviceVanished
+        }
+
         installTap(on: input, format: inputFormat)
 
         // The graph is torn down and rebuilt whenever the hardware changes underneath it -
@@ -485,12 +496,14 @@ final class AudioCaptureManager: NSObject {
 
 enum AudioCaptureError: LocalizedError {
     case noDeviceSelected
+    case deviceVanished
     case engineStartFailed
     case permissionDenied
 
     var errorDescription: String? {
         switch self {
         case .noDeviceSelected: return "No audio input device selected"
+        case .deviceVanished: return "The selected microphone is no longer available"
         case .engineStartFailed: return "Failed to start audio engine"
         case .permissionDenied:  return "Microphone access is not granted"
         }

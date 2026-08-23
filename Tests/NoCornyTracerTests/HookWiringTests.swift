@@ -7,8 +7,7 @@ import XCTest
 final class HookWiringTests: XCTestCase {
 
     func testInitSubscribesEveryManagerHook() {
-        let sandbox = UserDefaults(suiteName: "hook-wiring-\(UUID().uuidString)")!
-        defer { sandbox.removePersistentDomain(forName: sandbox.description) }
+        let sandbox = SandboxDefaults.make()
         let previousShared = AppState.shared
         defer { AppState.shared = previousShared }
 
@@ -28,8 +27,7 @@ final class HookWiringTests: XCTestCase {
     /// developer running this suite made a live request per constructed AppState and wrote
     /// the reply into their real defaults.
     func testABuiltStateDoesNotPhoneHome() {
-        let sandbox = UserDefaults(suiteName: "no-network-\(UUID().uuidString)")!
-        defer { sandbox.removePersistentDomain(forName: sandbox.description) }
+        let sandbox = SandboxDefaults.make()
         let previousShared = AppState.shared
         defer { AppState.shared = previousShared }
 

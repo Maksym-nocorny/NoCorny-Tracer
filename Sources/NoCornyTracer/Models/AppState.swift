@@ -585,9 +585,10 @@ final class AppState {
     private func recoverFromWriterFailure() async {
         guard recordingManager.isRecording else { return }
         if let salvaged = await recordingManager.stopRecording(playSound: false)?.take {
-            // Through the same door as a normal stop: this path can also come back with a
-            // take that was already written once, and two rows for one recording is worse
-            // than the failure that got us here.
+            // `writing`, deliberately NOT `applyingStopResult`. This path passes no hand-over
+            // closure, so its take has never been offered to anyone - putting it through the
+            // "was it already saved" question would read "not in the list" as "deleted while
+            // the merge ran" and throw away the recording the recovery just rescued.
             recordings = Self.writing(salvaged, into: recordings)
             saveRecordings()
             let recordingID = salvaged.id

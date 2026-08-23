@@ -32,7 +32,10 @@ final class RecordingManager {
     let audioCaptureManager = AudioCaptureManager()
 
     // MARK: - Private
-    private var videoWriter: VideoWriter?
+    /// Internal so a test can drive a real writer headlessly and reach the normal stop path.
+    /// The lowering of `isStopping` before the merge lives there, and it is the piece whose
+    /// absence made every stop door a silent no-op for the length of an export.
+    var videoWriter: VideoWriter?
     /// Opt-in sidecar for system audio. Nil for every recording that did not ask for it,
     /// and nil again the moment anything on that path goes wrong.
     private var systemAudioWriter: SystemAudioWriter?
@@ -280,10 +283,6 @@ final class RecordingManager {
             // would make the caller treat "not in the list" as "deleted" and drop the
             // recording the salvage just rescued.
             //
-            // Not reachable from a test: getting here needs a live RecordingManager, and
-            // building one in a test process aborts inside the capture stack. The two
-            // outcomes are named rather than boolean so that being wrong here takes a wrong
-            // word rather than a flipped flag, and both factories are pinned.
             return salvaged.map { StopOutcome.recovered($0) }
         }
 
@@ -328,6 +327,12 @@ final class RecordingManager {
             LogManager.shared.log("🔊 System audio: sidecar holds only silence - skipping the merge")
         }
 
+        // Raised here, synchronously, rather than left to the first line of `finishTake`.
+        // That call suspends, and in the hop between lowering `isStopping` and the flag going
+        // up inside it, all three states read false while the take had still not been handed
+        // to anybody - a quit landing exactly there terminated on a finalised file with no
+        // row pointing at it. Microseconds wide, and free to close.
+        isFinishing = true
         return await Self.finishTake(
             recording,
             handOver: { take in onCaptureFinished?(take) },
@@ -362,7 +367,10 @@ final class RecordingManager {
             self.wasHandedOver = wasHandedOver
         }
 
-        /// The take was handed to the caller before the merge, so it is already saved.
+        /// The stop ran to completion and offered the take to whoever asked for it, before
+        /// the merge. Callers that pass a hand-over closure have it saved by now; callers
+        /// that do not - abort, writer recovery, a stream that died - never wanted it saved
+        /// and do not read this.
         static func finished(_ take: Recording) -> StopOutcome {
             StopOutcome(take: take, wasHandedOver: true)
         }
