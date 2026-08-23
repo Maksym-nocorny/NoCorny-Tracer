@@ -285,6 +285,31 @@ enum ProxyError: LocalizedError {
         }
     }
 
+    /// The stable machine code for a refusal that is about the ACCOUNT or a server-side
+    /// switch, rather than about this recording.
+    ///
+    /// The orchestrator decides whether to walk to another engine by matching `errorCode`
+    /// against an exact set. Stringifying the error produced `serverError(status: 403,
+    /// body: ...)`, which matches nothing - so the engine fallback that this engine's own
+    /// comment promises was dead for the DEFAULT engine, and would have stayed dead until
+    /// the day the premium gate was switched on.
+    ///
+    /// Reads the documented `code` field rather than searching the body, so an error
+    /// message that happens to quote the phrase is not mistaken for the machine code.
+    var refusalCode: String? {
+        guard case .serverError(let status, let body) = self, status == 403 || status == 503 else {
+            return nil
+        }
+        guard let data = body.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let code = json["code"] as? String else { return nil }
+        let accountLevel = [
+            ProxyTranscriptionError.premiumRequired.code,
+            ProxyTranscriptionError.engineDisabled.code,
+        ]
+        return accountLevel.contains(code) ? code : nil
+    }
+
     /// Whether retrying the SAME request could plausibly succeed.
     ///
     /// Retrying a deterministic failure is pure waste: before this existed, a 413 cost six
@@ -311,4 +336,11 @@ enum ProxyError: LocalizedError {
 /// connection drops, JSON serialization) are transient by nature, so they stay retryable.
 func isRetryableError(_ error: Error) -> Bool {
     (error as? ProxyError)?.isRetryable ?? true
+}
+
+/// The account-level refusal code for an arbitrary error, or nil when the failure is about
+/// the request or the recording. Engines put this into `EngineResult.errorCode` so the
+/// orchestrator can tell "this account may not" apart from "this did not work".
+func accountRefusalCode(_ error: Error) -> String? {
+    (error as? ProxyError)?.refusalCode
 }

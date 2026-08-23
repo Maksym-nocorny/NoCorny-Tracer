@@ -47,9 +47,22 @@ VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$PROJE
 # On 2026-08-23 that gap shipped a build whose bug-report scoping keys on the version
 # string, left at the previous release's value - so the mechanism matched the old build's
 # own log headers and excluded nothing it was built to exclude.
-LAST_RELEASED=$(grep -oE 'sparkle:version="[^"]+"' "$PROJECT_DIR/appcast.xml" 2>/dev/null | head -1 | cut -d'"' -f2 || true)
-if [ -n "$LAST_RELEASED" ] && [ "$LAST_RELEASED" = "$VERSION" ]; then
-    echo "❌ Info.plist is still $VERSION, which is already in appcast.xml."
+#
+# The first cut of this guard grepped `sparkle:version="..."` - an attribute form this feed
+# has never used. It matched nothing, so it passed everything: a guard that silently reads
+# nothing is the same failure it was written to catch. Hence two rules now. Compare against
+# EVERY published version, not just the newest, so re-cutting an older one is caught too;
+# and refuse to run at all when the feed yields no versions, rather than reporting all clear
+# on an empty read.
+RELEASED_VERSIONS=$(grep -oE '<sparkle:version>[^<]+</sparkle:version>' "$PROJECT_DIR/appcast.xml" 2>/dev/null | sed -E 's#</?sparkle:version>##g' || true)
+if [ -z "$RELEASED_VERSIONS" ]; then
+    echo "❌ No <sparkle:version> entries found in $PROJECT_DIR/appcast.xml."
+    echo "   Either the feed is empty or its format changed. Refusing to release blind:"
+    echo "   this check cannot tell 'nothing published yet' from 'I can no longer read it'."
+    exit 1
+fi
+if printf '%s\n' "$RELEASED_VERSIONS" | grep -qxF "$VERSION"; then
+    echo "❌ Info.plist is still $VERSION, which is already published in appcast.xml."
     echo "   Bump BOTH CFBundleShortVersionString and CFBundleVersion before releasing."
     exit 1
 fi

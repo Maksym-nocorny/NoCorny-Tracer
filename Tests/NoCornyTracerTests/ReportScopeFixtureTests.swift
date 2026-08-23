@@ -35,8 +35,13 @@ final class ReportScopeFixtureTests: XCTestCase {
     ]
 
     /// Guards the guard: if this ever passes, the fixture has stopped testing scope.
+    ///
+    /// Measured through the composer's own redactor, not through `sanitize` alone. The
+    /// report runs sanitize PLUS a transcript-preview pass, so a guard that only asked
+    /// sanitize would still call the fixture "un-cleanable" after a strengthened composer
+    /// had quietly started cleaning it - which is the exact way these tests died once.
     func testTheFixtureContainsSomethingRedactionCannotClean() {
-        let unclean = oldLeaks.filter { LogManager.shared.sanitize($0).contains("дизайн") }
+        let unclean = oldLeaks.filter { BugReportComposer.redactForTests($0).contains("дизайн") }
         XCTAssertFalse(
             unclean.isEmpty,
             "every fixture line is now redactable, so the scope assertions below prove nothing"
@@ -111,6 +116,39 @@ final class ReportScopeFixtureTests: XCTestCase {
     func testAnEmptyLogIsReportedAsSuch() throws {
         try write([])
         XCTAssertEqual(BugReportComposer.availability, .noLogYet)
+    }
+
+    /// A foreign header that lost its version - two processes appending at once clobber a
+    /// line mid-write - used to be adopted by whatever session was open, because nothing
+    /// closed one. Everything the foreign build then logged rode into our report.
+    ///
+    /// This branch shipped untested: deleting it outright passed the whole suite, which is
+    /// how every other hole in this saga was born.
+    func testATornHeaderClosesTheSessionInsteadOfAdoptingWhatFollows() throws {
+        let (v, b) = ourVersion
+        // Truncated exactly where a clobbered write would truncate: the marker prefix is
+        // there, the version that identifies whose build it is never got written.
+        let tornHeader = "[2026-08-01T10:45:00Z] 📝: 🚀 NoCorny Tracer"
+        try write([header(v, b),
+                   "[2026-08-01T10:30:00Z] 📝: 🎬 ours before the tear",
+                   tornHeader] + oldLeaks)
+        let report = BugReportComposer.composeLogTail()
+        XCTAssertFalse(report.contains("дизайн"), "lines after a torn header joined our session:\n\(report)")
+        XCTAssertFalse(report.contains("Acme"), "glossary terms after a torn header rode along")
+        XCTAssertTrue(report.contains("ours before the tear"), "dropped our own lines before the tear")
+    }
+
+    /// The same tear, with one of ours after it: the report must resume, not stay closed.
+    func testOurNextSessionAfterATornHeaderIsStillCollected() throws {
+        let (v, b) = ourVersion
+        try write([header(v, b),
+                   "[2026-08-01T10:30:00Z] 📝: 🎬 ours before the tear",
+                   "[2026-08-01T10:45:00Z] 📝: 🚀 NoCorny Tracer"] + oldLeaks
+                  + [header(v, b), "[2026-08-01T12:00:00Z] 📝: 🎬 ours after the tear"])
+        let report = BugReportComposer.composeLogTail()
+        XCTAssertFalse(report.contains("дизайн"), "the torn session rode along")
+        XCTAssertTrue(report.contains("ours after the tear"), "a tear stopped us collecting our own later session")
+        XCTAssertEqual(BugReportComposer.availability, .ready)
     }
 
     /// The rule must not be so eager that our own session is dropped.

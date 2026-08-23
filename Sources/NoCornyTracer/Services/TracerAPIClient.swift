@@ -16,6 +16,7 @@ final class TracerAPIClient {
     private static let imageKey = "TracerUserImage"
     private static let tierKey = "TracerUserTier"
     private static let cloudTranscriptionKey = "TracerFeatureCloudTranscription"
+    private static let cloudEnginesKey = "TracerFeatureCloudEngines"
     private static let diarizationKey = "TracerFeatureDiarization"
 
     // MARK: - State
@@ -180,6 +181,7 @@ final class TracerAPIClient {
         self.entitlements = Entitlements()
         UserDefaults.standard.removeObject(forKey: Self.tierKey)
         UserDefaults.standard.removeObject(forKey: Self.cloudTranscriptionKey)
+        UserDefaults.standard.removeObject(forKey: Self.cloudEnginesKey)
         UserDefaults.standard.removeObject(forKey: Self.diarizationKey)
         self.userImageURL = nil
         AvatarCache.shared.clear()
@@ -207,6 +209,11 @@ final class TracerAPIClient {
     func refreshProfile() async {
         guard let token = apiToken else { return }
         var request = URLRequest(url: URL(string: "\(Self.baseURL)/api/tokens/me")!)
+        // Bounded, because this runs immediately before every transcription. On the default
+        // 60s a hanging network makes the on-device engine - the one whose whole promise is
+        // "nothing is uploaded" - sit still for a minute before it starts. Cached
+        // entitlements are the fallback, and the server enforces regardless.
+        request.timeoutInterval = 10
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
@@ -365,6 +372,10 @@ final class TracerAPIClient {
     /// Generic PATCH /api/videos/{slug}. Every parameter is optional so callers
     /// can update just one slice of state — used both for "upload finished"
     /// (sharedURL/fileSize/duration) and "AI finished" (title/transcript/thumb).
+    /// Returns whether the server accepted the change. Discardable, because most callers
+    /// write fields the next sync would re-send anyway - but a caller whose change exists
+    /// ONLY on this Mac has to know, or the next sync silently reverts it.
+    @discardableResult
     func updateVideo(
         slug: String,
         title: String? = nil,
@@ -376,8 +387,8 @@ final class TracerAPIClient {
         thumbnailURL: String? = nil,
         processingStatus: String? = nil,
         aiUsage: AIUsagePayload? = nil
-    ) async {
-        guard let token = KeychainHelper.load(key: Self.tokenKey), !token.isEmpty else { return }
+    ) async -> Bool {
+        guard let token = KeychainHelper.load(key: Self.tokenKey), !token.isEmpty else { return false }
 
         var request = URLRequest(url: URL(string: "\(Self.baseURL)/api/videos/\(slug)")!)
         request.httpMethod = "PATCH"
@@ -397,18 +408,19 @@ final class TracerAPIClient {
         if let usage = aiUsage?.toJSON() { body["aiUsage"] = usage }
 
         // Don't fire an empty PATCH — server will reject with 400.
-        guard !body.isEmpty else { return }
+        guard !body.isEmpty else { return false }
 
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
         do {
             let (_, response) = try await URLSession.shared.data(for: request)
-            if let http = response as? HTTPURLResponse {
-                LogManager.shared.log("🌐 Tracer: PATCH /api/videos/\(slug) → \(http.statusCode)")
-                if http.statusCode == 401 { await handleUnauthorized() }
-            }
+            guard let http = response as? HTTPURLResponse else { return false }
+            LogManager.shared.log("🌐 Tracer: PATCH /api/videos/\(slug) → \(http.statusCode)")
+            if http.statusCode == 401 { await handleUnauthorized() }
+            return (200...299).contains(http.statusCode)
         } catch {
             LogManager.shared.log(error: error, message: "🌐 Tracer: updateVideo failed")
+            return false
         }
     }
 
@@ -623,7 +635,8 @@ final class TracerAPIClient {
         return Entitlements(
             cloudTranscription: d.object(forKey: cloudTranscriptionKey) as? Bool ?? true,
             diarization: d.object(forKey: diarizationKey) as? Bool ?? false,
-            tier: d.string(forKey: tierKey) ?? "free"
+            tier: d.string(forKey: tierKey) ?? "free",
+            cloudEngines: d.stringArray(forKey: cloudEnginesKey)
         )
     }
 
@@ -632,11 +645,17 @@ final class TracerAPIClient {
         next.tier = info.tier ?? "free"
         next.cloudTranscription = info.features?.cloudTranscription ?? true
         next.diarization = info.features?.diarization ?? false
+        next.cloudEngines = info.features?.cloudEngines
         entitlements = next
         let d = UserDefaults.standard
         d.set(next.tier, forKey: Self.tierKey)
         d.set(next.cloudTranscription, forKey: Self.cloudTranscriptionKey)
         d.set(next.diarization, forKey: Self.diarizationKey)
+        if let engines = next.cloudEngines {
+            d.set(engines, forKey: Self.cloudEnginesKey)
+        } else {
+            d.removeObject(forKey: Self.cloudEnginesKey)
+        }
     }
 
     struct TokenInfo: Codable {
@@ -653,6 +672,9 @@ final class TracerAPIClient {
     struct Features: Codable {
         let cloudTranscription: Bool?
         let diarization: Bool?
+        /// Which cloud engines this build may offer, as the server names them. Absent means
+        /// the server predates the field, which the permissive default below covers.
+        let cloudEngines: [String]?
     }
 
     /// What this account may do. Defaults to permissive when the server said nothing:
@@ -662,6 +684,15 @@ final class TracerAPIClient {
         var cloudTranscription: Bool = true
         var diarization: Bool = false
         var tier: String = "free"
+        /// nil means "the server did not say", which stays permissive for the same reason
+        /// the flags above do. An explicit list is authoritative: offering an engine that is
+        /// switched off server-side costs a full chunk upload before the 503 arrives.
+        var cloudEngines: [String]? = nil
+
+        func offersCloudEngine(_ kind: TranscriptionEngineKind) -> Bool {
+            guard let name = kind.serverName, let allowed = cloudEngines else { return true }
+            return allowed.contains(name)
+        }
 
         var isPremium: Bool { tier == "premium" }
     }

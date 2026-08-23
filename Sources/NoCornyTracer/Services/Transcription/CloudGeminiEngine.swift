@@ -333,7 +333,10 @@ final class CloudGeminiEngine: TranscriptionEngine {
 
             } catch {
                 let errorString = "\(error)"
-                lastError = String(errorString.prefix(200))
+                // An account-level refusal keeps its exact code: it is the orchestrator's
+                // only signal to try a different engine, and a stringified error matches
+                // nothing in the set it checks.
+                lastError = Self.failureCode(for: error)
                 totalAttempts += 1
                 // A deterministic failure (oversized body, bad request, signed out) returns the
                 // same result no matter how many times we ask. Bail immediately and mark the
@@ -367,6 +370,36 @@ final class CloudGeminiEngine: TranscriptionEngine {
             return NamingResult(srt: bestRestoredSrt, name: bestName, usage: totalUsage, model: observedModel, latencyMs: totalLatencyMs, attempts: totalAttempts, success: true, errorCode: lastError)
         }
         return NamingResult(srt: nil, name: nil, usage: totalUsage, model: observedModel, latencyMs: totalLatencyMs, attempts: totalAttempts, success: false, errorCode: lastError)
+    }
+
+    // MARK: - Failure mapping
+
+    /// What goes into `errorCode` for a thrown failure.
+    ///
+    /// An account-level refusal keeps its exact machine code, because that is the only thing
+    /// the orchestrator matches on when deciding to try a different engine. Everything else
+    /// keeps a truncated description, which is for humans reading telemetry.
+    static func failureCode(for error: Error) -> String {
+        accountRefusalCode(error) ?? String("\(error)".prefix(200))
+    }
+
+    /// The refusal that explains every chunk at once, if there was one.
+    ///
+    /// Folding this into a generic "chunks_all_failed" is what left a free user holding a
+    /// downloaded 1.5 GB model and no transcript: the orchestrator could not tell "this
+    /// account may not" from "this did not work", and only the first is worth re-asking
+    /// someone else about.
+    static func refusalAmong(_ results: [ChunkResult]) -> String? {
+        let codes = results.compactMap(\.errorCode)
+        // Deterministic beats switchable: a plan refusal repeats for every cloud engine,
+        // while a disabled engine says nothing about the others.
+        if codes.contains(ProxyTranscriptionError.premiumRequired.code) {
+            return ProxyTranscriptionError.premiumRequired.code
+        }
+        if codes.contains(ProxyTranscriptionError.engineDisabled.code) {
+            return ProxyTranscriptionError.engineDisabled.code
+        }
+        return nil
     }
 
     func transcribeChunk(
@@ -518,7 +551,16 @@ final class CloudGeminiEngine: TranscriptionEngine {
 
             } catch {
                 result.attempts += 1
-                result.errorCode = String("\(error)".prefix(200))
+                let refusal = accountRefusalCode(error)
+                result.errorCode = Self.failureCode(for: error)
+                if let refusal {
+                    // Asking again changes nothing: the plan and the server-side switch are
+                    // the same a second later. Stop here so the remaining chunks are not
+                    // paid for, and carry the code up so the aggregate can report it.
+                    result.fatal = true
+                    LogManager.shared.log("🤖 Chunk \(chunk.index): 🚫 refused (\(refusal))", type: .error)
+                    return result
+                }
                 if !isRetryableError(error) {
                     result.fatal = true
                     LogManager.shared.log("🤖 Chunk \(chunk.index): ❌ Non-retryable (\(error))", type: .error)
@@ -917,6 +959,14 @@ final class CloudGeminiEngine: TranscriptionEngine {
                 // empty transcript gives `LanguageDetection.dominantLanguage` nothing to work with.
                 LogManager.shared.log("🤖 Chunked: 🤫 every chunk reported NO_SPEECH — image-only naming")
                 return await imageOnlyFallback("no_speech", totalChunks: plans.count, failedChunks: failedChunks)
+            }
+            // An account-level refusal explains every chunk at once, and unlike a generic
+            // failure it tells the orchestrator that ANOTHER engine may well succeed. Losing
+            // it inside "chunks_all_failed" is what left a free user with the local model
+            // downloaded and no transcript.
+            if let refusal = Self.refusalAmong(results) {
+                LogManager.shared.log("🤖 Chunked: 🚫 refused (\(refusal)) — no transcript from this engine", type: .error)
+                return await imageOnlyFallback(refusal, totalChunks: plans.count, failedChunks: failedChunks)
             }
             LogManager.shared.log("🤖 Chunked: ❌ No usable transcript from any chunk", type: .error)
             return await imageOnlyFallback("chunks_all_failed", totalChunks: plans.count, failedChunks: failedChunks)

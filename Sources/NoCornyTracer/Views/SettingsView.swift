@@ -463,6 +463,14 @@ struct SettingsView: View {
                     id: kind.rawValue, label: kind.displayName, value: kind,
                     isLocked: true, badge: "Premium"
                 )
+            // Entitled, but switched off server-side. Picking it would upload a chunk and
+            // collect a 503, then quietly transcribe on a different engine than the one
+            // chosen -- a choice that does not exist, offered as though it did.
+            case _ where !entitlements.offersCloudEngine(kind):
+                return DropdownOption(
+                    id: kind.rawValue, label: kind.displayName, value: kind,
+                    isLocked: true, badge: "Unavailable"
+                )
             default:
                 return DropdownOption(id: kind.rawValue, label: kind.displayName, value: kind)
             }
@@ -472,6 +480,12 @@ struct SettingsView: View {
     /// Sends people to where the decision is actually made rather than pretending to
     /// switch and failing later.
     private func handleLockedEngine(_ kind: TranscriptionEngineKind) {
+        // Switched off server-side is not the same as not paid for, and sending someone to
+        // a plan page over something no plan can buy wastes their time.
+        guard appState.tracerAPIClient.entitlements.offersCloudEngine(kind) else {
+            lockedEngineNotice = "\(kind.displayName) is switched off right now. Nothing to do on your side."
+            return
+        }
         switch kind {
         case .cloudGemini, .cloudGroq:
             if let url = URL(string: "\(TracerAPIClient.baseURL)/settings#plan") {

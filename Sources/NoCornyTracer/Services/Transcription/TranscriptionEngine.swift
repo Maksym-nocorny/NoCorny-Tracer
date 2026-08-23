@@ -14,6 +14,17 @@ enum TranscriptionEngineKind: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
+    /// How `/api/tokens/me` names this engine in `features.cloudEngines`. Spelled out
+    /// rather than derived from `rawValue`, which is a persisted UserDefaults key and says
+    /// "cloud" for Gemini for historical reasons.
+    var serverName: String? {
+        switch self {
+        case .cloudGemini: return "gemini"
+        case .cloudGroq: return "groq"
+        case .localWhisper: return nil  // never asks the server for permission
+        }
+    }
+
     var displayName: String {
         switch self {
         case .cloudGemini: return "Cloud (Gemini)"

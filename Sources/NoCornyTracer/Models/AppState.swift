@@ -786,6 +786,11 @@ final class AppState {
         var aiTotalLatencyMs = 0
         var aiTotalAttempts = 0
         var aiModel = "gemini-2.5-flash-lite"
+        // Which engine actually produced the transcript in THIS pass, as opposed to the
+        // placeholder above that telemetry falls back on. Stays nil on a retry that reuses a
+        // cached transcript, where nothing transcribed anything and the honest answer is
+        // "whatever the earlier pass recorded".
+        var transcribedByModel: String? = nil
         var aiLastError: String? = nil
         var aiSucceeded = false
 
@@ -805,6 +810,18 @@ final class AppState {
             generatedSubtitles = cachedTranscript
             aiName = cached?.aiGeneratedName
             aiSucceeded = true
+            // A transcript can succeed while its title fails - a blocked naming call, a
+            // proxy timeout - and the upload then fails and brings us back here. Skipping
+            // transcription is right; skipping naming with it left the recording named
+            // after its timestamp for good, because naming only ever ran as a step of
+            // transcribing.
+            if aiName == nil, let call = await aiNamingService.nameExistingTranscript(cachedTranscript) {
+                aiName = call.name
+                aiUsage.add(call.usage)
+                aiTotalLatencyMs += call.latencyMs
+                if let m = call.model { aiModel = m }
+                LogManager.shared.log("🤖 Naming: retitled a reused transcript (\(call.name?.count ?? 0) chars)")
+            }
         } else {
             let pass = await aiNamingService.generateSubtitlesAndName(
                 for: fileURL, systemAudioURL: cached?.systemAudioURL, diarize: shouldDiarize
@@ -816,6 +833,7 @@ final class AppState {
             aiTotalLatencyMs += pass.latencyMs
             aiTotalAttempts += pass.attempts
             aiModel = pass.model
+            if pass.srt != nil { transcribedByModel = pass.model }
             aiLastError = pass.errorCode
             aiSucceeded = pass.success
         }
@@ -836,6 +854,7 @@ final class AppState {
             aiTotalLatencyMs += secondPass.latencyMs
             aiTotalAttempts += secondPass.attempts
             aiModel = secondPass.model
+            if secondPass.srt != nil { transcribedByModel = secondPass.model }
             aiLastError = secondPass.errorCode ?? aiLastError
             aiSucceeded = aiSucceeded || secondPass.success
             if generatedSubtitles == nil && aiName == nil {
@@ -853,7 +872,11 @@ final class AppState {
         if let generatedSubtitles, !generatedSubtitles.isEmpty {
             TranscriptStore.shared.save(generatedSubtitles, for: id)
             updateRecording(id: id) {
-                $0.transcriptEngine = aiModel
+                // Only ever write an answer, never overwrite one with a guess. A retry that
+                // reuses a cached transcript transcribes nothing, and this line used to
+                // stamp it with the default model name - relabelling a recording that was
+                // transcribed on this Mac as a cloud one.
+                if let transcribedByModel { $0.transcriptEngine = transcribedByModel }
                 if let speakersUsed { $0.expectedSpeakers = speakersUsed }
             }
         }
@@ -1100,10 +1123,18 @@ final class AppState {
         }
 
         if let slug = recording.tracerSlug {
-            await tracerAPIClient.updateVideo(slug: slug, transcriptSrt: rebuilt)
+            let accepted = await tracerAPIClient.updateVideo(slug: slug, transcriptSrt: rebuilt)
             // `slug=` is the marker the log sink redacts on. A bare slug would sail straight
             // through into a bug report, and the slug is what opens the recording.
-            LogManager.shared.log("🎛️ Diarization: ✅ re-labelled slug=\(slug) as \(expected.displayName)")
+            if accepted {
+                LogManager.shared.log("🎛️ Diarization: ✅ re-labelled slug=\(slug) as \(expected.displayName)")
+            } else {
+                // This edit exists only here until the site takes it, and the next sync
+                // overwrites local transcripts from the server - so an ignored failure does
+                // not degrade the result, it erases it, with no trace that anything happened.
+                speakerReapplyErrors[recordingID] = "Re-labelled on this Mac, but the site did not take the change. Try again when you are back online."
+                LogManager.shared.log("🎛️ Diarization: ⚠️ re-labelled locally but PATCH failed slug=\(slug) — the next sync would revert it", type: .error)
+            }
         }
 
         // Keep Dropbox's copy of the transcript in step with the one on the site, so the

@@ -51,7 +51,10 @@ final class AINamingService {
     /// Error codes that mean "this engine will not answer for this account", as opposed to
     /// "this engine tried and failed". An admin switch and a plan gate are both decisions
     /// about who is asking, not about the recording, so another engine may well answer.
-    private static let refusalCodes: Set<String> = ["engine_disabled", "premium_required"]
+    /// Internal rather than private on purpose: this set is the contract between an engine's
+    /// `errorCode` and the fallback below, and a test has to be able to name both sides of it.
+    /// The default engine shipped emitting a stringified error here, which matched nothing.
+    static let refusalCodes: Set<String> = ["engine_disabled", "premium_required"]
 
     /// Injection point for tests.
     init(engine: TranscriptionEngine, namingService: NamingService) {
@@ -141,21 +144,15 @@ final class AINamingService {
         // makes down to a rounding error.
         // On-device naming needs no account, so a signed-out user transcribing locally can
         // still get a real title rather than a timestamp.
-        let canName = namingService.isReady || OnDeviceNaming.isAvailable
-        if result.name == nil, let srt = result.srt, !srt.isEmpty, canName {
-            let transcript = namingService.namingTranscriptText(SrtCodec.parseAndRepairSrt(srt))
-            if !transcript.isEmpty {
-                let call = await namingService.generateNameFromTranscript(
-                    transcript: transcript, frames: [], glossary: []
-                )
-                result.name = call.name
-                result.usage.add(call.usage)
-                result.latencyMs += call.latencyMs
-                result.attempts += call.attempts
-                if call.name == nil {
-                    LogManager.shared.log("🤖 Naming: ⚠️ Could not title a transcript from \(engine.kind.rawValue) — keeping the placeholder", type: .error)
-                    result.errorCode = result.errorCode ?? call.errorCode ?? "naming_failed"
-                }
+        if result.name == nil, let srt = result.srt, !srt.isEmpty,
+           let call = await nameExistingTranscript(srt) {
+            result.name = call.name
+            result.usage.add(call.usage)
+            result.latencyMs += call.latencyMs
+            result.attempts += call.attempts
+            if call.name == nil {
+                LogManager.shared.log("🤖 Naming: ⚠️ Could not title a transcript from \(engine.kind.rawValue) — keeping the placeholder", type: .error)
+                result.errorCode = result.errorCode ?? call.errorCode ?? "naming_failed"
             }
         }
 
@@ -184,6 +181,27 @@ final class AINamingService {
     /// Runs speaker separation over a finished transcript and re-serializes it. Returns the
     /// transcript it was given whenever that produces nothing better, which is every failure
     /// mode separation has.
+    /// Titles a transcript that already exists.
+    ///
+    /// Returns nil when nobody can name anything right now (signed out, no on-device model),
+    /// which the caller reads as "leave the placeholder alone" rather than as a failure.
+    ///
+    /// Shared with the retry path on purpose. A recording whose transcript succeeded and
+    /// whose title did not used to keep the placeholder forever: the retry saw a cached
+    /// transcript, skipped transcription - correctly - and skipped naming with it, because
+    /// naming only ever happened as a step of transcribing.
+    ///
+    /// Sent without frames: with a real transcript in hand the text carries the meaning, and
+    /// stills dominate the cost of this call.
+    func nameExistingTranscript(_ srt: String) async -> NamingCallResult? {
+        guard namingService.isReady || OnDeviceNaming.isAvailable else { return nil }
+        let transcript = namingService.namingTranscriptText(SrtCodec.parseAndRepairSrt(srt))
+        guard !transcript.isEmpty else { return nil }
+        return await namingService.generateNameFromTranscript(
+            transcript: transcript, frames: [], glossary: []
+        )
+    }
+
     private func labelSpeakers(in srt: String, videoURL: URL, systemAudioURL: URL?, expected: ExpectedSpeakers) async -> String {
         let cues = SrtCodec.parseAndRepairSrt(srt)
         guard !cues.isEmpty else { return srt }
