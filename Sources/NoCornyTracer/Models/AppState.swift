@@ -14,7 +14,7 @@ final class AppState {
     let recordingManager = RecordingManager()
     let dropboxAuthManager = DropboxAuthManager()
     let dropboxUploadManager = DropboxUploadManager()
-    let tracerAPIClient = TracerAPIClient()
+    let tracerAPIClient: TracerAPIClient
     // The Gemini proxy authenticates with the signed-in user's Tracer token,
     // so AINamingService needs a closure that can read the current token from
     // tracerAPIClient. @ObservationIgnored + lazy lets us reference one stored
@@ -201,6 +201,11 @@ final class AppState {
 
     init(defaults: UserDefaults = .standard, connectsToTracer: Bool = true) {
         self.defaults = defaults
+        // The flag has to reach the client too. Gating only the sync below left the client's
+        // own launch refresh firing from its initialiser: a signed-in developer running the
+        // suite made a live request per constructed AppState and wrote the reply into the
+        // real defaults, so the seam protected the settings and not the account.
+        self.tracerAPIClient = TracerAPIClient(refreshesOnLaunch: connectsToTracer)
         if let themeRaw = defaults.string(forKey: "appTheme"),
            let theme = AppTheme(rawValue: themeRaw) {
             self.appTheme = theme

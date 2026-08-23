@@ -41,7 +41,16 @@ final class TracerAPIClient {
     /// recordings library. Set by `AppState`. Invoked on the main actor.
     var onTokenRevoked: (@MainActor () -> Void)?
 
-    init() {
+    /// - Parameter refreshesOnLaunch: false suppresses the background profile refresh below.
+    ///   A signed-in developer running the test suite otherwise has every constructed client
+    ///   call the live server and write the answer into the real user defaults - which is
+    ///   also how a test ends up depending on being online.
+    /// Whether the launch refresh above was actually started. Observable so a test can assert
+    /// the suppression rather than assert the absence of a request, which is not observable
+    /// from here at all - and an assertion about something unobservable passes either way.
+    private(set) var didScheduleLaunchRefresh = false
+
+    init(refreshesOnLaunch: Bool = true) {
         if let token = KeychainHelper.load(key: Self.tokenKey), !token.isEmpty {
             self.isSignedIn = true
             self.userEmail = Self.nonEmpty(UserDefaults.standard.string(forKey: Self.emailKey))
@@ -51,7 +60,10 @@ final class TracerAPIClient {
 
             // Refresh profile from server in the background so renames/avatar changes
             // made on tracer.nocorny.com show up without requiring a re-sign-in.
-            Task { await self.refreshProfile() }
+            if refreshesOnLaunch {
+                didScheduleLaunchRefresh = true
+                Task { await self.refreshProfile() }
+            }
         }
     }
 

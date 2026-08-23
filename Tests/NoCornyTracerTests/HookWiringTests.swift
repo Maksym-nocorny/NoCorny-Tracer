@@ -22,4 +22,19 @@ final class HookWiringTests: XCTestCase {
             "the user never learns the recording lost its voice track")
         XCTAssertNotNil(state.recordingManager.audioCaptureManager.onEnvironmentNoisy)
     }
+
+    /// The seam has to cover the account as well as the settings. Gating only AppState's own
+    /// sync left the API client's initialiser firing its launch refresh, so a signed-in
+    /// developer running this suite made a live request per constructed AppState and wrote
+    /// the reply into their real defaults.
+    func testABuiltStateDoesNotPhoneHome() {
+        let sandbox = UserDefaults(suiteName: "no-network-\(UUID().uuidString)")!
+        defer { sandbox.removePersistentDomain(forName: sandbox.description) }
+        let previousShared = AppState.shared
+        defer { AppState.shared = previousShared }
+
+        let state = AppState(defaults: sandbox, connectsToTracer: false)
+        XCTAssertFalse(state.tracerAPIClient.didScheduleLaunchRefresh,
+                       "the client still phoned home, and wrote the reply into the real defaults")
+    }
 }
