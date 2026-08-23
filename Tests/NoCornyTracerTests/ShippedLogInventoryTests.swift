@@ -90,3 +90,58 @@ final class ShippedLogInventoryTests: XCTestCase {
         XCTAssertTrue(clean.contains("NoCornyTracer_2026-04-28_04-28-55.mp4"), "lost the filename: \(clean)")
     }
 }
+
+/// The error carve-out is a hole by construction: a naming line that looks like an error
+/// keeps its quoted runs. That is correct for `blocked(reason: "SAFETY")`, and it is only
+/// safe if no line that carries a TITLE can also look like an error. These are the ways it
+/// could go wrong, taken from the shipped build's own wording.
+final class ErrorCarveOutTests: XCTestCase {
+
+    private let secret = "Layoff plan review with Sarah"
+
+    /// The shipped naming-failure lines all contain the word "failed" or "mismatched" and a
+    /// title. If "failed" alone triggered the carve-out, every one of them would leak.
+    func testNamingFailureLinesStillLoseTheirTitle() {
+        let shapes = [
+            "🤖 Combined: ⚠️ Attempt 2 failed (timeout) — returning best earlier result \"\(secret)\"",
+            "🤖 Naming: ⚠️ language still mismatched — accepting \"\(secret)\" rather than losing the title",
+            "🤖 Naming: ⚠️ name script latin ≠ transcript script cyrillic — one retry with hint, holding \"\(secret)\"",
+        ]
+        for shape in shapes {
+            let clean = LogManager.shared.sanitize(shape)
+            XCTAssertFalse(clean.contains(secret), "the carve-out let a title through:\n  \(clean)")
+        }
+    }
+
+    /// A title that happens to contain the word "error" must not buy itself an exemption.
+    func testATitleContainingErrorWordsIsStillRedacted() {
+        let awkward = "Error handling walkthrough for the failed() case"
+        let clean = LogManager.shared.sanitize("🤖 Combined: ✅ Name: \"\(awkward)\", restored SRT length: 4821")
+        XCTAssertFalse(clean.contains(awkward), "a title named itself out of redaction:\n  \(clean)")
+    }
+
+    /// Being inside parentheses is not enough on its own - a payload is a LABELLED
+    /// argument. Mutation testing found this uncovered: dropping the label check broke no
+    /// test, which meant a title in brackets would have walked out.
+    func testQuotedTextInsideParensButUnlabelledIsStillATitle() {
+        for line in [
+            "🤖 Combined: ⚠️ Attempt 2 failed (timeout while naming \"\(secret)\")",
+            "🤖 Naming: ⚠️ retry (was \"\(secret)\")",
+        ] {
+            let clean = LogManager.shared.sanitize(line)
+            XCTAssertFalse(clean.contains(secret), "brackets alone bought an exemption:\n  \(clean)")
+        }
+    }
+
+    /// The case the carve-out exists for.
+    func testErrorDiagnosesSurvive() {
+        for line in [
+            "🤖 Combined: ⚠️ Attempt 2 failed — blocked(reason: \"SAFETY\")",
+            "🤖 Naming: ❌ serverError(status: 400, body: \"quota exceeded\")",
+        ] {
+            let clean = LogManager.shared.sanitize(line)
+            XCTAssertFalse(clean.contains("[TITLE]"), "redacted a diagnosis:\n  \(clean)")
+        }
+        XCTAssertTrue(LogManager.shared.sanitize("🤖 Combined: ⚠️ blocked(reason: \"RECITATION\")").contains("RECITATION"))
+    }
+}

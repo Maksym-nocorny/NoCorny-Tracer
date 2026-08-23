@@ -226,13 +226,6 @@ final class LogManager {
     private static let namingContextRegex = try? NSRegularExpression(
         pattern: "(🤖\\s*(Combined|Chunked|Naming|AI Naming)|Final PATCH)", options: [])
 
-    /// Lines whose quoted runs are error payloads, not titles.
-    private static let errorPayloadRegex = try? NSRegularExpression(
-        pattern: "(blocked|serverError|proxyError|httpError|error|failed)\\s*[(:]", options: [.caseInsensitive])
-
-    private static let quotedRunRegex = try? NSRegularExpression(
-        pattern: "\"[^\"]*\"", options: [])
-
     /// Proper nouns lifted off the recording's own frames - names of people and companies.
     /// Nothing else in either sanitizer matches this line.
     private static let glossaryTermsRegex = try? NSRegularExpression(
@@ -246,6 +239,57 @@ final class LogManager {
     /// does not work: the in-memory buffer is filled on the main queue, so a test reading
     /// it back immediately sees nothing and every "does not contain" assertion passes for
     /// the wrong reason.
+
+    /// On a naming line, redact every quoted run EXCEPT the ones that are arguments of a
+    ///an error value - `blocked(reason: "SAFETY")`, `serverError(status: 400, body: "…")`.
+    ///
+    /// The distinction is structural, not lexical. An earlier attempt exempted whole lines
+    /// that contained words like "failed" or "error", and that was the same list-of-words
+    /// mistake a third time: every shipped naming-FAILURE line contains "failed" AND a
+    /// title, so the exemption handed back exactly the lines it was meant to clean. A title
+    /// can also simply contain the word - "Error handling walkthrough" named itself out of
+    /// redaction.
+    ///
+    /// What actually separates them is position: a payload sits inside parentheses behind a
+    /// label, and a title does not.
+    static func redactingQuotedTitles(in line: String) -> String {
+        var out = ""
+        var rest = Substring(line)
+        var depth = 0
+
+        while let quoteIdx = rest.firstIndex(of: "\"") {
+            let before = rest[rest.startIndex..<quoteIdx]
+            depth += before.filter { $0 == "(" }.count - before.filter { $0 == ")" }.count
+            out += before
+
+            // Skip escaped quotes. A JSON body inside an error argument is full of them,
+            // and pairing on the first bare quote mis-splits the string - which both
+            // corrupts the diagnostic and leaves parts of it exposed.
+            var scan = rest.index(after: quoteIdx)
+            var closeIdx: Substring.Index? = nil
+            while scan < rest.endIndex {
+                if rest[scan] == "\\" {
+                    scan = rest.index(scan, offsetBy: 2, limitedBy: rest.endIndex) ?? rest.endIndex
+                    continue
+                }
+                if rest[scan] == "\"" { closeIdx = scan; break }
+                scan = rest.index(after: scan)
+            }
+            guard let closeIdx else {
+                out += rest[quoteIdx...]
+                return out
+            }
+            let run = rest[quoteIdx...closeIdx]
+
+            // A labelled argument inside an open paren is a diagnosis, not content.
+            let trimmed = before.reversed().drop { $0 == " " }
+            let isLabelledArgument = depth > 0 && trimmed.first == ":"
+            out += isLabelledArgument ? String(run) : "\"[TITLE]\""
+            rest = rest[rest.index(after: closeIdx)...]
+        }
+        return out + rest
+    }
+
     func sanitize(_ message: String) -> String {
         var result = message.replacingOccurrences(of: NSHomeDirectory(), with: "/Users/[USER]")
         // Redact email addresses so user PII never lands in the plaintext diagnostic
@@ -262,15 +306,9 @@ final class LogManager {
             let range = NSRange(result.startIndex..., in: result)
             result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "$1[SLUG]")
         }
-        if let naming = Self.namingContextRegex, let quoted = Self.quotedRunRegex {
-            let full = NSRange(result.startIndex..., in: result)
-            let isNaming = naming.firstMatch(in: result, options: [], range: full) != nil
-            let isError = Self.errorPayloadRegex?.firstMatch(in: result, options: [], range: full) != nil
-            if isNaming && !isError {
-                result = quoted.stringByReplacingMatches(
-                    in: result, options: [], range: NSRange(result.startIndex..., in: result),
-                    withTemplate: "\"[TITLE]\"")
-            }
+        if let naming = Self.namingContextRegex,
+           naming.firstMatch(in: result, options: [], range: NSRange(result.startIndex..., in: result)) != nil {
+            result = Self.redactingQuotedTitles(in: result)
         }
         if let regex = Self.glossaryTermsRegex {
             let range = NSRange(result.startIndex..., in: result)
