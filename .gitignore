@@ -50,3 +50,7 @@ screenshots/
 
 ## Misc archives
 *.zip
+
+# Python bytecode from scripts/
+__pycache__/
+*.pyc
