@@ -106,9 +106,6 @@ enum BugReportComposer {
         return false
     }
 
-    /// The window the report covers: everything since the third-most-recent session marker.
-    /// Falls back to the whole window when there are fewer markers than that, and never to
-    /// nothing -- a log with no marker at all is still the best evidence available.
     /// The exact header this build writes, version AND build number. Taken from the one
     /// accessor LogManager uses, so the string being hunted for is by construction the
     /// string being written - the previous version built it separately and, with the app

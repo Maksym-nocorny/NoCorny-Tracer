@@ -7,8 +7,14 @@ import XCTest
 /// to write down.
 final class BugReportComposerTests: XCTestCase {
 
+    /// The SHIPPED app's log, not this process's. Under tests the logger writes to a scratch
+    /// file so the suite stops appending hundreds of fake sessions to the developer's real
+    /// diagnostic log - but these tests are about that real log, and pointing them at the
+    /// scratch one turned them into skips without anyone noticing.
+    private var realLog: URL { LogManager.productionLogFileURL }
+
     private var logExists: Bool {
-        FileManager.default.fileExists(atPath: LogManager.shared.getLogFileURL().path)
+        FileManager.default.fileExists(atPath: realLog.path)
     }
 
     func testNoCredentialsOrSpeechSurviveIntoAReport() throws {
@@ -17,18 +23,28 @@ final class BugReportComposerTests: XCTestCase {
         // Prove the test is not passing because the log happens to be clean. Older builds
         // wrote share links, so a real log usually still holds some; if this machine's
         // does not, the assertions below prove nothing and the test says so.
-        let raw = (try? String(contentsOf: LogManager.shared.getLogFileURL(), encoding: .utf8)) ?? ""
+        let raw = (try? String(contentsOf: realLog, encoding: .utf8)) ?? ""
         try XCTSkipUnless(raw.contains("rlkey"), "this log predates the leak or is already clean")
 
-        let report = BugReportComposer.composeLogTail()
+        // Every line of the real log through the redactor the report uses. Deliberately not
+        // through `composeLogTail`, which also applies the session scope: scoping alone would
+        // make this pass by excluding the leaky lines rather than by cleaning them, and then
+        // it would keep passing if the redactor rotted. Scope is tested separately, on a
+        // fixture built so redaction cannot do its job for it.
+        let redacted = raw.split(separator: "\n", omittingEmptySubsequences: false)
+            .map { BugReportComposer.redactForTests(String($0)) }
+            .joined(separator: "\n")
 
         // The rlkey is the capability: whoever holds the URL can watch the recording.
-        XCTAssertFalse(report.contains("rlkey"), "a Dropbox share credential reached the report")
-        XCTAssertFalse(report.contains("dropbox.com"), "a Dropbox link reached the report")
-        XCTAssertFalse(report.contains("dropboxusercontent.com"))
-        // The user's own words.
-        XCTAssertFalse(report.contains("Raw SRT ("), "a transcript preview reached the report")
-        XCTAssertFalse(report.lowercased().contains("preview:"))
+        XCTAssertFalse(redacted.contains("rlkey"), "a Dropbox share credential survived redaction")
+        XCTAssertFalse(redacted.contains("dropbox.com"), "a Dropbox link survived redaction")
+        XCTAssertFalse(redacted.contains("dropboxusercontent.com"))
+        // The user's own words. The marker itself is fine and expected: the fixed source logs
+        // "Raw SRT (1423 chars)" and stops there, and there is nothing in that to redact. What
+        // must never survive is the form that carries the speech after it.
+        XCTAssertFalse(redacted.contains("chars) preview:"), "a transcript preview survived redaction")
+        XCTAssertFalse(redacted.lowercased().contains("preview:"))
+        XCTAssertFalse(redacted.contains("First 200 chars:"))
     }
 
     func testReportStaysUnderTheServerCap() throws {

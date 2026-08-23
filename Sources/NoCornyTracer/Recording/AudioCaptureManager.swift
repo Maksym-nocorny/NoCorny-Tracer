@@ -158,8 +158,9 @@ final class AudioCaptureManager: NSObject {
         // The same check the recovery path makes, and for the same reason: a device that
         // disappeared between listing it and building the graph - headphones dying in that
         // window - reports 0 Hz and 0 channels, and installing a tap on it raises rather
-        // than failing. The recovery path has guarded this since it was written; the start
-        // path never did, so the one place it could crash outright was starting a recording.
+        // than failing. Neither path guarded it originally; recovery got the guard one round
+        // before this one did, which left starting a recording as the place it could still
+        // crash outright.
         guard Self.isUsableInputFormat(sampleRate: inputFormat.sampleRate,
                                        channelCount: inputFormat.channelCount) else {
             LogManager.shared.log("⚠️ Audio: the selected input reports no usable format - refusing to start", type: .error)
@@ -494,7 +495,7 @@ final class AudioCaptureManager: NSObject {
 
 // MARK: - Errors
 
-enum AudioCaptureError: LocalizedError {
+enum AudioCaptureError: LocalizedError, Equatable {
     case noDeviceSelected
     case deviceVanished
     case engineStartFailed

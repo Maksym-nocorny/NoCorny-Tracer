@@ -114,6 +114,17 @@ struct MainView: View {
         } message: {
             Text("Would you like NoCorny Tracer to start automatically when you log in to your Mac?")
         }
+        .alert(
+            "Recording did not start",
+            isPresented: Binding(
+                get: { appState.startRecordingFailure != nil },
+                set: { if !$0 { appState.startRecordingFailure = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(appState.startRecordingFailure ?? "")
+        }
         .alert("The microphone stopped recording", isPresented: $appState.showMicrophoneLostAlert) {
             Button("OK", role: .cancel) {}
         } message: {

@@ -10,6 +10,14 @@ final class AppState {
     /// tests pass a throwaway suite so building an AppState neither reads nor writes the
     /// developer's real defaults.
     @ObservationIgnored private let defaults: UserDefaults
+    /// False makes this instance inert towards the outside world: no launch refresh, no
+    /// startup sync, and no background processing of a recording. Production never passes it.
+    ///
+    /// It started as "do not phone home at launch" and had to grow, because a test that calls
+    /// a wired hook gets the hook's real side effects: the interrupted-take test was kicking
+    /// off a genuine transcription-and-upload run against a file that does not exist, and
+    /// playing a sound while doing it.
+    @ObservationIgnored private let connectsToTracer: Bool
     // MARK: - Managers
     let recordingManager = RecordingManager()
     let dropboxAuthManager = DropboxAuthManager()
@@ -174,6 +182,16 @@ final class AppState {
     /// alert, because it is the one failure the user can still act on while it matters: the
     /// screen and the far side of the call are still being captured, their own voice is not.
     var showMicrophoneLostAlert = false
+
+    /// Why the last attempt to start a recording did not start one, when the reason is worth
+    /// telling somebody. Nil the rest of the time.
+    ///
+    /// All three doors into `startRecording` - the button, the hotkey, the menu item - call it
+    /// with `try?`, so a thrown failure reaches nobody. That is fine for the permission case,
+    /// which opens its own window, and it was fine when the only other outcome was a crash.
+    /// Now that a vanished microphone is refused instead of crashing, silence would mean
+    /// clicking Record and having nothing at all happen.
+    var startRecordingFailure: String?
     /// Once the user picks "Don't suggest again", we never show the suggestion toast again.
     private var noiseSuggestionDismissedForever = false
     /// Presents/hides the floating suggestion toast. Set by the app scene's window host. Driven via
@@ -201,6 +219,7 @@ final class AppState {
 
     init(defaults: UserDefaults = .standard, connectsToTracer: Bool = true) {
         self.defaults = defaults
+        self.connectsToTracer = connectsToTracer
         // The flag has to reach the client too. Gating only the sync below left the client's
         // own launch refresh firing from its initialiser: a signed-in developer running the
         // suite made a live request per constructed AppState and wrote the reply into the
@@ -298,7 +317,7 @@ final class AppState {
             self.recordings = kept.list
             self.saveRecordings()
             LogManager.shared.log("🔴 Recording: the screen stream stopped - the take was kept", type: .error)
-            SoundManager.shared.play(.abort)
+            if self.connectsToTracer { SoundManager.shared.play(.abort) }
             Task { await self.processRecording(id: kept.id) }
         }
 
@@ -515,22 +534,42 @@ final class AppState {
             return
         }
 
+        startRecordingFailure = nil
+
         // Play start sound immediately on button click.
         SoundManager.shared.play(.start)
 
         // The recording engine warms up during the mask delay and only "arms" (starts keeping
         // frames) once it elapses — keeping the start sound out of the recording AND ensuring the
         // mic is already capturing when recording begins. See RecordingManager.startRecording.
-        try await recordingManager.startRecording(
-            microphoneEnabled: isMicrophoneEnabled,
-            microphoneDeviceID: selectedMicrophoneID,
-            reduceBackgroundNoise: reduceBackgroundNoise,
-            recordSystemAudio: recordSystemAudio,
-            videoWidth: videoResolution.width,
-            videoHeight: videoResolution.height,
-            fps: videoFrameRate.rawValue,
-            startMaskDelay: Self.startSoundMaskDelay
-        )
+        do {
+            try await recordingManager.startRecording(
+                microphoneEnabled: isMicrophoneEnabled,
+                microphoneDeviceID: selectedMicrophoneID,
+                reduceBackgroundNoise: reduceBackgroundNoise,
+                recordSystemAudio: recordSystemAudio,
+                videoWidth: videoResolution.width,
+                videoHeight: videoResolution.height,
+                fps: videoFrameRate.rawValue,
+                startMaskDelay: Self.startSoundMaskDelay
+            )
+        } catch {
+            // Said out loud here rather than left to the callers, all of which discard it.
+            startRecordingFailure = Self.startFailureMessage(for: error)
+            LogManager.shared.log("🔴 Recording: refused to start — \(error.localizedDescription)", type: .error)
+            throw error
+        }
+    }
+
+    /// What to tell someone whose recording did not start.
+    ///
+    /// Only failures a person can act on get a message. The rest keep the generic one: a
+    /// dialog quoting an internal error teaches nobody anything.
+    static func startFailureMessage(for error: Error) -> String {
+        if let audio = error as? AudioCaptureError, audio == .deviceVanished {
+            return "The selected microphone is no longer available. Pick another one in Settings, or turn the microphone off, and start again."
+        }
+        return "The recording could not be started. The log in Settings has the details."
     }
 
     /// Abort recording: stops and discards the file without saving or uploading
@@ -602,6 +641,9 @@ final class AppState {
     /// PATCH (uploaded) → AI → upload SRT → final PATCH (ready) → cleanup.
     /// Title is now pure DB metadata — the slug-keyed Dropbox folder never gets renamed.
     private func processRecording(id: UUID) async {
+        // An instance built for a test does no outside work. Everything below talks to
+        // Gemini, Dropbox and our own backend.
+        guard connectsToTracer else { return }
         LogManager.shared.log("🎬 Starting background processing for recording \(id)")
 
         // Use a local helper to update recording state safely

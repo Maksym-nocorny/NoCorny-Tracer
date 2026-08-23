@@ -17,13 +17,47 @@ final class LogManager {
 
     var lastLogs: [String] = []
     
+    /// True while running under XCTest.
+    ///
+    /// The suite writes here the same way the app does - simply constructing this singleton
+    /// appends a session header - and it had put 477 of them into the developer's real
+    /// diagnostic log in one afternoon, a megabyte of noise in the file bug reports are cut
+    /// from. It also made the suite four times slower, because the tests that read that log
+    /// were reading everything the suite itself had written to it.
+    /// Detected by the presence of the XCTest class, not by an environment variable: under
+    /// SwiftPM's `swift test` the usual `XCTestConfigurationFilePath` is simply not set - the
+    /// only thing in the environment is `SWIFT_TESTING_ENABLED` - which I found out by
+    /// shipping a check that silently never fired. XCTest is never linked into the app.
+    static let isRunningUnderTests = NSClassFromString("XCTest") != nil
+
+    /// Where the SHIPPED app keeps its log, whatever this process is writing to.
+    ///
+    /// The privacy tests exist to answer "what would leave a real user's Mac", so they have
+    /// to read the real file even when the process they run in has been redirected away from
+    /// it. Reading `getLogFileURL()` instead made them read the test's own scratch log -
+    /// clean by construction - and quietly skip.
+    static var productionLogFileURL: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("NoCornyTracer/Logs/app.log")
+    }
+
     private init() {
         let fileManager = FileManager.default
         let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let logDir = appSupport.appendingPathComponent("NoCornyTracer/Logs", isDirectory: true)
         
         try? fileManager.createDirectory(at: logDir, withIntermediateDirectories: true)
-        self.logFileURL = logDir.appendingPathComponent("app.log")
+        // Tests write to a throwaway file. They still READ the real log where they mean to -
+        // proving no credential or speech survives into a report is worth doing against real
+        // data - but nothing they write ends up in it.
+        if Self.isRunningUnderTests {
+            let scratch = fileManager.temporaryDirectory
+                .appendingPathComponent("NoCornyTracerTestLogs", isDirectory: true)
+            try? fileManager.createDirectory(at: scratch, withIntermediateDirectories: true)
+            self.logFileURL = scratch.appendingPathComponent("app.log")
+        } else {
+            self.logFileURL = logDir.appendingPathComponent("app.log")
+        }
         
         rotateLogsIfNeeded()
         // A rotation during startup is followed by the real header a moment later, so it
