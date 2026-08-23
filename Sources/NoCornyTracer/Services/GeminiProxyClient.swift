@@ -111,7 +111,11 @@ final class GeminiProxyClient {
         }
 
         guard httpResponse.statusCode == 200 else {
-            let bodyStr = String(data: data, encoding: .utf8) ?? ""
+            // Capped at the throw, not at each call site: this string ends up in logs and in
+            // error codes, and only some of those remembered to truncate it. An upstream
+            // failure body can be the whole response, which on a transcription call means
+            // the recording's own speech.
+            let bodyStr = String((String(data: data, encoding: .utf8) ?? "").prefix(300))
             throw ProxyError.serverError(status: httpResponse.statusCode, body: bodyStr)
         }
 

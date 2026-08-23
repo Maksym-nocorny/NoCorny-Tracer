@@ -12,16 +12,31 @@ final class ShippedLogInventoryTests: XCTestCase {
     private let speech = "так от, я хочу сказати що дизайн тут геть не працює"
     private let slug = "Xk3mQ9a"
 
-    /// This build must not write speech in the first place. Redaction and scoping are both
-    /// downstream of that, and the reason three review rounds kept finding leaks is that
-    /// the source was still producing them.
-    func testThisBuildLogsNoModelOutput() {
-        let src = ["Services/Transcription/CloudGeminiEngine.swift",
-                   "Services/Transcription/SrtCodec.swift",
-                   "Services/Transcription/NamingService.swift"]
-        // Nothing here is a substitute for reading the code, but it fails loudly if someone
-        // reintroduces a payload into a log line.
-        for _ in src { XCTAssertTrue(true) }
+    /// Every title-bearing shape the shipped v3.16.2 writes. Scoping keeps these out of a
+    /// report entirely; this is the net under that, and it exists because the narrow
+    /// label-based rule silently reopened five of them.
+    func testEveryShippedTitleShapeIsRedacted() {
+        let secret = "Layoff plan review with Sarah"
+        let shapes = [
+            "🤖 Combined: ✅ Second pass succeeded — name=\"\(secret)\", srtLen=4821",
+            "🤖 Combined: ✅ First pass — name=\"\(secret)\", srtLen=4821",
+            "🤖 AI Naming: ✅ Named: \"\(secret)\"",
+            "🌐 Tracer: ✅ Final PATCH — title: \"\(secret)\"",
+            "🔄 Retry: Retrying previous upload for \(secret)",
+            "🤖 Combined: ⚠️ Language mismatch — SRT is uk, name \"\(secret)\" is en. Retrying with uk hint.",
+            "🤖 Combined: ✅ Name: \"\(secret)\", restored SRT length: 4821",
+            "🤖 Naming: ⚠️ name script latin ≠ transcript script cyrillic — one retry with hint, holding \"\(secret)\"",
+            "🤖 Naming: ⚠️ language still mismatched — accepting \"\(secret)\" rather than losing the title",
+            "🤖 Naming (image-only): ✅ \"\(secret)\"",
+            "🤖 Chunked: ✅ name=\"\(secret)\", srt 4821 chars from 190 cues",
+            "🤖 Glossary: 3 terms — Sarah Kovalenko, Acme Legal, Project Halo",
+        ]
+        for shape in shapes {
+            let clean = LogManager.shared.sanitize(shape)
+            XCTAssertFalse(clean.contains(secret), "title survived:\n  in:  \(shape)\n  out: \(clean)")
+            XCTAssertFalse(clean.contains("Sarah Kovalenko"), "glossary term survived:\n  out: \(clean)")
+            XCTAssertFalse(clean.contains("Acme Legal"), "glossary term survived:\n  out: \(clean)")
+        }
     }
 
     /// Legacy shapes, kept as a regression net for the sanitizer even though a report no

@@ -26,13 +26,25 @@ final class LogManager {
         self.logFileURL = logDir.appendingPathComponent("app.log")
         
         rotateLogsIfNeeded()
+        // A rotation during startup is followed by the real header a moment later, so it
+        // must not also trigger the mid-session reheader and its append.
+        didRotateMidSession = false
         loadLogs()
         logSystemHeader()
     }
     
+    /// The exact identity written into every session header, and the string the report
+    /// scope matches on. One accessor, because two spellings of the same lookup is how the
+    /// scope ends up hunting for a version that is never written.
+    static var sessionIdentity: (version: String, build: String) {
+        let d = Bundle.main.infoDictionary
+        return (d?["CFBundleShortVersionString"] as? String ?? "unknown",
+                d?["CFBundleVersion"] as? String ?? "unknown")
+    }
+
     private func logSystemHeader() {
-        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
-        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown"
+        let version = Self.sessionIdentity.version
+        let build = Self.sessionIdentity.build
         let osVersion = ProcessInfo.processInfo.operatingSystemVersionString
         let model = getMachineModel()
         
@@ -140,11 +152,20 @@ final class LogManager {
     private func reheaderAfterRotationIfNeeded() {
         guard didRotateMidSession else { return }
         didRotateMidSession = false
-        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
-        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown"
+        let (version, build) = Self.sessionIdentity
         let line = "[\(ISO8601DateFormatter().string(from: Date()))] 📝: 🚀 NoCorny Tracer v\(version) (\(build)) Started (log rotated)\n"
+        // Append, never write: an atomic write here truncated the file, so on any launch
+        // that rotated at startup the log was reduced to this single line - destroying the
+        // session header, which the report scope depends on, on exactly the launches where
+        // the log had grown big enough to matter.
         if let data = line.data(using: .utf8) {
-            try? data.write(to: logFileURL, options: .atomic)
+            if let handle = try? FileHandle(forWritingTo: logFileURL) {
+                handle.seekToEndOfFile()
+                handle.write(data)
+                try? handle.close()
+            } else {
+                try? data.write(to: logFileURL, options: .atomic)
+            }
         }
     }
     
@@ -189,23 +210,33 @@ final class LogManager {
     /// would have given away: "Layoff plan review with Sarah" needs no transcript to be a
     /// leak. Call sites log a length now; this covers logs written by an older build, and
     /// any future call site that forgets.
-    /// A quoted title, matched by its label rather than by the line it sits on.
+    /// Titles, matched by the line they sit on, with one carve-out.
     ///
-    /// An earlier attempt redacted every quoted run on any naming-prefixed line. That was
-    /// too blunt in both directions: it still missed a prefix nobody had listed, and on the
-    /// lines it did match it destroyed the error payloads that make a report worth reading -
-    /// `blocked(reason: "SAFETY")` became `blocked(reason: "[TITLE]")`, which is the
-    /// difference between diagnosing a refusal and guessing at one.
+    /// Matching by label alone missed five shapes the shipped build writes, because half of
+    /// them have no label at all - `accepting "…"`, `holding "…"`, `best earlier result
+    /// "…"`, `name "…"` with no colon, and the image-only path's bare `✅ "…"`. Matching
+    /// every quoted run on a naming line caught those but destroyed the error payloads that
+    /// make a report worth reading: `blocked(reason: "SAFETY")` became `"[TITLE]"`, which is
+    /// the difference between diagnosing a refusal and guessing at one.
     ///
-    /// It can be narrow again because it is no longer the only defence: this build logs no
-    /// titles at all, and a report only ever carries lines this build wrote. This is here so
-    /// that a title logged by mistake in future still does not travel.
-    ///
-    /// The label must be followed by a colon or equals and must not itself be quoted, or a
-    /// JSON body carrying a `"name"` key gets shredded.
-    private static let quotedTitleRegex = try? NSRegularExpression(
-        pattern: "(?<![\"\\\\])\\b(title|name|named)\\s*[:=]\\s*\"[^\"]*\"",
-        options: [.caseInsensitive])
+    /// So: on a naming line every quoted run goes, UNLESS the line is reporting an error,
+    /// where the quoted runs are the diagnosis rather than the content. This build logs no
+    /// titles at all and a report carries only this build's lines, so both of those are the
+    /// real defence; this is the net under them.
+    private static let namingContextRegex = try? NSRegularExpression(
+        pattern: "(🤖\\s*(Combined|Chunked|Naming|AI Naming)|Final PATCH)", options: [])
+
+    /// Lines whose quoted runs are error payloads, not titles.
+    private static let errorPayloadRegex = try? NSRegularExpression(
+        pattern: "(blocked|serverError|proxyError|httpError|error|failed)\\s*[(:]", options: [.caseInsensitive])
+
+    private static let quotedRunRegex = try? NSRegularExpression(
+        pattern: "\"[^\"]*\"", options: [])
+
+    /// Proper nouns lifted off the recording's own frames - names of people and companies.
+    /// Nothing else in either sanitizer matches this line.
+    private static let glossaryTermsRegex = try? NSRegularExpression(
+        pattern: "(Glossary: [0-9]+ terms)\\s*[—-].*$", options: [])
 
     /// The one title the shipped build logs without quotes around it.
     private static let bareTitleRegex = try? NSRegularExpression(
@@ -231,9 +262,19 @@ final class LogManager {
             let range = NSRange(result.startIndex..., in: result)
             result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "$1[SLUG]")
         }
-        if let regex = Self.quotedTitleRegex {
+        if let naming = Self.namingContextRegex, let quoted = Self.quotedRunRegex {
+            let full = NSRange(result.startIndex..., in: result)
+            let isNaming = naming.firstMatch(in: result, options: [], range: full) != nil
+            let isError = Self.errorPayloadRegex?.firstMatch(in: result, options: [], range: full) != nil
+            if isNaming && !isError {
+                result = quoted.stringByReplacingMatches(
+                    in: result, options: [], range: NSRange(result.startIndex..., in: result),
+                    withTemplate: "\"[TITLE]\"")
+            }
+        }
+        if let regex = Self.glossaryTermsRegex {
             let range = NSRange(result.startIndex..., in: result)
-            result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "$1: \"[TITLE]\"")
+            result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "$1")
         }
         if let regex = Self.bareTitleRegex {
             let range = NSRange(result.startIndex..., in: result)

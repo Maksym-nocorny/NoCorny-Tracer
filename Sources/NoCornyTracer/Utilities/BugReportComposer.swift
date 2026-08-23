@@ -62,7 +62,14 @@ enum BugReportComposer {
     /// The report payload: filtered matches with context, always followed by the raw tail.
     static func composeLogTail() -> String {
         let lines = readScopedLines()
-        guard !lines.isEmpty else { return "(log file missing or unreadable)" }
+        guard !lines.isEmpty else {
+            // Two different facts, and saying the wrong one is what the availability work
+            // was for. Neither string is ever sent - `send` refuses both - but they show up
+            // in logs and in support conversations.
+            return availability == .noLogYet
+                ? "(log file missing or unreadable)"
+                : "(nothing logged by this version yet)"
+        }
 
         var keep = Set<Int>()
         for (i, line) in lines.enumerated() where matchesFilter(line) {
@@ -100,47 +107,68 @@ enum BugReportComposer {
     /// The window the report covers: everything since the third-most-recent session marker.
     /// Falls back to the whole window when there are fewer markers than that, and never to
     /// nothing -- a log with no marker at all is still the best evidence available.
-    /// The version that is running, as it appears in a session header.
-    private static var currentVersionMarker: String {
-        let short = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
-        return "\(sessionMarker)\(short) "
+    /// The exact header this build writes, version AND build number. Taken from the one
+    /// accessor LogManager uses, so the string being hunted for is by construction the
+    /// string being written - the previous version built it separately and, with the app
+    /// version left unbumped, matched the leaky release's own headers instead.
+    static var currentVersionMarker: String {
+        let (version, build) = LogManager.sessionIdentity
+        return "\(sessionMarker)\(version) (\(build))"
     }
 
-    /// The window a report covers: the last few launches OF THIS VERSION, never earlier ones.
+    /// The window a report covers: the last few launches OF THIS BUILD, and nothing else.
     ///
     /// This is the load-bearing rule, and it replaces trying to sanitize whatever an older
-    /// build happened to write. Redacting free-form log text with patterns kept failing in
-    /// ways nobody predicted - a naming line whose prefix was not on the list, a model reply
-    /// that spanned several lines so per-line rules only protected the first. Each fix closed
-    /// one shape and left the class open.
+    /// build happened to write. Pattern-matching free-form log text failed three times in
+    /// three different ways - a prefix nobody had listed, a model reply spanning several
+    /// lines so per-line rules protected only the first, a twelfth naming line the
+    /// enumeration missed. Each fix closed one shape and left the class open.
     ///
-    /// Scoping to this version inverts that. This build is auditable: it logs lengths and
-    /// counts, never a title, a transcript or a model reply. Lines written by any earlier
-    /// build are simply not eligible, so what they contain stops mattering. Redaction stays
-    /// as a second line of defence rather than as the only one.
+    /// Scoping inverts that: this build is auditable, so what an older one wrote stops
+    /// mattering. Redaction stays as a second line rather than the only one.
     ///
-    /// The cost is that a report filed right after updating carries less history. That is a
-    /// smaller price than shipping someone else's speech to our server.
+    /// Sessions are filtered individually rather than sliced from the earliest match,
+    /// because a foreign session can sit BETWEEN two of ours - a downgrade, a second
+    /// install, someone running an old DMG from Downloads once - and a slice takes it whole.
     private static func readScopedLines() -> [String] {
         let lines = readTail(maxLines: maxScanLines)
         guard !lines.isEmpty else { return [] }
 
-        let versionMarker = currentVersionMarker
-        let ownMarkers = lines.indices.filter { lines[$0].contains(versionMarker) }
-        if let start = ownMarkers.suffix(3).first {
-            return Array(lines[start...])
+        let marker = currentVersionMarker
+        var sessions: [[String]] = []
+        var current: [String]? = nil
+
+        for line in lines {
+            if line.contains(sessionMarker) {
+                // A header always starts a session; only ours starts a KEPT one.
+                current = line.contains(marker) ? [line] : nil
+                if current != nil { sessions.append([line]) }
+                continue
+            }
+            if current != nil, !sessions.isEmpty {
+                sessions[sessions.count - 1].append(line)
+            }
         }
 
-        // No header from this build yet - the log rotated mid-session, or the header write
-        // has not landed. Everything an older build wrote stays out, so send nothing rather
-        // than fall back to the whole window.
-        return []
+        // Lines before the first header at all belong to a session whose header has scrolled
+        // out of the window. Whose build wrote them is unknowable, so they are not eligible.
+        return Array(sessions.suffix(3).joined())
     }
 
     /// Reads app.log, and prepends app.old.log when rotation has just left the current file
     /// nearly empty -- otherwise a report filed right after a 2 MB rollover contains only
     /// the handful of lines written since.
+    /// Injectable so the scope rule can be tested against a log this process did not
+    /// write. Reading the developer's real log made three tests pass for the wrong reason:
+    /// under `swift test` the bundle version is the test runner's, so the scope matched the
+    /// runner's own startup banners and never exercised the rule at all.
+    static var logSourceOverride: (current: URL, previous: URL)?
+
     private static func readTail(maxLines: Int) -> [String] {
+        if let override = logSourceOverride {
+            let lines = readLines(override.previous) + readLines(override.current)
+            return lines.count > maxLines ? Array(lines.suffix(maxLines)) : lines
+        }
         let current = LogManager.shared.getLogFileURL()
         let previous = current.deletingLastPathComponent().appendingPathComponent("app.old.log")
 
