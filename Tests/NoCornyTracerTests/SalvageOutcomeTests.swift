@@ -37,16 +37,14 @@ final class SalvageOutcomeTests: XCTestCase {
         writer.startSession(atSourceTime: .zero)
 
         var pixelBuffer: CVPixelBuffer?
-        while adaptor.pixelBufferPool == nil {
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
+        // Bounded: a fixture that can hang forever turns a broken environment into a stuck
+        // suite rather than a failed test, and nobody learns why.
+        try await Self.waitUntil("pixel buffer pool", { adaptor.pixelBufferPool != nil })
         CVPixelBufferPoolCreatePixelBuffer(nil, adaptor.pixelBufferPool!, &pixelBuffer)
         guard let pixelBuffer else { throw NSError(domain: "fixture", code: 1) }
 
         for seconds in [0.0, 1.0] {
-            while !input.isReadyForMoreMediaData {
-                try await Task.sleep(nanoseconds: 10_000_000)
-            }
+            try await Self.waitUntil("writer ready", { input.isReadyForMoreMediaData })
             adaptor.append(pixelBuffer, withPresentationTime: CMTime(seconds: seconds, preferredTimescale: 600))
         }
         input.markAsFinished()
@@ -54,6 +52,17 @@ final class SalvageOutcomeTests: XCTestCase {
         await writer.finishWriting()
         guard writer.status == .completed else { throw NSError(domain: "fixture", code: 2) }
         return url
+    }
+
+    /// Polls a condition for at most two seconds, then fails loudly with the name of what it
+    /// was waiting for.
+    private static func waitUntil(_ what: String, _ condition: () -> Bool) async throws {
+        for _ in 0..<200 {
+            if condition() { return }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        throw NSError(domain: "fixture", code: 9,
+                      userInfo: [NSLocalizedDescriptionKey: "gave up waiting for \(what)"])
     }
 
     /// A recovered take is one nobody has seen: `.recovered`, never `.finished`. Marked as
@@ -98,6 +107,10 @@ final class SalvageOutcomeTests: XCTestCase {
         try writer.startWriting()
         writer.arm()
         for seconds in [0.0, 1.0] {
+            // The writer drops a frame it is not ready for, silently and by design. Two
+            // dropped frames here would be an empty file - and an empty file does not take
+            // the path this test is about, so the test would pass for the wrong reason.
+            try await Self.waitUntil("video writer ready", { writer.isReadyForVideo })
             writer.appendVideoBuffer(try Self.makeVideoSampleBuffer(atSeconds: seconds))
         }
 

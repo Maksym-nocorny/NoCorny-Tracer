@@ -170,6 +170,16 @@ final class VideoWriter {
         writingQueue.async { self.armed = true }
     }
 
+    /// Whether the next video buffer would actually be written rather than dropped.
+    ///
+    /// `appendVideoBuffer` drops silently when the input is not ready - correct for a live
+    /// capture, where waiting would stall the stream. A headless test driving this writer
+    /// has no stream to stall and needs to know its frames landed, or it ends up asserting
+    /// on an empty file that took a different path entirely.
+    var isReadyForVideo: Bool {
+        writingQueue.sync { isWriting && armed && (videoInput?.isReadyForMoreMediaData ?? false) }
+    }
+
     func appendVideoBuffer(_ sampleBuffer: CMSampleBuffer) {
         writingQueue.sync {
             // Pause gating lives here (on writingQueue) instead of being read from
