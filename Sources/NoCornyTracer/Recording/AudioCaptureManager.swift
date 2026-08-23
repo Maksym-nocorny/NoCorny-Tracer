@@ -240,7 +240,18 @@ final class AudioCaptureManager: NSObject {
 
         let input = engine.inputNode
         input.removeTap(onBus: 0)
-        installTap(on: input, format: input.outputFormat(forBus: 0))
+        // When the last input device is gone - a Mac whose only microphone was the
+        // headphones that just died - the node reports a 0 Hz, 0 channel format, and
+        // installing a tap with it raises rather than returning an error. Crashing mid-
+        // recording is a worse answer to a lost microphone than saying it is lost.
+        let format = input.outputFormat(forBus: 0)
+        guard format.sampleRate > 0, format.channelCount > 0 else {
+            inputDeviceLost = true
+            LogManager.shared.log("⚠️ Audio: no input device left - the rest of this recording has no voice track", type: .error)
+            onInputDeviceLost?()
+            return
+        }
+        installTap(on: input, format: format)
 
         if engine.isRunning { return }
         do {

@@ -278,6 +278,20 @@ final class AppState {
         // auto-restart into a fresh take: a surprise "recording started again" is worse
         // than a clean stop, and the salvage-then-restart loop was itself the disruptive
         // behavior users hit when the flush kept dying.
+        // The screen stream dying mid-capture - a monitor unplugged, screen-recording
+        // permission revoked - force-stops the recording internally and hands the finished
+        // take to this hook. Nothing was ever subscribed to it, in any commit: the file was
+        // finalised, the minutes of merge were paid for, and the take was then dropped on
+        // the floor. No row, no alert, no recording as far as the user is concerned.
+        recordingManager.onInterrupted = { [weak self] interrupted in
+            guard let self, let kept = Self.keepingInterrupted(interrupted, in: self.recordings) else { return }
+            self.recordings = kept.list
+            self.saveRecordings()
+            LogManager.shared.log("🔴 Recording: the screen stream stopped - the take was kept", type: .error)
+            SoundManager.shared.play(.abort)
+            Task { await self.processRecording(id: kept.id) }
+        }
+
         recordingManager.onWriterFailed = { [weak self] in
             Task { @MainActor in await self?.recoverFromWriterFailure() }
         }
@@ -539,7 +553,15 @@ final class AppState {
         // nil means the writer produced nothing and salvage found nothing either.
         guard let recording = stopped else { return }
 
-        recordings = Self.writing(recording, into: recordings)
+        guard let updated = Self.applyingStopResult(
+            recording,
+            alreadySaved: recordingManager.onCaptureFinishedForThisStop,
+            to: recordings
+        ) else {
+            LogManager.shared.log("🗑️ Recording: deleted while its audio was being mixed - not bringing it back")
+            return
+        }
+        recordings = updated
         saveRecordings()
 
         // Process everything in the background (non-blocking)
@@ -1397,6 +1419,40 @@ final class AppState {
     /// Matches the shape the site generates: "Recording · 29 Apr 2026 14:32".
     static func isPlaceholderTitle(_ title: String) -> Bool {
         title.hasPrefix("Recording · ")
+    }
+
+    /// Keeps a take the screen stream took down with it, or nil when there is nothing to keep.
+    ///
+    /// The interruption path finalises the file and pays for the merge and then hands the
+    /// take to a hook. Until now nothing was subscribed to that hook in any commit, so the
+    /// take was dropped: the file sat on disk and the recording did not exist as far as the
+    /// app or the user was concerned.
+    static func keepingInterrupted(
+        _ take: Recording?,
+        in list: [Recording]
+    ) -> (list: [Recording], id: UUID)? {
+        guard let take else { return nil }
+        return (writing(take, into: list), take.id)
+    }
+
+    /// What the list looks like after a stop finishes, or nil when the row must stay gone.
+    ///
+    /// A stop now saves once when the file is finalised and again after the system-audio
+    /// merge, and the row is visible in between - which is the point, and which also means
+    /// the user can delete it while the merge runs. Writing the second copy unconditionally
+    /// brought the deleted row back, pointing at a file that had just been removed, and sent
+    /// it off to be uploaded.
+    ///
+    /// The salvage path never hands anything over, so its take has never been saved and must
+    /// still be added.
+    static func applyingStopResult(
+        _ take: Recording,
+        alreadySaved: Bool,
+        to list: [Recording]
+    ) -> [Recording]? {
+        guard alreadySaved else { return writing(take, into: list) }
+        guard list.contains(where: { $0.id == take.id }) else { return nil }
+        return writing(take, into: list)
     }
 
     /// Writes a take into the list: replacing the row it already has, or adding it at the

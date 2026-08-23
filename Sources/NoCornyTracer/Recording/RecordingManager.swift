@@ -17,6 +17,11 @@ final class RecordingManager {
     /// recording was still being assembled. Quitting there is the natural thing to do after a
     /// meeting.
     var isFinishing = false
+
+    /// Whether the current stop already handed its take to the caller. The caller needs it to
+    /// tell "this take was never saved" from "it was saved and then deleted while the merge
+    /// ran" - the second must not be brought back.
+    private(set) var onCaptureFinishedForThisStop = false
     var recordingDuration: TimeInterval = 0
     var currentFileURL: URL?
     
@@ -40,6 +45,12 @@ final class RecordingManager {
     /// Set synchronously before the first await in startRecording so a double
     /// trigger during the async start can't launch a second concurrent capture.
     private var isStarting = false
+    /// Mirror of `isStarting`. `isRecording` stays true across every await in the stop
+    /// sequence - closing the writer, finishing the sidecar, finalising the file - so a
+    /// second stop arriving in that window (the button, the hotkey, the menu item, the quit
+    /// handler and the writer-failure path are five separate doors) walked into the same
+    /// teardown and could take the sidecar out from under the first.
+    private var isStopping = false
     /// Guards togglePause against re-entrancy across its 0.5s resume sleep.
     private var isTogglingPause = false
 
@@ -225,7 +236,10 @@ final class RecordingManager {
         mergeSystemAudio: Bool = true,
         onCaptureFinished: ((Recording) -> Void)? = nil
     ) async -> Recording? {
-        guard isRecording else { return nil }
+        guard isRecording, !isStopping else { return nil }
+        isStopping = true
+        defer { isStopping = false }
+        onCaptureFinishedForThisStop = false
 
         // Stop timer
         stopTimer()
@@ -296,34 +310,56 @@ final class RecordingManager {
         // mixed mic. Nothing cleans it up yet, on purpose.
         recording.systemAudioURL = systemAudio?.url
 
-        // Hand the take over NOW, before the merge. The file on disk is already complete and
-        // playable; the merge only ever improves it, and it leaves the original untouched
-        // when it fails. Persisting first is what makes the next few minutes survivable: the
-        // row exists, the list shows it, and a quit in the middle costs the system-audio
-        // mix rather than the whole recording.
-        onCaptureFinished?(recording)
-
-        // Mix the sidecar into the saved file. Offline, after capture, and only when
-        // something was actually playing: a silent sidecar is minutes of export for a
-        // file nobody would hear a difference in. On failure the merge leaves the
-        // original alone, so the worst case is the mic-only recording we already had.
-        if let systemAudio, systemAudio.hasAudibleContent, mergeSystemAudio {
-            isFinishing = true
-            _ = await SystemAudioMerger.mergeInPlace(recording: outputURL, systemAudio: systemAudio.url)
-            isFinishing = false
-        } else if systemAudio != nil && mergeSystemAudio {
+        let shouldMerge = mergeSystemAudio && systemAudio?.hasAudibleContent == true
+        if systemAudio != nil && mergeSystemAudio && !shouldMerge {
             LogManager.shared.log("🔊 System audio: sidecar holds only silence - skipping the merge")
         }
 
-        // Read the on-disk file size now so we can pass it to the backend at
-        // registration time. Without this, fileSize stays nil for fresh recordings.
-        // Read after the merge, so the size is the one the uploader will actually send.
-        if let attrs = try? FileManager.default.attributesOfItem(atPath: outputURL.path),
-           let size = attrs[.size] as? NSNumber {
-            recording.fileSize = size.uint64Value
-        }
+        return await Self.finishTake(
+            recording,
+            handOver: { [weak self] take in
+                self?.onCaptureFinishedForThisStop = true
+                onCaptureFinished?(take)
+            },
+            markFinishing: { [weak self] busy in self?.isFinishing = busy },
+            merge: {
+                guard shouldMerge, let systemAudio else { return }
+                _ = await SystemAudioMerger.mergeInPlace(recording: outputURL, systemAudio: systemAudio.url)
+            },
+            sizeOnDisk: {
+                let attrs = try? FileManager.default.attributesOfItem(atPath: outputURL.path)
+                return (attrs?[.size] as? NSNumber)?.uint64Value
+            }
+        )
+    }
 
-        return recording
+    /// Purely bookkeeping for a stop, in the order it has to happen.
+    ///
+    /// Written out as one named thing because the order is the whole point and getting it
+    /// wrong is invisible: the take used to be handed over AFTER the merge, so for the
+    /// minutes a long export takes there was no row anywhere, no timer, nothing on screen -
+    /// and quitting in that window, which is what people do after a meeting, lost the
+    /// recording outright. Steps inline in a 120-line function cannot be held by a test;
+    /// this can.
+    ///
+    /// - `handOver` runs BEFORE the merge: the file is already complete and playable, and a
+    ///   failed merge leaves it untouched, so there is nothing to wait for.
+    /// - `markFinishing` brackets the merge, so a quit can wait for it rather than kill it.
+    /// - `sizeOnDisk` runs AFTER, because the merge changes the file.
+    static func finishTake(
+        _ take: Recording,
+        handOver: (Recording) -> Void,
+        markFinishing: (Bool) -> Void,
+        merge: () async -> Void,
+        sizeOnDisk: () -> UInt64?
+    ) async -> Recording {
+        var take = take
+        handOver(take)
+        markFinishing(true)
+        await merge()
+        markFinishing(false)
+        take.fileSize = sizeOnDisk()
+        return take
     }
 
     // MARK: - Salvage
