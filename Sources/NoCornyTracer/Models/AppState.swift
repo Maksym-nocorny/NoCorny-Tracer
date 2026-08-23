@@ -1352,17 +1352,26 @@ final class AppState {
         }
     }
 
+    /// Everything this Mac keeps for one recording, forgotten in one place.
+    ///
+    /// It used to be four copy-pasted cleanup sites, and they drifted exactly the way
+    /// copy-pasted things do: deleting cleared all three, signing out cleared only the
+    /// transcript, and up to 2 GB of the previous account's conversations stayed on a shared
+    /// Mac for ninety days. Adding a fourth kind of stored thing later should not mean
+    /// remembering four places again.
+    static func forgetLocalArtifacts(of recording: Recording) {
+        TranscriptStore.shared.remove(for: recording.id)
+        DiarizationAudioCache.shared.remove(for: recording.id)
+        if let sidecar = recording.systemAudioURL {
+            try? FileManager.default.removeItem(at: sidecar)
+        }
+    }
+
     // MARK: - History Management
 
     func clearHistory() {
         // The transcripts are files now, so clearing the list no longer takes them with it.
-        for recording in recordings {
-            TranscriptStore.shared.remove(for: recording.id)
-            // The cached audio is the previous account's meetings just as much as the
-            // transcript is - up to 2 GB of it, and the comment above is the reason it
-            // should not outlive them by ninety days.
-            DiarizationAudioCache.shared.remove(for: recording.id)
-        }
+        recordings.forEach(Self.forgetLocalArtifacts)
         recordings.removeAll()
         saveRecordings()
     }
@@ -1392,15 +1401,10 @@ final class AppState {
         if FileManager.default.fileExists(atPath: recording.fileURL.path) {
             try? FileManager.default.removeItem(at: recording.fileURL)
         }
-        // The system-audio sidecar goes with it. It is roughly 15 MB an hour per track and
-        // nothing else references it once the recording is gone, so leaving it behind is a
-        // file that accumulates forever with no way for anyone to know what it belongs to.
-        if let sidecar = recording.systemAudioURL {
-            try? FileManager.default.removeItem(at: sidecar)
-        }
-        // Nothing left to re-label, so the audio kept for that is now just disk.
-        DiarizationAudioCache.shared.remove(for: recording.id)
-        TranscriptStore.shared.remove(for: recording.id)
+        // And everything else this Mac was keeping for it: the transcript, the audio held for
+        // re-labelling, and the system-audio sidecar - roughly 15 MB an hour per track that
+        // nothing else references once the recording is gone.
+        Self.forgetLocalArtifacts(of: recording)
 
         // 3. Drop from local state immediately so UI updates without a re-sync
         DispatchQueue.main.async {
@@ -1624,12 +1628,9 @@ final class AppState {
         for v in envelope.videos {
             if let idx = working.firstIndex(where: { $0.tracerSlug == v.slug }) {
                 if v.isDeleted == true {
-                    // Deleted on the web. The row goes, and so does the transcript file it
-                    // was the only pointer to.
-                    TranscriptStore.shared.remove(for: working[idx].id)
-                    // The audio kept for re-labelling belongs to a recording that no longer
-                    // exists. Up to 2 GB of it, otherwise sitting until the 90-day eviction.
-                    DiarizationAudioCache.shared.remove(for: working[idx].id)
+                    // Deleted on the web. The row goes, and so does everything this Mac was
+                    // keeping for it.
+                    Self.forgetLocalArtifacts(of: working[idx])
                     working.remove(at: idx)
                     continue
                 }
@@ -1704,9 +1705,7 @@ final class AppState {
     func resetTracerLibraryState() {
         // Same reasoning as the rows themselves: the next account to sign in must not find
         // the previous one's meetings sitting in Application Support.
-        for recording in recordings {
-            TranscriptStore.shared.remove(for: recording.id)
-        }
+        recordings.forEach(Self.forgetLocalArtifacts)
         recordings.removeAll()
         saveRecordings()
         dropboxUsedSpace = 0
