@@ -66,6 +66,23 @@ if printf '%s\n' "$RELEASED_VERSIONS" | grep -qxF "$VERSION"; then
     echo "   Bump BOTH CFBundleShortVersionString and CFBundleVersion before releasing."
     exit 1
 fi
+# Nothing else runs the test suite. There is no CI on this repo, and a release is the one
+# moment where "the tests were green when I last looked" stops being good enough - the DMG
+# built here goes out to every installed copy through Sparkle within the hour. Three seconds.
+#
+# NCT_SKIP_TESTS=1 exists for re-cutting a release whose build failed downstream (notarization,
+# a GitHub outage) without re-running a suite that just passed. It is not for a red suite.
+if [ "${NCT_SKIP_TESTS:-0}" != "1" ]; then
+    echo "🧪 Running tests before building a release..."
+    if ! swift test --package-path "$PROJECT_DIR" > /tmp/nct-release-tests.log 2>&1; then
+        echo "❌ Tests failed — refusing to cut a release. Last 30 lines:"
+        tail -30 /tmp/nct-release-tests.log
+        exit 1
+    fi
+    grep -E "Executed [0-9]+ tests" /tmp/nct-release-tests.log | tail -1
+    echo "✅ Tests pass"
+fi
+
 DMG_NAME="NoCornyTracer-$VERSION"
 DMG_PATH="$PROJECT_DIR/dist/$DMG_NAME.dmg"
 GITHUB_REPO="Maksym-nocorny/NoCorny-Tracer"
