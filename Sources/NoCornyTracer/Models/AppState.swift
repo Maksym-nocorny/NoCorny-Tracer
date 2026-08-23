@@ -1328,6 +1328,10 @@ final class AppState {
         // The transcripts are files now, so clearing the list no longer takes them with it.
         for recording in recordings {
             TranscriptStore.shared.remove(for: recording.id)
+            // The cached audio is the previous account's meetings just as much as the
+            // transcript is - up to 2 GB of it, and the comment above is the reason it
+            // should not outlive them by ninety days.
+            DiarizationAudioCache.shared.remove(for: recording.id)
         }
         recordings.removeAll()
         saveRecordings()
@@ -1376,6 +1380,23 @@ final class AppState {
 
         // 4. Refresh usage counters from our DB (cheap — same call as a list refresh)
         await reloadRecordingsFromTracer()
+    }
+
+    /// Which title survives a sync.
+    ///
+    /// The server never sends nothing - the column is NOT NULL and the API substitutes a
+    /// placeholder - so the line above it, which nil-coalesces everything else specifically so
+    /// "a transiently-empty server value never erases good local data", did not protect this
+    /// field at all. When the PATCH carrying a generated title has not landed yet, the next
+    /// sync brought the placeholder back and overwrote the real name with it.
+    static func titleToKeep(fromServer serverTitle: String, local: String?) -> String {
+        guard let local, !local.isEmpty, isPlaceholderTitle(serverTitle) else { return serverTitle }
+        return local
+    }
+
+    /// Matches the shape the site generates: "Recording · 29 Apr 2026 14:32".
+    static func isPlaceholderTitle(_ title: String) -> Bool {
+        title.hasPrefix("Recording · ")
     }
 
     /// Writes a take into the list: replacing the row it already has, or adding it at the
@@ -1543,6 +1564,9 @@ final class AppState {
                     // Deleted on the web. The row goes, and so does the transcript file it
                     // was the only pointer to.
                     TranscriptStore.shared.remove(for: working[idx].id)
+                    // The audio kept for re-labelling belongs to a recording that no longer
+                    // exists. Up to 2 GB of it, otherwise sitting until the 90-day eviction.
+                    DiarizationAudioCache.shared.remove(for: working[idx].id)
                     working.remove(at: idx)
                     continue
                 }
@@ -1562,7 +1586,8 @@ final class AppState {
                 working[idx].duration = v.duration ?? working[idx].duration
                 working[idx].fileSize = v.fileSize.flatMap { $0 >= 0 ? UInt64($0) : nil } ?? working[idx].fileSize
                 working[idx].thumbnailURL = v.thumbnailUrl ?? working[idx].thumbnailURL
-                working[idx].aiGeneratedName = v.title
+                working[idx].aiGeneratedName = Self.titleToKeep(fromServer: v.title,
+                                                               local: working[idx].aiGeneratedName)
                 // Never overwrite a local transcript with nothing: this sync also runs
                 // right after a recording is processed, and the server row can lag a beat
                 // behind the PATCH that carried the transcript up.

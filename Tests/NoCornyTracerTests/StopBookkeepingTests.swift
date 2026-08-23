@@ -111,3 +111,41 @@ final class DropdownPlacementTests: XCTestCase {
         XCTAssertEqual(centre, window / 2)
     }
 }
+
+/// The server's title column is NOT NULL and the API substitutes a placeholder when a
+/// recording has no generated name yet. So the line that assigned it could never see "nothing"
+/// and be careful about it - it saw a plausible string and wrote it over the real name.
+final class TitleSurvivesSyncTests: XCTestCase {
+
+    private let placeholder = "Recording · 29 Apr 2026 14:32"
+
+    func testAGeneratedNameIsNotReplacedByThePlaceholder() {
+        XCTAssertEqual(
+            AppState.titleToKeep(fromServer: placeholder, local: "Layoff plan review"),
+            "Layoff plan review",
+            "a sync arriving before the title PATCH landed erased the generated name"
+        )
+    }
+
+    func testARealServerTitleWins() {
+        XCTAssertEqual(
+            AppState.titleToKeep(fromServer: "Renamed on the site", local: "Layoff plan review"),
+            "Renamed on the site",
+            "renaming a recording on the site stopped working"
+        )
+    }
+
+    func testWithNoLocalNameThePlaceholderIsFineToShow() {
+        XCTAssertEqual(AppState.titleToKeep(fromServer: placeholder, local: nil), placeholder)
+        XCTAssertEqual(AppState.titleToKeep(fromServer: placeholder, local: ""), placeholder)
+    }
+
+    /// A recording someone genuinely titled "Recording · something" on the site is not a
+    /// placeholder, and this is where the two are told apart.
+    func testOnlyTheGeneratedShapeCountsAsAPlaceholder() {
+        XCTAssertTrue(AppState.isPlaceholderTitle(placeholder))
+        XCTAssertFalse(AppState.isPlaceholderTitle("Recording notes"))
+        XCTAssertFalse(AppState.isPlaceholderTitle("Weekly sync"))
+        XCTAssertFalse(AppState.isPlaceholderTitle(""))
+    }
+}

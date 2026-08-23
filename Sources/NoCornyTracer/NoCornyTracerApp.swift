@@ -13,21 +13,29 @@ struct NoCornyTracerApp: App {
 
     // Sparkle auto-updater
     private let updaterController: SPUStandardUpdaterController
+    /// Held for the lifetime of the app: Sparkle keeps its delegate weakly.
+    private let updateScheduler: UpdateScheduler
 
     init() {
         // Register custom fonts from the app bundle
         Theme.Typography.registerFonts()
 
         // Initialize Sparkle updater (auto-checks for updates on launch)
+        let scheduler = UpdateScheduler()
+        self.updateScheduler = scheduler
         let updater = SPUStandardUpdaterController(
             startingUpdater: true,
-            updaterDelegate: nil,
+            updaterDelegate: scheduler,
             userDriverDelegate: nil
         )
         self.updaterController = updater
 
         let pManager = PermissionsManager(updaterController: updater)
         self._permissionsManager = State(initialValue: pManager)
+
+        // Read live rather than captured: the app almost always launches with no recording
+        // running, so a captured value would always say "go ahead".
+        scheduler.isRecording = { AppState.shared?.recordingManager.isRecording ?? false }
     }
 
     var body: some Scene {
