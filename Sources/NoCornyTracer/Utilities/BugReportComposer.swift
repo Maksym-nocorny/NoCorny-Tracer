@@ -22,6 +22,8 @@ enum BugReportComposer {
     private static let alwaysKeepTailLines = 200
     private static let contextLines = 3
     private static let sessionMarker = "🚀 NoCorny Tracer v"
+    /// Any header line, ours or not.
+    private static let sessionMarkerPrefix = "🚀 NoCorny Tracer"
 
     private static let errorPattern = try? NSRegularExpression(
         pattern: "(❌|☠️|ERROR|FAULT|fail(ed|ure)?|error|exception|timeout|denied|invalid|refused|HTTP [45][0-9]{2}|premium_required|payloadTooLarge|413|403|401)",
@@ -145,9 +147,16 @@ enum BugReportComposer {
                 if current != nil { sessions.append([line]) }
                 continue
             }
-            if current != nil, !sessions.isEmpty {
-                sessions[sessions.count - 1].append(line)
+            // A foreign session whose header lost its marker - two processes appending at
+            // once can clobber a line - would otherwise be appended to ours, because
+            // nothing closes the current session. Fail closed: a line that cannot be
+            // recognised as a continuation ends the session rather than joining it.
+            guard current != nil, !sessions.isEmpty else { continue }
+            if line.hasPrefix("[") && line.contains("Z] ") && line.contains(sessionMarkerPrefix) {
+                current = nil
+                continue
             }
+            sessions[sessions.count - 1].append(line)
         }
 
         // Lines before the first header at all belong to a session whose header has scrolled

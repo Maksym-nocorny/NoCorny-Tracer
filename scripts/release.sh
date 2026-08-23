@@ -41,6 +41,18 @@ fi
 
 # Read version from Info.plist
 VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$PROJECT_DIR/Sources/NoCornyTracer/Info.plist")
+
+# The version must actually differ from the last release. Nothing else checks this: the
+# build guard proves the EMBEDDED plist matches the source one, never that the source moved.
+# On 2026-08-23 that gap shipped a build whose bug-report scoping keys on the version
+# string, left at the previous release's value - so the mechanism matched the old build's
+# own log headers and excluded nothing it was built to exclude.
+LAST_RELEASED=$(grep -oE 'sparkle:version="[^"]+"' "$PROJECT_DIR/appcast.xml" 2>/dev/null | head -1 | cut -d'"' -f2 || true)
+if [ -n "$LAST_RELEASED" ] && [ "$LAST_RELEASED" = "$VERSION" ]; then
+    echo "❌ Info.plist is still $VERSION, which is already in appcast.xml."
+    echo "   Bump BOTH CFBundleShortVersionString and CFBundleVersion before releasing."
+    exit 1
+fi
 DMG_NAME="NoCornyTracer-$VERSION"
 DMG_PATH="$PROJECT_DIR/dist/$DMG_NAME.dmg"
 GITHUB_REPO="Maksym-nocorny/NoCorny-Tracer"

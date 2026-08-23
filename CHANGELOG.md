@@ -1,5 +1,20 @@
 # Changelog
 
+## [3.17.0] - 2026-08-23
+### Added
+- **Transcription on your own Mac, free and offline.** Settings now has a Transcription section where you can choose where transcripts come from. Pick "On this Mac" and Tracer downloads a speech model once (about 1.5 GB) and never sends your audio anywhere again - no account needed for the transcript itself, and nothing to pay for. Apple Silicon only; Intel Macs keep using the cloud. Titles still come from the cloud, except on macOS 26 with Apple Intelligence switched on, where those are produced locally too for the languages Apple supports.
+- **Recording what your Mac plays.** A new "Record system audio" switch in Input Devices captures calls, videos and app sound alongside your microphone, so the other side of a conversation is actually in the recording. Off by default.
+- **Speaker separation.** Transcripts can be split by who was talking, marking each part with a speaker on the recording page and in the subtitles. It works far better with system audio recording on, because the other party then arrives on a track of their own instead of leaking through your microphone. If the count comes out wrong you can correct it afterwards from the Recordings list and Tracer will work the speakers out again, without re-transcribing anything.
+- **"Report a Problem" in Settings.** Sends recent diagnostic log entries so a problem can actually be looked into. It shows you what it is about to send first, and it contains no video, audio or transcript text - links to your recordings and their titles are stripped before anything leaves your Mac.
+
+### Changed
+- Recordings keep a small copy of their audio (roughly 15 MB per hour) so speakers can be worked out again later without the original file. It is capped, cleaned up automatically, and mirrored to your own Dropbox alongside the recording.
+- The recording page waits far longer before giving up on a transcript, and says so plainly instead of spinning forever. A first on-device transcription can take a while, since the model is downloading and compiling.
+
+### Fixed
+- **The diagnostic log no longer contains links to your recordings, or their titles.** Share links and page addresses are the access credential for a recording, and they were being written to the log in full. They are now removed as the log is written, and again before anything is sent.
+- Transcripts are no longer stored in the app's preferences file. They live in their own files now, which keeps them out of a file that is rewritten constantly and not meant to hold speech.
+
 ## [3.16.2] - 2026-08-20
 ### Fixed
 - **Recordings no longer lose their AI title.** A title written in Ukrainian or Russian was rejected as "wrong language" whenever it carried a couple of Latin words, which is normal for anything that mentions Figma, an API or a product name. The app then asked for a replacement title, and when that second request timed out the recording was left with the "Recording · 20 Aug 2026 12:59" placeholder, even though a perfectly good title had already been produced and thrown away. Latin words inside a Cyrillic title are now accepted as normal, and a title is never discarded before a better one has actually arrived.

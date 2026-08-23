@@ -33,9 +33,14 @@ final class ShippedLogInventoryTests: XCTestCase {
         ]
         for shape in shapes {
             let clean = LogManager.shared.sanitize(shape)
-            XCTAssertFalse(clean.contains(secret), "title survived:\n  in:  \(shape)\n  out: \(clean)")
-            XCTAssertFalse(clean.contains("Sarah Kovalenko"), "glossary term survived:\n  out: \(clean)")
-            XCTAssertFalse(clean.contains("Acme Legal"), "glossary term survived:\n  out: \(clean)")
+            // Each shape carries exactly one of these; asserting both on every shape is
+            // how an assertion looks busy while proving nothing.
+            if shape.contains("Glossary") {
+                XCTAssertFalse(clean.contains("Sarah Kovalenko"), "glossary term survived:\n  out: \(clean)")
+                XCTAssertFalse(clean.contains("Acme Legal"), "glossary term survived:\n  out: \(clean)")
+            } else {
+                XCTAssertFalse(clean.contains(secret), "title survived:\n  in:  \(shape)\n  out: \(clean)")
+            }
         }
     }
 
@@ -131,6 +136,19 @@ final class ErrorCarveOutTests: XCTestCase {
             let clean = LogManager.shared.sanitize(line)
             XCTAssertFalse(clean.contains(secret), "brackets alone bought an exemption:\n  \(clean)")
         }
+    }
+
+    /// The known trapdoor, pinned rather than fixed: a LABELLED argument is treated as a
+    /// diagnosis, so a title logged as one would survive. Unreachable today - no call site
+    /// on this branch logs a title at all, and no line the shipped build writes puts one
+    /// inside parentheses behind a label - but if that ever changes, this test says so
+    /// instead of a user finding out.
+    func testALabelledTitleArgumentIsAKnownGap() {
+        let clean = LogManager.shared.sanitize("🤖 Combined: ⚠️ failed (name: \"\(secret)\")")
+        XCTAssertTrue(
+            clean.contains(secret),
+            "the labelled-argument gap closed - good, but update the comment that calls it a gap"
+        )
     }
 
     /// The case the carve-out exists for.

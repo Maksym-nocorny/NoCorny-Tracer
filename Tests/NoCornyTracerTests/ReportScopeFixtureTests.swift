@@ -20,7 +20,28 @@ final class ReportScopeFixtureTests: XCTestCase {
         #"[2026-08-01T10:00:03Z] ❌ ERROR: 🤖 Naming: ⚠️ accepting "Layoff plan review with Sarah" rather than losing the title"#,
         #"[2026-08-01T10:00:04Z] 📝: 🤖 Glossary: 3 terms — Sarah Kovalenko, Acme Legal, Project Halo"#,
         #"[2026-08-01T10:00:05Z] 📝: 🤖 Chunked: ✅ name="Layoff plan review with Sarah", srt 4821 chars"#,
+        // The line that makes these tests belong to the scope rule rather than to the
+        // sanitizer. Everything above is redactable, so an assertion on it passes whether
+        // scoping works or not - which is exactly what happened: the mutation proof quoted
+        // in one commit stopped being true in the next, when a carve-out fix made the last
+        // un-redactable line redactable. A continuation line of a model reply carries no
+        // marker of its own and no pattern can recognise it, so only scope can keep it out.
+        // Continuation lines whose payload line has already scrolled out of the window.
+        // Nothing marks them, nothing precedes them to drop them, and no pattern can tell
+        // this from ordinary prose - so redaction genuinely cannot touch it and only the
+        // scope rule can keep it out. That is what makes the assertions below mean anything.
+        #"  так от, я хочу сказати що дизайн тут геть не працює"#,
+        #"  і треба переробити всю нижню панель до пʼятниці"#,
     ]
+
+    /// Guards the guard: if this ever passes, the fixture has stopped testing scope.
+    func testTheFixtureContainsSomethingRedactionCannotClean() {
+        let unclean = oldLeaks.filter { LogManager.shared.sanitize($0).contains("дизайн") }
+        XCTAssertFalse(
+            unclean.isEmpty,
+            "every fixture line is now redactable, so the scope assertions below prove nothing"
+        )
+    }
 
     private func header(_ version: String, _ build: String) -> String {
         "[2026-08-01T10:00:00Z] 📝: 🚀 NoCorny Tracer v\(version) (\(build)) Started"
@@ -40,6 +61,7 @@ final class ReportScopeFixtureTests: XCTestCase {
 
     override func tearDown() {
         BugReportComposer.logSourceOverride = nil
+        try? FileManager.default.removeItem(at: dir)
     }
 
     private func write(_ lines: [String]) throws {
@@ -53,6 +75,7 @@ final class ReportScopeFixtureTests: XCTestCase {
                   "[2026-08-01T11:00:00Z] 📝: 🎬 Recording: started"])
         let report = BugReportComposer.composeLogTail()
         XCTAssertFalse(report.contains("Sarah"), "an older build's line reached the report:\n\(report)")
+        XCTAssertFalse(report.contains("дизайн"), "an older build's speech reached the report:\n\(report)")
         XCTAssertFalse(report.contains("Acme"), "glossary terms reached the report")
         XCTAssertTrue(report.contains("Recording: started"), "lost our own lines")
     }
@@ -65,7 +88,7 @@ final class ReportScopeFixtureTests: XCTestCase {
                   + [header("3.16.2", "3.16.2")] + oldLeaks
                   + [header(v, b), "[2026-08-01T12:00:00Z] 📝: 🎬 second of ours"])
         let report = BugReportComposer.composeLogTail()
-        XCTAssertFalse(report.contains("Sarah"), "a session between ours rode along:\n\(report)")
+        XCTAssertFalse(report.contains("дизайн"), "a session between ours rode along:\n\(report)")
         XCTAssertTrue(report.contains("second of ours"))
     }
 
@@ -74,7 +97,7 @@ final class ReportScopeFixtureTests: XCTestCase {
         let (v, b) = ourVersion
         try write([header(v, "\(b)-beta1")] + oldLeaks + [header(v, b), "[2026-08-01T11:00:00Z] 📝: ours"])
         let report = BugReportComposer.composeLogTail()
-        XCTAssertFalse(report.contains("Sarah"), "another build of the same version rode along")
+        XCTAssertFalse(report.contains("дизайн"), "another build of the same version rode along")
     }
 
     /// Lines before any header belong to a session whose header scrolled out of the window.
@@ -82,7 +105,7 @@ final class ReportScopeFixtureTests: XCTestCase {
     func testLinesWithNoHeaderAtAllAreNotEligible() throws {
         try write(oldLeaks)
         XCTAssertEqual(BugReportComposer.availability, .onlyOlderVersions)
-        XCTAssertFalse(BugReportComposer.composeLogTail().contains("Sarah"))
+        XCTAssertFalse(BugReportComposer.composeLogTail().contains("дизайн"))
     }
 
     func testAnEmptyLogIsReportedAsSuch() throws {
