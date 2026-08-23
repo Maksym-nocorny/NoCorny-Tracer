@@ -819,8 +819,14 @@ final class AppState {
                 aiName = call.name
                 aiUsage.add(call.usage)
                 aiTotalLatencyMs += call.latencyMs
+                aiTotalAttempts += call.attempts
                 if let m = call.model { aiModel = m }
-                LogManager.shared.log("🤖 Naming: retitled a reused transcript (\(call.name?.count ?? 0) chars)")
+                if let name = call.name {
+                    LogManager.shared.log("🤖 Naming: retitled a reused transcript (\(name.count) chars)")
+                } else {
+                    aiLastError = call.errorCode ?? "naming_failed"
+                    LogManager.shared.log("🤖 Naming: ⚠️ could not retitle a reused transcript — keeping the placeholder", type: .error)
+                }
             }
         } else {
             let pass = await aiNamingService.generateSubtitlesAndName(
@@ -872,11 +878,8 @@ final class AppState {
         if let generatedSubtitles, !generatedSubtitles.isEmpty {
             TranscriptStore.shared.save(generatedSubtitles, for: id)
             updateRecording(id: id) {
-                // Only ever write an answer, never overwrite one with a guess. A retry that
-                // reuses a cached transcript transcribes nothing, and this line used to
-                // stamp it with the default model name - relabelling a recording that was
-                // transcribed on this Mac as a cloud one.
-                if let transcribedByModel { $0.transcriptEngine = transcribedByModel }
+                $0.transcriptEngine = Self.engineToRecord(producedNow: transcribedByModel,
+                                                          existing: $0.transcriptEngine)
                 if let speakersUsed { $0.expectedSpeakers = speakersUsed }
             }
         }
@@ -1273,7 +1276,12 @@ final class AppState {
                 TranscriptStore.shared.save(inline, for: r.id)
                 r.legacyInlineTranscript = nil
             }
-            guard r.uploadStatus == .uploading else { return r }
+            // `.notUploaded` at load time means the same thing: the run that was going to
+            // process this recording died before it started. Quitting during a recording is
+            // the ordinary way there - the app finalises the file on the way out, and the
+            // task that would have uploaded it goes with the process. Left as-is the row has
+            // no path forward at all: the retry the list offers is only for `.failed`.
+            guard r.uploadStatus == .uploading || r.uploadStatus == .notUploaded else { return r }
             r.uploadStatus = .failed
             r.uploadError = "Upload interrupted — tap to retry"
             return r
@@ -1335,11 +1343,24 @@ final class AppState {
         await reloadRecordingsFromTracer()
     }
 
+    /// Which engine a recording should be credited to after a pass.
+    ///
+    /// Only ever writes an answer, never overwrites one with a guess. A retry that reuses a
+    /// cached transcript transcribes nothing, and the assignment this replaced stamped such a
+    /// run with the default model name - relabelling work done on this Mac as cloud work.
+    static func engineToRecord(producedNow: String?, existing: String?) -> String? {
+        producedNow ?? existing
+    }
+
     // MARK: - Retry Upload
 
-    /// Retries a failed upload for a recording that still has its local file
+    /// Retries a failed upload for a recording that still has its local file.
+    ///
+    /// `.notUploaded` counts as retryable: a recording whose processing task died with the
+    /// process never left that state, and refusing it here is what left those rows stranded
+    /// with the file sitting on disk.
     func retryUpload(_ recording: Recording) async {
-        guard recording.uploadStatus == .failed else { return }
+        guard recording.uploadStatus == .failed || recording.uploadStatus == .notUploaded else { return }
         guard FileManager.default.fileExists(atPath: recording.fileURL.path) else {
             print("📤 Retry: Local file no longer exists for slug=\(recording.tracerSlug ?? "none")")
             return

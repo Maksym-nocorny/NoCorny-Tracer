@@ -4,13 +4,19 @@ import FluidAudio
 /// On-device speaker diarization: pyannote community-1 segmentation, WeSpeaker embeddings
 /// and VBx clustering, all Core ML, all local.
 ///
-/// `OfflineDiarizerManager` is a non-Sendable class holding compiled Core ML state, so it is
-/// confined to this actor: two recordings finishing at once must not race its models. One
-/// prepared manager is kept per speaker-count constraint, because the constraint is baked in
-/// at init and preparing a fresh one costs a Core ML compile plus prewarm.
+/// `OfflineDiarizerManager` is a non-Sendable class holding compiled Core ML state, and two
+/// recordings finishing at once must not race its models. Actor isolation alone does not buy
+/// that: actors are reentrant, so the `await manager.process(...)` below suspends and lets
+/// the next call straight in - which is precisely the window the confinement was meant to
+/// close. The queue is what closes it.
+///
+/// One prepared manager is kept per speaker-count constraint, because the constraint is baked
+/// in at init and preparing a fresh one costs a Core ML compile plus prewarm.
 actor SpeakerDiarizer {
     static let shared = SpeakerDiarizer()
     private init() {}
+
+    private let runs = SerialGate()
 
     /// Keyed by the constraint, not by recording: the same "1 to 3 speakers" manager serves
     /// every recording in a session, which is the whole point of caching it.
@@ -24,6 +30,12 @@ actor SpeakerDiarizer {
     /// Callers ship the transcript unlabelled: labels are a bonus on top of a transcript that
     /// already exists, never a reason to lose one.
     func diarize(audioURL: URL, minSpeakers: Int, maxSpeakers: Int) async throws -> [DiarizedSpan] {
+        try await runs.enqueueThrowing {
+            try await self.runDiarization(audioURL: audioURL, minSpeakers: minSpeakers, maxSpeakers: maxSpeakers)
+        }
+    }
+
+    private func runDiarization(audioURL: URL, minSpeakers: Int, maxSpeakers: Int) async throws -> [DiarizedSpan] {
         let key = "\(minSpeakers)-\(maxSpeakers)"
         let manager: OfflineDiarizerManager
         if let warm = managers[key] {

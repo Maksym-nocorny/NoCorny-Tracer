@@ -457,12 +457,6 @@ struct SettingsView: View {
                     id: kind.rawValue, label: kind.displayName, value: kind,
                     isLocked: true, badge: "Apple Silicon"
                 )
-            case .cloudGemini where !entitlements.cloudTranscription,
-                 .cloudGroq where !entitlements.cloudTranscription:
-                return DropdownOption(
-                    id: kind.rawValue, label: kind.displayName, value: kind,
-                    isLocked: true, badge: "Premium"
-                )
             // Entitled, but switched off server-side. Picking it would upload a chunk and
             // collect a 503, then quietly transcribe on a different engine than the one
             // chosen -- a choice that does not exist, offered as though it did.
@@ -470,6 +464,12 @@ struct SettingsView: View {
                 return DropdownOption(
                     id: kind.rawValue, label: kind.displayName, value: kind,
                     isLocked: true, badge: "Unavailable"
+                )
+            case .cloudGemini where !entitlements.cloudTranscription,
+                 .cloudGroq where !entitlements.cloudTranscription:
+                return DropdownOption(
+                    id: kind.rawValue, label: kind.displayName, value: kind,
+                    isLocked: true, badge: "Premium"
                 )
             default:
                 return DropdownOption(id: kind.rawValue, label: kind.displayName, value: kind)

@@ -307,7 +307,18 @@ final class LocalWhisperEngine: TranscriptionEngine {
 
     // MARK: - Transcription
 
+    /// Serialises runs. `WhisperModelHost` single-flights the LOAD and then hands every
+    /// caller the same `WhisperKit` instance - and that instance carries mutable per-run
+    /// state (its audio processor, its timings). Two recordings finishing close together is
+    /// not exotic: stopping one starts its transcription, which now takes minutes rather
+    /// than one HTTP call, and nothing stopped the user recording again meanwhile.
+    private static let runs = SerialGate()
+
     func transcribe(videoURL: URL, multiSpeaker: Bool) async -> EngineResult {
+        await Self.runs.enqueue { await self.runTranscription(videoURL: videoURL, multiSpeaker: multiSpeaker) }
+    }
+
+    private func runTranscription(videoURL: URL, multiSpeaker: Bool) async -> EngineResult {
         let t0 = Date()
         // multiSpeaker is accepted and ignored: WhisperKit transcribes, it does not tell
         // speakers apart. Honouring the flag needs a diarizer, not a different prompt.

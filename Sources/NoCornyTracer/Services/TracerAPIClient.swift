@@ -372,9 +372,16 @@ final class TracerAPIClient {
     /// Generic PATCH /api/videos/{slug}. Every parameter is optional so callers
     /// can update just one slice of state — used both for "upload finished"
     /// (sharedURL/fileSize/duration) and "AI finished" (title/transcript/thumb).
-    /// Returns whether the server accepted the change. Discardable, because most callers
-    /// write fields the next sync would re-send anyway - but a caller whose change exists
-    /// ONLY on this Mac has to know, or the next sync silently reverts it.
+    /// Returns true only when the server answered 2xx. False covers "refused" AND "never
+    /// asked" - no token, nothing to send - which is what the one caller that reads it wants:
+    /// in every one of those cases the change did not reach the site.
+    ///
+    /// Discardable, because most callers write fields the next sync would re-send anyway. A
+    /// caller whose change exists ONLY on this Mac has to know, or the next sync reverts it.
+    /// Named so it can be held by a test. Inline, "did the server take it" was one
+    /// expression that a mutant could replace with `true` and pass the entire suite.
+    static func serverAccepted(_ status: Int) -> Bool { (200...299).contains(status) }
+
     @discardableResult
     func updateVideo(
         slug: String,
@@ -417,7 +424,7 @@ final class TracerAPIClient {
             guard let http = response as? HTTPURLResponse else { return false }
             LogManager.shared.log("🌐 Tracer: PATCH /api/videos/\(slug) → \(http.statusCode)")
             if http.statusCode == 401 { await handleUnauthorized() }
-            return (200...299).contains(http.statusCode)
+            return Self.serverAccepted(http.statusCode)
         } catch {
             LogManager.shared.log(error: error, message: "🌐 Tracer: updateVideo failed")
             return false

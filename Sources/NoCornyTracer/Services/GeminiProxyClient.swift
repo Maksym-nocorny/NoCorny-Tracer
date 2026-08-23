@@ -303,11 +303,11 @@ enum ProxyError: LocalizedError {
         guard let data = body.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let code = json["code"] as? String else { return nil }
-        let accountLevel = [
-            ProxyTranscriptionError.premiumRequired.code,
-            ProxyTranscriptionError.engineDisabled.code,
-        ]
-        return accountLevel.contains(code) ? code : nil
+        // One definition of "this is about the account, not the recording", shared with the
+        // orchestrator that acts on it. Two lists here would be two lists to drift apart,
+        // and a code this side emits that the other side does not know is a dead fallback -
+        // which is the bug this whole function exists to fix.
+        return AINamingService.refusalCodes.contains(code) ? code : nil
     }
 
     /// Whether retrying the SAME request could plausibly succeed.

@@ -392,14 +392,11 @@ final class CloudGeminiEngine: TranscriptionEngine {
     static func refusalAmong(_ results: [ChunkResult]) -> String? {
         let codes = results.compactMap(\.errorCode)
         // Deterministic beats switchable: a plan refusal repeats for every cloud engine,
-        // while a disabled engine says nothing about the others.
+        // while a disabled or unconfigured engine says nothing about the others.
         if codes.contains(ProxyTranscriptionError.premiumRequired.code) {
             return ProxyTranscriptionError.premiumRequired.code
         }
-        if codes.contains(ProxyTranscriptionError.engineDisabled.code) {
-            return ProxyTranscriptionError.engineDisabled.code
-        }
-        return nil
+        return codes.first { AINamingService.refusalCodes.contains($0) }
     }
 
     func transcribeChunk(
@@ -555,8 +552,8 @@ final class CloudGeminiEngine: TranscriptionEngine {
                 result.errorCode = Self.failureCode(for: error)
                 if let refusal {
                     // Asking again changes nothing: the plan and the server-side switch are
-                    // the same a second later. Stop here so the remaining chunks are not
-                    // paid for, and carry the code up so the aggregate can report it.
+                    // the same a second later. Fatal stops THIS chunk retrying; the wave
+                    // above stops the unsent ones being paid for at all.
                     result.fatal = true
                     LogManager.shared.log("🤖 Chunk \(chunk.index): 🚫 refused (\(refusal))", type: .error)
                     return result
@@ -598,6 +595,14 @@ final class CloudGeminiEngine: TranscriptionEngine {
         return kept
     }
 
+    /// Injectable so a test can watch what the wave asks of each chunk, without an encoder or
+    /// a network. nil in production.
+    ///
+    /// Worth the surface: the wave hands every chunk a speaker scope, and speech that was
+    /// transcribed under the wrong one is not recoverable later - diarization can only label
+    /// words that came back. This is the one place that decision is made for a whole run.
+    var chunkRunnerForTests: (@Sendable (PlannedChunk, Bool) async -> ChunkResult)?
+
     /// Runs a set of chunk plans through build + transcribe with a sliding-window task group.
     ///
     /// Chunk audio is built lazily inside each task so at most `concurrency` AAC encodes run
@@ -617,34 +622,61 @@ final class CloudGeminiEngine: TranscriptionEngine {
         var outcomes: [Int: ChunkResult] = [:]
         guard !plans.isEmpty else { return outcomes }
 
+        // Shared with Groq on purpose: an account refusal or an admin switch explains every
+        // chunk at once, so hearing it on chunk 1 of 12 must not cost eleven more encodes and
+        // eleven more uploads to be told the same thing eleven more times.
+        let verdict = RunVerdict()
+
+        // ONE description of how a chunk is run, used by both the seeding loop and the refill
+        // loop. They used to spell it out separately, three lines apart, and the seeding one
+        // omitted `multiSpeaker` - so the first `concurrency` chunks of every chunked run were
+        // transcribed with the narrator-only prompt while the rest heard everyone. On a call
+        // under about fifteen minutes that was the entire transcript. The helper does not
+        // capture the task group, which is what made a shared helper impossible before.
+        @Sendable func run(_ plan: PlannedChunk) async -> ChunkResult {
+            if let stub = chunkRunnerForTests { return await stub(plan, multiSpeaker) }
+            return await runOneChunk(plan: plan, totalChunks: totalChunks, sourceAsset: sourceAsset,
+                              sourceTrack: sourceTrack, originalDuration: originalDuration,
+                              glossary: glossary, extraInstruction: extraInstruction,
+                              multiSpeaker: multiSpeaker)
+        }
+
         await withTaskGroup(of: ChunkResult.self) { group in
             var next = 0
 
-            // Both loops are inlined deliberately: a nested helper capturing the `inout`
-            // TaskGroup does not compile.
             while next < min(concurrency, plans.count) {
                 let plan = plans[next]
                 next += 1
-                group.addTask { [self] in
-                    await runOneChunk(plan: plan, totalChunks: totalChunks, sourceAsset: sourceAsset,
-                                      sourceTrack: sourceTrack, originalDuration: originalDuration,
-                                      glossary: glossary, extraInstruction: extraInstruction)
-                }
+                group.addTask { await run(plan) }
             }
 
             while let outcome = await group.next() {
                 outcomes[outcome.index] = outcome
                 persistChunkScratch(key: scratchKey, result: outcome)
+                await verdict.record(code: outcome.errorCode)
+                // Drain what is already in flight, but schedule nothing further.
+                if await verdict.current() != nil { continue }
                 if next < plans.count {
                     let plan = plans[next]
                     next += 1
-                    group.addTask { [self] in
-                        await runOneChunk(plan: plan, totalChunks: totalChunks, sourceAsset: sourceAsset,
-                                          sourceTrack: sourceTrack, originalDuration: originalDuration,
-                                          glossary: glossary, extraInstruction: extraInstruction,
-                                          multiSpeaker: multiSpeaker)
-                    }
+                    group.addTask { await run(plan) }
                 }
+            }
+        }
+
+        // Record the chunks that were never scheduled, rather than leaving them absent. The
+        // retry wave filters on "missing, or failed but recoverable" - and missing would send
+        // every skipped chunk straight back through the encode this just avoided.
+        if let stopCode = await verdict.current() {
+            let skipped = plans.filter { outcomes[$0.index] == nil }
+            for plan in skipped {
+                var result = ChunkResult(index: plan.index, status: .failed)
+                result.errorCode = stopCode
+                result.fatal = true
+                outcomes[plan.index] = result
+            }
+            if !skipped.isEmpty {
+                LogManager.shared.log("🤖 Chunked: 🚫 \(stopCode) — skipped \(skipped.count) of \(plans.count) chunks unsent")
             }
         }
         return outcomes
@@ -658,7 +690,12 @@ final class CloudGeminiEngine: TranscriptionEngine {
         originalDuration: Double,
         glossary: [String],
         extraInstruction: String,
-        multiSpeaker: Bool = false
+        /// No default on purpose. This defaulted to false, and the seeding loop three lines
+        /// above the refill loop omitted it - so the first `concurrency` chunks of every
+        /// chunked run were transcribed with the "only the primary speaker" prompt while the
+        /// rest heard everyone. On a call under ~15 minutes that is the whole transcript, and
+        /// speech that was never transcribed cannot be recovered by re-labelling.
+        multiSpeaker: Bool
     ) async -> ChunkResult {
         guard let chunk = await AudioPreparation.buildChunkAudio(sourceAsset: sourceAsset, sourceTrack: sourceTrack, plan: plan) else {
             var failed = ChunkResult(index: plan.index, status: .failed)
@@ -1132,7 +1169,7 @@ final class CloudGeminiEngine: TranscriptionEngine {
         return "If a span of audio has no clear primary speaker, skip it. If the entire \(unit) has no clear primary speaker, set `srt` to exactly the string \"NO_SPEECH\"."
     }
 
-    func combinedPrompt(multiSpeaker: Bool = false) -> String {
+    func combinedPrompt(multiSpeaker: Bool) -> String {
         return """
         You receive an audio track and 3-10 screenshots from a screen recording. Produce a single JSON object with two fields: `srt` and `name`.
 
@@ -1204,7 +1241,7 @@ final class CloudGeminiEngine: TranscriptionEngine {
     /// combined prompt verbatim; the `name` half moves to `namingService.namingPrompt`. The clip-relative
     /// timestamp rules are new and critical: the model is told it is part k of n, which is
     /// exactly the framing that can tempt it to emit whole-recording timestamps.
-    func chunkTranscriptionPrompt(part: Int, of total: Int, clipSeconds: Double, glossary: [String], multiSpeaker: Bool = false) -> String {
+    func chunkTranscriptionPrompt(part: Int, of total: Int, clipSeconds: Double, glossary: [String], multiSpeaker: Bool) -> String {
         let d = String(format: "%.0f", clipSeconds)
         return """
         You receive ONE AUDIO CLIP taken from a longer screen recording (part \(part) of \(total)). Transcribe it as SRT subtitles.

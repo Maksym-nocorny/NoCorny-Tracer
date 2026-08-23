@@ -170,6 +170,8 @@ final class TranscriptionProxyClient {
             return .premiumRequired
         case 503 where code == "engine_disabled":
             return .engineDisabled
+        case 503 where code == "engine_not_configured":
+            return .engineNotConfigured
         case 408, 429, 500...599:
             // Everything else in the 5xx band, 502 included, is the proxy or Groq itself
             // being briefly unavailable. An upstream rate limit arrives here too.
@@ -222,6 +224,11 @@ enum ProxyTranscriptionError: LocalizedError {
     case premiumRequired
     /// An admin turned this engine off server-side (503 `engine_disabled`).
     case engineDisabled
+    /// The engine is switched on but has no API key on the server (503
+    /// `engine_not_configured`). Indistinguishable from an outage without the code, and
+    /// treating it as one costs three retries a chunk, twice, for an answer that will not
+    /// change until someone sets an environment variable.
+    case engineNotConfigured
     /// The proxy or Groq was briefly unavailable, an upstream rate limit included.
     case transient(status: Int)
     /// A deterministic refusal: the request itself is wrong, or the token is not accepted.
@@ -235,6 +242,8 @@ enum ProxyTranscriptionError: LocalizedError {
             return "Cloud transcription is not included in this plan"
         case .engineDisabled:
             return "Cloud transcription is temporarily switched off"
+        case .engineNotConfigured:
+            return "This transcription engine is not set up on the server"
         case .transient(let status):
             return "Transcription proxy is unavailable (\(status))"
         case .fatal(let status, let message):
@@ -248,6 +257,7 @@ enum ProxyTranscriptionError: LocalizedError {
         case .notSignedIn: return "not_signed_in"
         case .premiumRequired: return "premium_required"
         case .engineDisabled: return "engine_disabled"
+        case .engineNotConfigured: return "engine_not_configured"
         case .transient(let status): return "groq_transient_\(status)"
         case .fatal(let status, _): return "groq_fatal_\(status)"
         }
@@ -258,7 +268,7 @@ enum ProxyTranscriptionError: LocalizedError {
         switch self {
         case .transient:
             return true
-        case .notSignedIn, .premiumRequired, .engineDisabled, .fatal:
+        case .notSignedIn, .premiumRequired, .engineDisabled, .engineNotConfigured, .fatal:
             return false
         }
     }

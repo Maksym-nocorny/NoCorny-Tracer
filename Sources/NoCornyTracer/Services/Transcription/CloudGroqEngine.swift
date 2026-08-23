@@ -486,6 +486,11 @@ final class CloudGroqEngine: TranscriptionEngine {
             // Deterministic: this account will be refused again in a second and in an hour.
             return (ProxyTranscriptionError.premiumRequired.code, true)
         }
+        if codes.contains(ProxyTranscriptionError.engineNotConfigured.code) {
+            // Same shape as the switch: nothing about this recording, and another engine can
+            // answer it right now.
+            return (ProxyTranscriptionError.engineNotConfigured.code, false)
+        }
         if codes.contains(ProxyTranscriptionError.engineDisabled.code) {
             // NOT fatal, on purpose. An admin switched this engine off server-side, which
             // says nothing about the recording, so the orchestrator is meant to fall back to
@@ -521,12 +526,22 @@ actor RunVerdict {
 
     func record(_ error: ProxyTranscriptionError) {
         switch error {
-        case .premiumRequired, .engineDisabled, .notSignedIn:
+        case .premiumRequired, .engineDisabled, .engineNotConfigured, .notSignedIn:
             if stopCode == nil { stopCode = error.code }
         case .transient, .fatal:
             // A 4xx on one chunk can genuinely be about that chunk (an oversized body from
             // an unusually dense encode), so it never stops the others.
             break
+        }
+    }
+
+    /// Same decision from a code rather than a typed error, for the engine whose proxy
+    /// client throws `ProxyError`. Kept on this actor so there is ONE definition of "this
+    /// answer applies to every chunk" rather than two that can drift.
+    func record(code: String?) {
+        guard let code, stopCode == nil else { return }
+        if AINamingService.refusalCodes.contains(code) {
+            stopCode = code
         }
     }
 

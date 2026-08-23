@@ -54,13 +54,22 @@ final class AINamingService {
     /// Internal rather than private on purpose: this set is the contract between an engine's
     /// `errorCode` and the fallback below, and a test has to be able to name both sides of it.
     /// The default engine shipped emitting a stringified error here, which matched nothing.
-    static let refusalCodes: Set<String> = ["engine_disabled", "premium_required"]
+    static let refusalCodes: Set<String> = ["engine_disabled", "premium_required", "engine_not_configured"]
 
     /// Injection point for tests.
-    init(engine: TranscriptionEngine, namingService: NamingService) {
-        self.engines = [engine.kind: engine]
+    convenience init(engine: TranscriptionEngine, namingService: NamingService) {
+        self.init(engines: [engine], preferring: engine.kind, namingService: namingService)
+    }
+
+    /// Injection point for tests that need more than one engine.
+    ///
+    /// The single-engine initialiser above cannot exercise the walk below - with one engine
+    /// in the map there is nobody to walk to - and that is exactly why the walk shipped with
+    /// no coverage at all: deleting it outright passed the whole suite.
+    init(engines: [TranscriptionEngine], preferring kind: TranscriptionEngineKind, namingService: NamingService) {
+        self.engines = Dictionary(engines.map { ($0.kind, $0) }, uniquingKeysWith: { first, _ in first })
         self.namingService = namingService
-        self.preferredKind = { engine.kind }
+        self.preferredKind = { kind }
         self.expectedSpeakers = { .auto }
     }
 
@@ -194,12 +203,28 @@ final class AINamingService {
     /// Sent without frames: with a real transcript in hand the text carries the meaning, and
     /// stills dominate the cost of this call.
     func nameExistingTranscript(_ srt: String) async -> NamingCallResult? {
-        guard namingService.isReady || OnDeviceNaming.isAvailable else { return nil }
-        let transcript = namingService.namingTranscriptText(SrtCodec.parseAndRepairSrt(srt))
-        guard !transcript.isEmpty else { return nil }
+        guard let transcript = nameableText(from: srt) else { return nil }
         return await namingService.generateNameFromTranscript(
             transcript: transcript, frames: [], glossary: []
         )
+    }
+
+    /// The text to name, or nil when there is nothing to name or nobody to name it.
+    ///
+    /// Separated out because it is the half that can swallow everything silently: if this
+    /// starts returning nil, no recording gets a title from any engine except Gemini's
+    /// single-call path, and nothing anywhere fails.
+    func nameableText(from srt: String) -> String? {
+        nameableText(from: srt, canName: namingService.isReady || OnDeviceNaming.isAvailable)
+    }
+
+    /// The capability is a parameter so this can be exercised: whether anyone can name
+    /// anything depends on a Tracer token and on whether this Mac has Apple Intelligence
+    /// switched on, neither of which a test should be asking about.
+    func nameableText(from srt: String, canName: Bool) -> String? {
+        guard canName else { return nil }
+        let transcript = namingService.namingTranscriptText(SrtCodec.parseAndRepairSrt(srt))
+        return transcript.isEmpty ? nil : transcript
     }
 
     private func labelSpeakers(in srt: String, videoURL: URL, systemAudioURL: URL?, expected: ExpectedSpeakers) async -> String {

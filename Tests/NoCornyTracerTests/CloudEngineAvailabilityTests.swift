@@ -52,4 +52,14 @@ final class CloudEngineAvailabilityTests: XCTestCase {
                           TranscriptionEngineKind.cloudGemini.rawValue,
                           "if these ever coincide, delete serverName rather than letting it rot")
     }
+
+    /// A kill switch has to actually kill. An empty list is the server saying "no cloud
+    /// engines", and reading it as "the server said nothing" would turn the switch into a
+    /// no-op exactly when someone reaches for it.
+    func testAnEmptyListWithdrawsEveryCloudEngine() {
+        let e = entitlements([])
+        XCTAssertFalse(e.offersCloudEngine(.cloudGemini))
+        XCTAssertFalse(e.offersCloudEngine(.cloudGroq))
+        XCTAssertTrue(e.offersCloudEngine(.localWhisper), "the on-device engine is not the server's to withdraw")
+    }
 }
