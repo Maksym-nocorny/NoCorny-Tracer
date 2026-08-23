@@ -388,23 +388,34 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // so it survives to be uploaded/retried on next launch.
         guard let appState = AppState.shared else { return .terminateNow }
         let manager = appState.recordingManager
+        // Three states, not one. `isRecording` alone was wrong in both directions: a stop
+        // already in flight still reads as recording, so this called stopRecording again and
+        // got nil back - which it read as "nothing to wait for" and terminated the process on
+        // top of a file that had not been finalised yet.
+        let busy = {
+            QuitDecision.isBusy(isRecording: manager.isRecording,
+                                isStopping: manager.isStopping,
+                                isFinishing: manager.isFinishing)
+        }
         // `isFinishing` covers the window after capture ends and before the system-audio
         // merge finishes. The row is already saved by then, so quitting no longer loses the
         // take - but it does lose the far side of the call, and on a long meeting that
         // window is minutes of looking completely idle.
-        guard manager.isRecording || manager.isFinishing else { return .terminateNow }
+        guard busy() else { return .terminateNow }
         Task { @MainActor in
-            if manager.isRecording {
+            // Only start a stop if nobody else has. A stop already running finalises the file
+            // and saves the row on its own; joining in just gets nil.
+            if QuitDecision.shouldStartAStop(isRecording: manager.isRecording, isStopping: manager.isStopping) {
                 await appState.stopRecording()
             } else {
-                LogManager.shared.log("🔊 System audio: quit requested mid-merge - waiting for the mix")
-                // Bounded: the recording itself is safe either way, and macOS force-quits an
-                // app that stalls here. A minute buys most merges; the rest lose only the
-                // system-audio mix, and the mic-only file is untouched on disk.
-                let deadline = Date().addingTimeInterval(60)
-                while manager.isFinishing && Date() < deadline {
-                    try? await Task.sleep(nanoseconds: 200_000_000)
-                }
+                LogManager.shared.log("🔴 Recording: quit requested while a take is being finished - waiting")
+            }
+            // Bounded: the recording itself is safe either way, and macOS force-quits an app
+            // that stalls here. A minute buys most merges; the rest lose only the system-audio
+            // mix, and the mic-only file is untouched on disk.
+            let deadline = Date().addingTimeInterval(60)
+            while busy() && Date() < deadline {
+                try? await Task.sleep(nanoseconds: 200_000_000)
             }
             NSApplication.shared.reply(toApplicationShouldTerminate: true)
         }

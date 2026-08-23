@@ -18,10 +18,7 @@ final class RecordingManager {
     /// meeting.
     var isFinishing = false
 
-    /// Whether the current stop already handed its take to the caller. The caller needs it to
-    /// tell "this take was never saved" from "it was saved and then deleted while the merge
-    /// ran" - the second must not be brought back.
-    private(set) var onCaptureFinishedForThisStop = false
+
     var recordingDuration: TimeInterval = 0
     var currentFileURL: URL?
     
@@ -50,7 +47,7 @@ final class RecordingManager {
     /// second stop arriving in that window (the button, the hotkey, the menu item, the quit
     /// handler and the writer-failure path are five separate doors) walked into the same
     /// teardown and could take the sidecar out from under the first.
-    private var isStopping = false
+    private(set) var isStopping = false
     /// Guards togglePause against re-entrancy across its 0.5s resume sleep.
     private var isTogglingPause = false
 
@@ -143,7 +140,7 @@ final class RecordingManager {
                     guard let self, self.isRecording else { return }
                     LogManager.shared.log("🔴 Recording: screen stream error — stopping. \(error.localizedDescription)", type: .error)
                     let interrupted = await self.stopRecording(playSound: false)
-                    self.onInterrupted?(interrupted)
+                    self.onInterrupted?(interrupted?.take)
                 }
             }
 
@@ -235,11 +232,13 @@ final class RecordingManager {
         playSound: Bool = true,
         mergeSystemAudio: Bool = true,
         onCaptureFinished: ((Recording) -> Void)? = nil
-    ) async -> Recording? {
+    ) async -> StopOutcome? {
         guard isRecording, !isStopping else { return nil }
         isStopping = true
+        // Belt and braces for the early returns below; the teardown also clears it explicitly
+        // once the file is finalised, because the merge that follows is guarded separately
+        // and must not block the next recording's stop for its whole duration.
         defer { isStopping = false }
-        onCaptureFinishedForThisStop = false
 
         // Stop timer
         stopTimer()
@@ -276,7 +275,16 @@ final class RecordingManager {
             // No merge onto a salvaged partial - it is already damaged goods and the swap
             // is the one step that could lose it. The sidecar is still handed over.
             salvaged?.systemAudioURL = systemAudio?.url
-            return salvaged
+            // `.recovered`, never `.finished`: this path returns without handing anything to
+            // the caller, so the take is one nobody has seen. Marking it as already saved
+            // would make the caller treat "not in the list" as "deleted" and drop the
+            // recording the salvage just rescued.
+            //
+            // Not reachable from a test: getting here needs a live RecordingManager, and
+            // building one in a test process aborts inside the capture stack. The two
+            // outcomes are named rather than boolean so that being wrong here takes a wrong
+            // word rather than a flipped flag, and both factories are pinned.
+            return salvaged.map { StopOutcome.recovered($0) }
         }
 
         let finalDuration = lastStartTime != nil ? accumulatedDuration + Date().timeIntervalSince(lastStartTime!) : accumulatedDuration
@@ -288,6 +296,11 @@ final class RecordingManager {
         // also pins the values this take needs (start time, output URL) into locals, so a
         // recording started while the merge runs cannot rewrite them underneath us.
         isRecording = false
+        // Down together with isRecording, and BEFORE the merge. Held across the merge it made
+        // every door to stop a NEW recording a silent no-op for minutes - and a quit in that
+        // state saw isRecording true, got nil back, and terminated the process on top of a
+        // live, unfinalised file. The merge has isFinishing.
+        isStopping = false
         isPaused = false
         recordingDuration = 0
         accumulatedDuration = 0
@@ -317,10 +330,7 @@ final class RecordingManager {
 
         return await Self.finishTake(
             recording,
-            handOver: { [weak self] take in
-                self?.onCaptureFinishedForThisStop = true
-                onCaptureFinished?(take)
-            },
+            handOver: { take in onCaptureFinished?(take) },
             markFinishing: { [weak self] busy in self?.isFinishing = busy },
             merge: {
                 guard shouldMerge, let systemAudio else { return }
@@ -331,6 +341,37 @@ final class RecordingManager {
                 return (attrs?[.size] as? NSNumber)?.uint64Value
             }
         )
+    }
+
+    /// What a stop produced, and whether the caller has already seen it.
+    ///
+    /// Returned rather than left on the manager as a flag someone has to remember to read at
+    /// the right moment: the caller needs "already saved" to tell a take that was never
+    /// written from one that was written and then deleted while the merge ran, and a mutable
+    /// field could be - and was - left unset with every test still green.
+    struct StopOutcome {
+        let take: Recording
+        let wasHandedOver: Bool
+
+        /// Deliberately not constructible with an arbitrary flag. There are exactly two ways
+        /// a stop ends, they mean opposite things to the caller, and a boolean argument is
+        /// something a careless edit can flip with every test still passing. Naming them
+        /// makes the wrong one a wrong word rather than a wrong value.
+        fileprivate init(take: Recording, wasHandedOver: Bool) {
+            self.take = take
+            self.wasHandedOver = wasHandedOver
+        }
+
+        /// The take was handed to the caller before the merge, so it is already saved.
+        static func finished(_ take: Recording) -> StopOutcome {
+            StopOutcome(take: take, wasHandedOver: true)
+        }
+
+        /// Recovered from a writer that died. Nobody has seen it, so the caller must add it -
+        /// treating it as already saved would quietly throw the recovered recording away.
+        static func recovered(_ take: Recording) -> StopOutcome {
+            StopOutcome(take: take, wasHandedOver: false)
+        }
     }
 
     /// Purely bookkeeping for a stop, in the order it has to happen.
@@ -352,14 +393,19 @@ final class RecordingManager {
         markFinishing: (Bool) -> Void,
         merge: () async -> Void,
         sizeOnDisk: () -> UInt64?
-    ) async -> Recording {
+    ) async -> StopOutcome {
         var take = take
         handOver(take)
         markFinishing(true)
         await merge()
         markFinishing(false)
         take.fileSize = sizeOnDisk()
-        return take
+        // Handed over by construction: the line above is unconditional, so this is the one
+        // place the answer cannot drift from the truth. Tracking it in a variable at the call
+        // site instead meant a mutant could leave it false with every test still green, and
+        // the caller would then treat a saved take as one it had never seen - bringing back
+        // rows the user deleted while the merge ran.
+        return .finished(take)
     }
 
     // MARK: - Salvage

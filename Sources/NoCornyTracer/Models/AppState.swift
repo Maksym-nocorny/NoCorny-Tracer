@@ -6,6 +6,10 @@ import ServiceManagement
 /// Central app state managing all sub-managers and user preferences
 @Observable
 final class AppState {
+    /// Test seam: every preference read/write goes through here. Production uses .standard;
+    /// tests pass a throwaway suite so building an AppState neither reads nor writes the
+    /// developer's real defaults.
+    @ObservationIgnored private let defaults: UserDefaults
     // MARK: - Managers
     let recordingManager = RecordingManager()
     let dropboxAuthManager = DropboxAuthManager()
@@ -80,14 +84,14 @@ final class AppState {
     /// Processing (Voice Isolation, AGC off) suppresses background noise at the cost of some quality.
     var reduceBackgroundNoise: Bool = false {
         didSet {
-            UserDefaults.standard.set(reduceBackgroundNoise, forKey: "reduceBackgroundNoise")
+            defaults.set(reduceBackgroundNoise, forKey: "reduceBackgroundNoise")
         }
     }
     /// Off by default: system audio is other people talking, so recording it is a
     /// deliberate choice rather than something a screen recorder quietly starts doing.
     var recordSystemAudio: Bool = false {
         didSet {
-            UserDefaults.standard.set(recordSystemAudio, forKey: "recordSystemAudio")
+            defaults.set(recordSystemAudio, forKey: "recordSystemAudio")
         }
     }
     /// Which engine transcribes. Defaults to the cloud so nothing changes for anyone
@@ -98,12 +102,12 @@ final class AppState {
     /// from the Recordings list rather than by recording again.
     var expectedSpeakers: ExpectedSpeakers = .auto {
         didSet {
-            UserDefaults.standard.set(expectedSpeakers.rawValue, forKey: "expectedSpeakers")
+            defaults.set(expectedSpeakers.rawValue, forKey: "expectedSpeakers")
         }
     }
     var transcriptionEngine: TranscriptionEngineKind = .cloudGemini {
         didSet {
-            UserDefaults.standard.set(transcriptionEngine.rawValue, forKey: "transcriptionEngine")
+            defaults.set(transcriptionEngine.rawValue, forKey: "transcriptionEngine")
         }
     }
     /// Label transcript cues with who said them. Off by default: it costs minutes of Core ML
@@ -111,42 +115,42 @@ final class AppState {
     /// fair surprise for someone who only wanted subtitles.
     var diarizationEnabled: Bool = false {
         didSet {
-            UserDefaults.standard.set(diarizationEnabled, forKey: "diarizationEnabled")
+            defaults.set(diarizationEnabled, forKey: "diarizationEnabled")
         }
     }
     var appTheme: AppTheme = .light {
         didSet {
-            UserDefaults.standard.set(appTheme.rawValue, forKey: "appTheme")
+            defaults.set(appTheme.rawValue, forKey: "appTheme")
             updateAppAppearance()
         }
     }
     var autoUploadEnabled: Bool = true
     var launchAtLogin: Bool = false {
         didSet {
-            UserDefaults.standard.set(launchAtLogin, forKey: "launchAtLogin")
+            defaults.set(launchAtLogin, forKey: "launchAtLogin")
         }
     }
     var videoResolution: VideoResolution = .hd1080 {
         didSet {
-            UserDefaults.standard.set(videoResolution.rawValue, forKey: "videoResolution")
+            defaults.set(videoResolution.rawValue, forKey: "videoResolution")
         }
     }
     var videoFrameRate: VideoFrameRate = .fps30 {
         didSet {
-            UserDefaults.standard.set(videoFrameRate.rawValue, forKey: "videoFrameRate")
+            defaults.set(videoFrameRate.rawValue, forKey: "videoFrameRate")
         }
     }
     
     // MARK: - Camera Preferences
     var isCameraEnabled: Bool = false {
         didSet {
-            UserDefaults.standard.set(isCameraEnabled, forKey: "isCameraEnabled")
+            defaults.set(isCameraEnabled, forKey: "isCameraEnabled")
             updateCameraState()
         }
     }
     var selectedCameraDeviceID: String? {
         didSet {
-            UserDefaults.standard.set(selectedCameraDeviceID, forKey: "selectedCameraDeviceID")
+            defaults.set(selectedCameraDeviceID, forKey: "selectedCameraDeviceID")
             cameraManager.selectedDeviceID = selectedCameraDeviceID
         }
     }
@@ -195,37 +199,38 @@ final class AppState {
     /// "Dropbox Connected" success sheet.
     private var hasCompletedInitialDropboxSync = false
 
-    init() {
-        if let themeRaw = UserDefaults.standard.string(forKey: "appTheme"),
+    init(defaults: UserDefaults = .standard, connectsToTracer: Bool = true) {
+        self.defaults = defaults
+        if let themeRaw = defaults.string(forKey: "appTheme"),
            let theme = AppTheme(rawValue: themeRaw) {
             self.appTheme = theme
         }
-        self.launchAtLogin = UserDefaults.standard.bool(forKey: "launchAtLogin")
-        self.reduceBackgroundNoise = UserDefaults.standard.bool(forKey: "reduceBackgroundNoise")
-        self.recordSystemAudio = UserDefaults.standard.bool(forKey: "recordSystemAudio")
-        self.diarizationEnabled = UserDefaults.standard.bool(forKey: "diarizationEnabled")
-        if let speakersRaw = UserDefaults.standard.string(forKey: "expectedSpeakers"),
+        self.launchAtLogin = defaults.bool(forKey: "launchAtLogin")
+        self.reduceBackgroundNoise = defaults.bool(forKey: "reduceBackgroundNoise")
+        self.recordSystemAudio = defaults.bool(forKey: "recordSystemAudio")
+        self.diarizationEnabled = defaults.bool(forKey: "diarizationEnabled")
+        if let speakersRaw = defaults.string(forKey: "expectedSpeakers"),
            let speakers = ExpectedSpeakers(rawValue: speakersRaw) {
             self.expectedSpeakers = speakers
         }
-        if let engineRaw = UserDefaults.standard.string(forKey: "transcriptionEngine"),
+        if let engineRaw = defaults.string(forKey: "transcriptionEngine"),
            let engine = TranscriptionEngineKind(rawValue: engineRaw) {
             self.transcriptionEngine = engine
         }
-        self.noiseSuggestionDismissedForever = UserDefaults.standard.bool(forKey: Self.noiseSuggestionDismissedKey)
-        self.isCameraEnabled = UserDefaults.standard.bool(forKey: "isCameraEnabled")
-        self.selectedCameraDeviceID = UserDefaults.standard.string(forKey: "selectedCameraDeviceID")
-        if let resRaw = UserDefaults.standard.string(forKey: "videoResolution"),
+        self.noiseSuggestionDismissedForever = defaults.bool(forKey: Self.noiseSuggestionDismissedKey)
+        self.isCameraEnabled = defaults.bool(forKey: "isCameraEnabled")
+        self.selectedCameraDeviceID = defaults.string(forKey: "selectedCameraDeviceID")
+        if let resRaw = defaults.string(forKey: "videoResolution"),
            let res = VideoResolution(rawValue: resRaw) {
             self.videoResolution = res
         }
-        if let fpsRaw = UserDefaults.standard.object(forKey: "videoFrameRate") as? Int,
+        if let fpsRaw = defaults.object(forKey: "videoFrameRate") as? Int,
            let fps = VideoFrameRate(rawValue: fpsRaw) {
             self.videoFrameRate = fps
         }
         
-        let storedUsed = UserDefaults.standard.double(forKey: Self.dropboxUsedSpaceKey)
-        let storedAllocated = UserDefaults.standard.double(forKey: Self.dropboxAllocatedSpaceKey)
+        let storedUsed = defaults.double(forKey: Self.dropboxUsedSpaceKey)
+        let storedAllocated = defaults.double(forKey: Self.dropboxAllocatedSpaceKey)
         if storedAllocated > 0 {
             self.dropboxUsedSpace = UInt64(storedUsed)
             self.dropboxAllocatedSpace = UInt64(storedAllocated)
@@ -329,7 +334,7 @@ final class AppState {
         // local library cache (in case the user disconnected on the web while
         // the app was closed) BEFORE reloadRecordingsFromTracer would otherwise
         // run an incremental `?since=` sync that wouldn't notice the deletions.
-        if tracerAPIClient.isSignedIn {
+        if connectsToTracer, tracerAPIClient.isSignedIn {
             Task {
                 await self.syncDropboxFromTracer()
                 await self.reloadRecordingsFromTracer()
@@ -409,8 +414,8 @@ final class AppState {
     }
 
     private func checkFirstLaunch() {
-        if !UserDefaults.standard.bool(forKey: Self.hasLaunchedBeforeKey) {
-            UserDefaults.standard.set(true, forKey: Self.hasLaunchedBeforeKey)
+        if !defaults.bool(forKey: Self.hasLaunchedBeforeKey) {
+            defaults.set(true, forKey: Self.hasLaunchedBeforeKey)
             showLaunchAtLoginPrompt = true
         }
     }
@@ -462,7 +467,7 @@ final class AppState {
         presentNoiseSuggestion?(false)
         if forever {
             noiseSuggestionDismissedForever = true
-            UserDefaults.standard.set(true, forKey: Self.noiseSuggestionDismissedKey)
+            defaults.set(true, forKey: Self.noiseSuggestionDismissedKey)
         }
     }
 
@@ -526,7 +531,8 @@ final class AppState {
     /// Abort recording: stops and discards the file without saving or uploading
     func abortRecording() async {
         // Nothing to merge into a file that is about to be deleted.
-        guard let recording = await recordingManager.stopRecording(playSound: false, mergeSystemAudio: false) else { return }
+        guard let outcome = await recordingManager.stopRecording(playSound: false, mergeSystemAudio: false) else { return }
+        let recording = outcome.take
         
         // Play abort sound
         SoundManager.shared.play(.abort)
@@ -551,13 +557,10 @@ final class AppState {
             self.saveRecordings()
         })
         // nil means the writer produced nothing and salvage found nothing either.
-        guard let recording = stopped else { return }
+        guard let stopped else { return }
+        let recording = stopped.take
 
-        guard let updated = Self.applyingStopResult(
-            recording,
-            alreadySaved: recordingManager.onCaptureFinishedForThisStop,
-            to: recordings
-        ) else {
+        guard let updated = Self.applyingStopResult(stopped, to: recordings) else {
             LogManager.shared.log("🗑️ Recording: deleted while its audio was being mixed - not bringing it back")
             return
         }
@@ -576,7 +579,7 @@ final class AppState {
     /// flush — the old -16341 killer — has been removed from the writer.
     private func recoverFromWriterFailure() async {
         guard recordingManager.isRecording else { return }
-        if let salvaged = await recordingManager.stopRecording(playSound: false) {
+        if let salvaged = await recordingManager.stopRecording(playSound: false)?.take {
             // Through the same door as a normal stop: this path can also come back with a
             // take that was already written once, and two rows for one recording is worse
             // than the failure that got us here.
@@ -1304,12 +1307,12 @@ final class AppState {
 
     private func saveRecordings() {
         if let data = try? JSONEncoder().encode(recordings) {
-            UserDefaults.standard.set(data, forKey: recordingsKey)
+            defaults.set(data, forKey: recordingsKey)
         }
     }
 
     private func loadRecordings() {
-        guard let data = UserDefaults.standard.data(forKey: recordingsKey),
+        guard let data = defaults.data(forKey: recordingsKey),
               let decoded = try? JSONDecoder().decode([Recording].self, from: data) else { return }
         // Any recording still marked .uploading is a leftover from a session that was
         // killed mid-upload — there is no in-flight task for it now, so it would spin
@@ -1446,13 +1449,12 @@ final class AppState {
     /// The salvage path never hands anything over, so its take has never been saved and must
     /// still be added.
     static func applyingStopResult(
-        _ take: Recording,
-        alreadySaved: Bool,
+        _ outcome: RecordingManager.StopOutcome,
         to list: [Recording]
     ) -> [Recording]? {
-        guard alreadySaved else { return writing(take, into: list) }
-        guard list.contains(where: { $0.id == take.id }) else { return nil }
-        return writing(take, into: list)
+        guard outcome.wasHandedOver else { return writing(outcome.take, into: list) }
+        guard list.contains(where: { $0.id == outcome.take.id }) else { return nil }
+        return writing(outcome.take, into: list)
     }
 
     /// Writes a take into the list: replacing the row it already has, or adding it at the
@@ -1592,7 +1594,7 @@ final class AppState {
     private func hasLocalDropboxLibraryState() -> Bool {
         if !recordings.isEmpty { return true }
         if dropboxAllocatedSpace > 0 || dropboxUsedSpace > 0 { return true }
-        if UserDefaults.standard.object(forKey: Self.lastTracerSyncAtKey) != nil {
+        if defaults.object(forKey: Self.lastTracerSyncAtKey) != nil {
             return true
         }
         return false
@@ -1609,7 +1611,7 @@ final class AppState {
         isSyncingDropbox = true
         defer { isSyncingDropbox = false }
 
-        let lastSync = UserDefaults.standard.object(forKey: Self.lastTracerSyncAtKey) as? Date
+        let lastSync = defaults.object(forKey: Self.lastTracerSyncAtKey) as? Date
         guard let envelope = await tracerAPIClient.listVideos(since: lastSync) else { return }
 
         var working = recordings
@@ -1679,15 +1681,15 @@ final class AppState {
 
         if let used = envelope.usage?.usedBytes, used >= 0 {
             dropboxUsedSpace = UInt64(used)
-            UserDefaults.standard.set(Double(used), forKey: Self.dropboxUsedSpaceKey)
+            defaults.set(Double(used), forKey: Self.dropboxUsedSpaceKey)
         }
         if let allocated = envelope.usage?.allocatedBytes, allocated > 0 {
             dropboxAllocatedSpace = UInt64(allocated)
-            UserDefaults.standard.set(Double(allocated), forKey: Self.dropboxAllocatedSpaceKey)
+            defaults.set(Double(allocated), forKey: Self.dropboxAllocatedSpaceKey)
         }
 
         if let serverTime = envelope.serverTime {
-            UserDefaults.standard.set(serverTime, forKey: Self.lastTracerSyncAtKey)
+            defaults.set(serverTime, forKey: Self.lastTracerSyncAtKey)
         }
     }
 
@@ -1704,9 +1706,9 @@ final class AppState {
         saveRecordings()
         dropboxUsedSpace = 0
         dropboxAllocatedSpace = 0
-        UserDefaults.standard.removeObject(forKey: Self.dropboxUsedSpaceKey)
-        UserDefaults.standard.removeObject(forKey: Self.dropboxAllocatedSpaceKey)
-        UserDefaults.standard.removeObject(forKey: Self.lastTracerSyncAtKey)
+        defaults.removeObject(forKey: Self.dropboxUsedSpaceKey)
+        defaults.removeObject(forKey: Self.dropboxAllocatedSpaceKey)
+        defaults.removeObject(forKey: Self.lastTracerSyncAtKey)
     }
 
     // MARK: - Open Recordings Folder

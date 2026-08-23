@@ -215,6 +215,16 @@ final class AudioCaptureManager: NSObject {
         }
     }
 
+    /// Whether a tap can be installed on this format at all.
+    ///
+    /// When the last input device is gone - a Mac whose only microphone was the headphones
+    /// that just died - the node reports 0 Hz and 0 channels, and `installTap` raises an
+    /// exception rather than returning an error. Crashing mid-recording is a worse answer to
+    /// a lost microphone than saying it is lost.
+    static func isUsableInputFormat(sampleRate: Double, channelCount: AVAudioChannelCount) -> Bool {
+        sampleRate > 0 && channelCount > 0
+    }
+
     private func installTap(on input: AVAudioInputNode, format: AVAudioFormat) {
         input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] pcmBuffer, when in
             guard let self = self else { return }
@@ -245,7 +255,7 @@ final class AudioCaptureManager: NSObject {
         // installing a tap with it raises rather than returning an error. Crashing mid-
         // recording is a worse answer to a lost microphone than saying it is lost.
         let format = input.outputFormat(forBus: 0)
-        guard format.sampleRate > 0, format.channelCount > 0 else {
+        guard Self.isUsableInputFormat(sampleRate: format.sampleRate, channelCount: format.channelCount) else {
             inputDeviceLost = true
             LogManager.shared.log("⚠️ Audio: no input device left - the rest of this recording has no voice track", type: .error)
             onInputDeviceLost?()

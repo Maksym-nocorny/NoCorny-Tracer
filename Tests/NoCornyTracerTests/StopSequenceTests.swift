@@ -45,6 +45,20 @@ final class StopSequenceTests: XCTestCase {
     }
 
     /// The merge rewrites the file, so a size read before it is the wrong number.
+    /// The caller uses this to tell a take it has already saved from one it has never seen.
+    /// Getting it wrong brings back rows the user deleted while the merge was running.
+    func testAFinishedTakeReportsThatItWasHandedOver() async {
+        let outcome = await RecordingManager.finishTake(
+            take(),
+            handOver: { _ in },
+            markFinishing: { _ in },
+            merge: {},
+            sizeOnDisk: { 1 }
+        )
+        XCTAssertTrue(outcome.wasHandedOver,
+                      "the caller would treat a saved take as unseen and re-add a deleted row")
+    }
+
     func testTheSizeIsTheOneTheMergeLeftBehind() async {
         var merged = false
         let result = await RecordingManager.finishTake(
@@ -54,7 +68,7 @@ final class StopSequenceTests: XCTestCase {
             merge: { merged = true },
             sizeOnDisk: { merged ? 9_000 : 1_000 }
         )
-        XCTAssertEqual(result.fileSize, 9_000)
+        XCTAssertEqual(result.take.fileSize, 9_000)
     }
 
     func testTheTakeHandedOverIsTheOneThatComesBack() async {
@@ -68,7 +82,7 @@ final class StopSequenceTests: XCTestCase {
             sizeOnDisk: { 1 }
         )
         XCTAssertEqual(handedOver?.id, original.id)
-        XCTAssertEqual(result.id, original.id, "the second write would land on a different row")
+        XCTAssertEqual(result.take.id, original.id, "the second write would land on a different row")
     }
 
     // MARK: - What the list does with the result
@@ -76,7 +90,7 @@ final class StopSequenceTests: XCTestCase {
     func testDeletingDuringTheMergeKeepsItDeleted() {
         let saved = take()
         XCTAssertNil(
-            AppState.applyingStopResult(saved, alreadySaved: true, to: []),
+            AppState.applyingStopResult(.finished(saved), to: []),
             "a recording deleted while its audio was mixing came back and was uploaded"
         )
     }
@@ -85,7 +99,7 @@ final class StopSequenceTests: XCTestCase {
         let saved = take()
         var withSize = saved
         withSize.fileSize = 5_000
-        let after = AppState.applyingStopResult(withSize, alreadySaved: true, to: [saved])
+        let after = AppState.applyingStopResult(.finished(withSize), to: [saved])
         XCTAssertEqual(after?.count, 1)
         XCTAssertEqual(after?.first?.fileSize, 5_000)
     }
@@ -94,10 +108,27 @@ final class StopSequenceTests: XCTestCase {
     /// "not in the list" as "deleted" there would throw away the recovered recording.
     func testATakeThatWasNeverSavedIsStillAdded() {
         let recovered = take()
-        let after = AppState.applyingStopResult(recovered, alreadySaved: false, to: [])
+        let after = AppState.applyingStopResult(.recovered(recovered), to: [])
         XCTAssertEqual(after?.count, 1)
         XCTAssertEqual(after?.first?.id, recovered.id)
     }
+
+    /// The two ends of a stop mean opposite things to the caller, and the wrong one loses a
+    /// recording in each direction: a recovered take treated as already saved is dropped, and
+    /// a finished one treated as unseen re-adds a row the user just deleted.
+    func testTheTwoWaysAStopEndsDoNotAgree() {
+        let r = take()
+        XCTAssertTrue(RecordingManager.StopOutcome.finished(r).wasHandedOver)
+        XCTAssertFalse(RecordingManager.StopOutcome.recovered(r).wasHandedOver,
+                       "a take recovered from a dead writer would be dropped instead of saved")
+    }
+
+    func testARecoveredTakeIsAddedRatherThanDropped() {
+        let r = take()
+        let after = AppState.applyingStopResult(.recovered(r), to: [])
+        XCTAssertEqual(after?.count, 1, "the recovered recording was thrown away")
+    }
+
 }
 
 /// The screen stream dying mid-capture - a monitor unplugged, screen-recording permission
