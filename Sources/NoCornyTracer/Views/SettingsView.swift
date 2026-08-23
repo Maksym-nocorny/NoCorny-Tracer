@@ -381,7 +381,13 @@ struct SettingsView: View {
         let unlocked = appState.tracerAPIClient.entitlements.diarization
         return VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
             HStack(spacing: Theme.Spacing.sm) {
-                Toggle("Separate speakers", isOn: $appState.diarizationEnabled)
+                // Reads OFF the moment the plan stops including it. Bound straight to the
+                // stored setting, a downgrade left a switch sitting ON, disabled, doing
+                // nothing - and no way to turn it off.
+                Toggle("Separate speakers", isOn: Binding(
+                    get: { unlocked && appState.diarizationEnabled },
+                    set: { appState.diarizationEnabled = $0 }
+                ))
                     .controlSize(.small)
                     .font(Theme.Typography.body(12))
                     .disabled(!unlocked)

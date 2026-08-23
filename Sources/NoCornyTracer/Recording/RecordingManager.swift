@@ -9,6 +9,14 @@ final class RecordingManager {
     // MARK: - State
     var isRecording = false
     var isPaused = false
+    /// Capture is over, but the take is still being written: the system-audio sidecar is
+    /// being mixed into the file, which on a two-hour recording is minutes of export.
+    ///
+    /// It exists because `isRecording` goes false first, on purpose, so the UI stops showing
+    /// a frozen timer - and that left a window where the app looked completely idle while a
+    /// recording was still being assembled. Quitting there is the natural thing to do after a
+    /// meeting.
+    var isFinishing = false
     var recordingDuration: TimeInterval = 0
     var currentFileURL: URL?
     
@@ -208,8 +216,15 @@ final class RecordingManager {
 
     /// - Parameter mergeSystemAudio: false when the caller is about to throw the file
     ///   away (abort), so a discarded take does not pay for an export first.
+    /// - Parameter onCaptureFinished: called with the take as soon as the file is finalised,
+    ///   BEFORE the system-audio merge. The caller persists it there, so a take being mixed
+    ///   is already a row on disk rather than a value in flight that dies with the process.
     @MainActor
-    func stopRecording(playSound: Bool = true, mergeSystemAudio: Bool = true) async -> Recording? {
+    func stopRecording(
+        playSound: Bool = true,
+        mergeSystemAudio: Bool = true,
+        onCaptureFinished: ((Recording) -> Void)? = nil
+    ) async -> Recording? {
         guard isRecording else { return nil }
 
         // Stop timer
@@ -271,12 +286,31 @@ final class RecordingManager {
             SoundManager.shared.play(.stop)
         }
 
+        var recording = Recording(
+            fileURL: outputURL,
+            createdAt: startedAt,
+            duration: finalDuration
+        )
+        // TODO: speaker separation will consume this track - "me" (the MP4's mic track)
+        // against "everyone else" (this file) is a much stronger split than diarizing one
+        // mixed mic. Nothing cleans it up yet, on purpose.
+        recording.systemAudioURL = systemAudio?.url
+
+        // Hand the take over NOW, before the merge. The file on disk is already complete and
+        // playable; the merge only ever improves it, and it leaves the original untouched
+        // when it fails. Persisting first is what makes the next few minutes survivable: the
+        // row exists, the list shows it, and a quit in the middle costs the system-audio
+        // mix rather than the whole recording.
+        onCaptureFinished?(recording)
+
         // Mix the sidecar into the saved file. Offline, after capture, and only when
         // something was actually playing: a silent sidecar is minutes of export for a
         // file nobody would hear a difference in. On failure the merge leaves the
         // original alone, so the worst case is the mic-only recording we already had.
         if let systemAudio, systemAudio.hasAudibleContent, mergeSystemAudio {
+            isFinishing = true
             _ = await SystemAudioMerger.mergeInPlace(recording: outputURL, systemAudio: systemAudio.url)
+            isFinishing = false
         } else if systemAudio != nil && mergeSystemAudio {
             LogManager.shared.log("🔊 System audio: sidecar holds only silence - skipping the merge")
         }
@@ -284,22 +318,10 @@ final class RecordingManager {
         // Read the on-disk file size now so we can pass it to the backend at
         // registration time. Without this, fileSize stays nil for fresh recordings.
         // Read after the merge, so the size is the one the uploader will actually send.
-        var fileSize: UInt64? = nil
         if let attrs = try? FileManager.default.attributesOfItem(atPath: outputURL.path),
            let size = attrs[.size] as? NSNumber {
-            fileSize = size.uint64Value
+            recording.fileSize = size.uint64Value
         }
-
-        var recording = Recording(
-            fileURL: outputURL,
-            createdAt: startedAt,
-            duration: finalDuration
-        )
-        recording.fileSize = fileSize
-        // TODO: speaker separation will consume this track - "me" (the MP4's mic track)
-        // against "everyone else" (this file) is a much stronger split than diarizing one
-        // mixed mic. Nothing cleans it up yet, on purpose.
-        recording.systemAudioURL = systemAudio?.url
 
         return recording
     }

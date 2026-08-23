@@ -312,7 +312,10 @@ final class LocalWhisperEngine: TranscriptionEngine {
     /// state (its audio processor, its timings). Two recordings finishing close together is
     /// not exotic: stopping one starts its transcription, which now takes minutes rather
     /// than one HTTP call, and nothing stopped the user recording again meanwhile.
-    private static let runs = SerialGate()
+    /// Internal rather than private so a test can occupy it and prove `transcribe` actually
+    /// queues behind it. Pinning the gate's own behaviour proves nothing about whether
+    /// anything is wired to it - which is how the walk it replaced shipped uncovered.
+    static let runs = SerialGate()
 
     func transcribe(videoURL: URL, multiSpeaker: Bool) async -> EngineResult {
         await Self.runs.enqueue { await self.runTranscription(videoURL: videoURL, multiSpeaker: multiSpeaker) }

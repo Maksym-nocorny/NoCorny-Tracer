@@ -16,7 +16,9 @@ actor SpeakerDiarizer {
     static let shared = SpeakerDiarizer()
     private init() {}
 
-    private let runs = SerialGate()
+    /// Internal for the same reason as the engine's: a test occupies it to prove `diarize`
+    /// is wired to it, not merely that the gate works.
+    let runs = SerialGate()
 
     /// Keyed by the constraint, not by recording: the same "1 to 3 speakers" manager serves
     /// every recording in a session, which is the whole point of caching it.
@@ -36,6 +38,11 @@ actor SpeakerDiarizer {
     }
 
     private func runDiarization(audioURL: URL, minSpeakers: Int, maxSpeakers: Int) async throws -> [DiarizedSpan] {
+        // Checked here, at the front of the queued work, because whoever asked may have given
+        // up while waiting for their turn. Core ML cannot be interrupted once it starts, so
+        // the only cheap moment to notice is before starting: a diarization nobody is waiting
+        // for otherwise runs to the end holding the queue against the next recording.
+        try Task.checkCancellation()
         let key = "\(minSpeakers)-\(maxSpeakers)"
         let manager: OfflineDiarizerManager
         if let warm = managers[key] {

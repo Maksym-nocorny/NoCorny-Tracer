@@ -138,6 +138,14 @@ struct RecordingControlsView: View {
             Toggle("", isOn: $appState.isMicrophoneEnabled)
                 .toggleStyle(.switch)
                 .controlSize(.small)
+                // The capture device is fixed when recording starts, so flipping this
+                // mid-take changed the icon and the level meter and nothing else: the voice
+                // kept being written either way. Showing a control that does not control
+                // anything is worse than showing it greyed out.
+                .disabled(appState.recordingManager.isRecording)
+                .help(appState.recordingManager.isRecording
+                      ? "The microphone can only be changed before a recording starts"
+                      : "Record the microphone")
         }
     }
 

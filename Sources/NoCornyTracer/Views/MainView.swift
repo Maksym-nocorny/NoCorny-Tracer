@@ -114,6 +114,11 @@ struct MainView: View {
         } message: {
             Text("Would you like NoCorny Tracer to start automatically when you log in to your Mac?")
         }
+        .alert("The microphone stopped recording", isPresented: $appState.showMicrophoneLostAlert) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Your audio device changed and could not be reattached, so your voice is no longer being recorded. The screen and any system audio are still being captured. Stop and start a new recording to get your voice back.")
+        }
     }
 
     // MARK: - Tab Bar (Claude-style pill tabs)

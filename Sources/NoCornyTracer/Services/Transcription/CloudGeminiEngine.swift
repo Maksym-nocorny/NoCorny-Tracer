@@ -383,6 +383,19 @@ final class CloudGeminiEngine: TranscriptionEngine {
         accountRefusalCode(error) ?? String("\(error)".prefix(200))
     }
 
+    /// Which chunks a second wave should re-send.
+    ///
+    /// Missing counts as worth retrying, because a chunk with no outcome at all never got an
+    /// answer. That makes the `fatal` half load-bearing in a way it does not look: when a
+    /// run-wide refusal stops the wave early, the chunks it never sent are recorded as fatal
+    /// precisely so this does not send every one of them through the encode the stop avoided.
+    static func chunksWorthRetrying(_ plans: [PlannedChunk], outcomes: [Int: ChunkResult]) -> [PlannedChunk] {
+        plans.filter { plan in
+            guard let outcome = outcomes[plan.index] else { return true }
+            return outcome.status == .failed && !outcome.fatal
+        }
+    }
+
     /// The refusal that explains every chunk at once, if there was one.
     ///
     /// Folding this into a generic "chunks_all_failed" is what left a free user holding a
@@ -405,7 +418,7 @@ final class CloudGeminiEngine: TranscriptionEngine {
         originalDuration: Double,
         glossary: [String],
         extraInstruction: String = "",
-        multiSpeaker: Bool = false
+        multiSpeaker: Bool
     ) async -> ChunkResult {
         var result = ChunkResult(index: chunk.index, status: .failed)
 
@@ -617,7 +630,7 @@ final class CloudGeminiEngine: TranscriptionEngine {
         concurrency: Int,
         scratchKey: String,
         extraInstruction: String = "",
-        multiSpeaker: Bool = false
+        multiSpeaker: Bool
     ) async -> [Int: ChunkResult] {
         var outcomes: [Int: ChunkResult] = [:]
         guard !plans.isEmpty else { return outcomes }
@@ -634,8 +647,7 @@ final class CloudGeminiEngine: TranscriptionEngine {
         // under about fifteen minutes that was the entire transcript. The helper does not
         // capture the task group, which is what made a shared helper impossible before.
         @Sendable func run(_ plan: PlannedChunk) async -> ChunkResult {
-            if let stub = chunkRunnerForTests { return await stub(plan, multiSpeaker) }
-            return await runOneChunk(plan: plan, totalChunks: totalChunks, sourceAsset: sourceAsset,
+            await runOneChunk(plan: plan, totalChunks: totalChunks, sourceAsset: sourceAsset,
                               sourceTrack: sourceTrack, originalDuration: originalDuration,
                               glossary: glossary, extraInstruction: extraInstruction,
                               multiSpeaker: multiSpeaker)
@@ -697,6 +709,12 @@ final class CloudGeminiEngine: TranscriptionEngine {
         /// speech that was never transcribed cannot be recovered by re-labelling.
         multiSpeaker: Bool
     ) async -> ChunkResult {
+        // Deliberately the FIRST line, and inside the callee rather than beside the call. A
+        // seam that sits next to the production call watches its own arguments, not the ones
+        // production is given: the first version of this could report an honest flag to a
+        // test while the real call passed the wrong one, which is precisely the bug the test
+        // was written to catch.
+        if let stub = chunkRunnerForTests { return await stub(plan, multiSpeaker) }
         guard let chunk = await AudioPreparation.buildChunkAudio(sourceAsset: sourceAsset, sourceTrack: sourceTrack, plan: plan) else {
             var failed = ChunkResult(index: plan.index, status: .failed)
             failed.errorCode = "chunk_build_failed"
@@ -842,7 +860,7 @@ final class CloudGeminiEngine: TranscriptionEngine {
         audioURL: URL,
         analysis: SpeechAnalysis,
         keptRanges: [SampleRange],
-        multiSpeaker: Bool = false
+        multiSpeaker: Bool
     ) async -> NamingResult {
         // Chunk audio is always built at 1.0×. Enabling `TranscriptionTuning.enableSpeedUp` requires threading the
         // factor through AudioPreparation.buildChunkAudio AND the merge — a mismatch yields uniformly
@@ -918,10 +936,7 @@ final class CloudGeminiEngine: TranscriptionEngine {
         // the caller's outer second pass for this path: re-running everything would re-encode
         // and re-send all N chunks to fix a few, and the caller's gate could never fire on a
         // partial success anyway (it requires both srt and name to be nil).
-        let retryable = plans.filter { plan in
-            guard let outcome = outcomes[plan.index] else { return true }
-            return outcome.status == .failed && !outcome.fatal
-        }
+        let retryable = Self.chunksWorthRetrying(plans, outcomes: outcomes)
         if !retryable.isEmpty {
             LogManager.shared.log("🤖 Chunked: retrying \(retryable.count)/\(plans.count) failed chunks")
             let retried = await runChunkWave(
@@ -1064,7 +1079,7 @@ final class CloudGeminiEngine: TranscriptionEngine {
         glossary: [String],
         concurrency: Int,
         scratchKey: String,
-        multiSpeaker: Bool = false
+        multiSpeaker: Bool
     ) async {
         var weights: [String: Double] = [:]
         var languageByIndex: [Int: String] = [:]

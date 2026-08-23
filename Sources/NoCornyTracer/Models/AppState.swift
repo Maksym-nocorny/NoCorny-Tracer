@@ -165,6 +165,11 @@ final class AppState {
     /// Tracks whether the floating "noisy environment" suggestion toast is currently shown.
     /// Transient; guards against re-presenting while already visible.
     private(set) var showNoiseSuggestion = false
+
+    /// The microphone stopped being recorded partway through the current take. Surfaced as an
+    /// alert, because it is the one failure the user can still act on while it matters: the
+    /// screen and the far side of the call are still being captured, their own voice is not.
+    var showMicrophoneLostAlert = false
     /// Once the user picks "Don't suggest again", we never show the suggestion toast again.
     private var noiseSuggestionDismissedForever = false
     /// Presents/hides the floating suggestion toast. Set by the app scene's window host. Driven via
@@ -255,6 +260,15 @@ final class AppState {
             guard !self.showNoiseSuggestion else { return }
             self.showNoiseSuggestion = true
             self.presentNoiseSuggestion?(true)
+        }
+
+        // Headphones going flat mid-meeting tears the audio graph down. The capture manager
+        // puts the tap back when it can; when it cannot, this is the only chance the user has
+        // to notice before playing the recording back and finding themselves missing from it.
+        recordingManager.audioCaptureManager.onInputDeviceLost = { [weak self] in
+            guard let self else { return }
+            self.showMicrophoneLostAlert = true
+            self.presentNoiseSuggestion?(false)
         }
 
         // A writer that dies mid-recording silently drops every further frame. This is
@@ -514,14 +528,22 @@ final class AppState {
     }
 
     func stopRecording() async {
-        guard let recording = await recordingManager.stopRecording() else { return }
-        let newRecording = recording
+        // Persist on the way past, before the system-audio merge, so a take being mixed is a
+        // row on disk rather than a value in flight. The same take comes back updated below;
+        // it keeps its id, so this is one row, written twice.
+        let stopped = await recordingManager.stopRecording(onCaptureFinished: { [weak self] take in
+            guard let self else { return }
+            self.recordings = Self.writing(take, into: self.recordings)
+            self.saveRecordings()
+        })
+        // nil means the writer produced nothing and salvage found nothing either.
+        guard let recording = stopped else { return }
 
-        recordings.insert(newRecording, at: 0)
+        recordings = Self.writing(recording, into: recordings)
         saveRecordings()
 
         // Process everything in the background (non-blocking)
-        let recordingID = newRecording.id
+        let recordingID = recording.id
         Task { await self.processRecording(id: recordingID) }
     }
 
@@ -533,7 +555,10 @@ final class AppState {
     private func recoverFromWriterFailure() async {
         guard recordingManager.isRecording else { return }
         if let salvaged = await recordingManager.stopRecording(playSound: false) {
-            recordings.insert(salvaged, at: 0)
+            // Through the same door as a normal stop: this path can also come back with a
+            // take that was already written once, and two rows for one recording is worse
+            // than the failure that got us here.
+            recordings = Self.writing(salvaged, into: recordings)
             saveRecordings()
             let recordingID = salvaged.id
             Task { await self.processRecording(id: recordingID) }
@@ -1281,9 +1306,13 @@ final class AppState {
             // the ordinary way there - the app finalises the file on the way out, and the
             // task that would have uploaded it goes with the process. Left as-is the row has
             // no path forward at all: the retry the list offers is only for `.failed`.
-            guard r.uploadStatus == .uploading || r.uploadStatus == .notUploaded else { return r }
+            guard Self.isStrandedAtLaunch(r.uploadStatus) else { return r }
+            let neverStarted = r.uploadStatus == .notUploaded
             r.uploadStatus = .failed
-            r.uploadError = "Upload interrupted — tap to retry"
+            // A recording that never started uploading did not get "interrupted" - most often
+            // nobody was signed in - and telling someone their finished recording broke is
+            // both wrong and alarming.
+            r.uploadError = neverStarted ? "Not uploaded yet — tap to upload" : "Upload interrupted — tap to retry"
             return r
         }
         if decoded.contains(where: { $0.legacyInlineTranscript?.isEmpty == false }) {
@@ -1329,6 +1358,12 @@ final class AppState {
         if FileManager.default.fileExists(atPath: recording.fileURL.path) {
             try? FileManager.default.removeItem(at: recording.fileURL)
         }
+        // The system-audio sidecar goes with it. It is roughly 15 MB an hour per track and
+        // nothing else references it once the recording is gone, so leaving it behind is a
+        // file that accumulates forever with no way for anyone to know what it belongs to.
+        if let sidecar = recording.systemAudioURL {
+            try? FileManager.default.removeItem(at: sidecar)
+        }
         // Nothing left to re-label, so the audio kept for that is now just disk.
         DiarizationAudioCache.shared.remove(for: recording.id)
         TranscriptStore.shared.remove(for: recording.id)
@@ -1341,6 +1376,31 @@ final class AppState {
 
         // 4. Refresh usage counters from our DB (cheap — same call as a list refresh)
         await reloadRecordingsFromTracer()
+    }
+
+    /// Writes a take into the list: replacing the row it already has, or adding it at the
+    /// top when it has none.
+    ///
+    /// A stop now saves twice - once when the file is finalised, once after the system-audio
+    /// merge - so "insert" alone would leave two rows for one recording.
+    static func writing(_ take: Recording, into list: [Recording]) -> [Recording] {
+        var updated = list
+        if let index = updated.firstIndex(where: { $0.id == take.id }) {
+            updated[index] = take
+        } else {
+            updated.insert(take, at: 0)
+        }
+        return updated
+    }
+
+    /// Whether a stored upload status means "this run died before it could do anything".
+    ///
+    /// Both states mean it at load time: `.uploading` had a task that no longer exists, and
+    /// `.notUploaded` never got one - quitting during a recording is the ordinary way there.
+    /// Neither has a path forward on its own, because the retry the list offers is for
+    /// `.failed`.
+    static func isStrandedAtLaunch(_ status: UploadStatus) -> Bool {
+        status == .uploading || status == .notUploaded
     }
 
     /// Which engine a recording should be credited to after a pass.

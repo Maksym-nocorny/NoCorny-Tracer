@@ -29,6 +29,19 @@ final class AudioCaptureManager: NSObject {
     /// Fired once (on the main thread) the moment `environmentIsNoisy` flips true.
     var onEnvironmentNoisy: (() -> Void)?
 
+    /// True once the audio graph was rebuilt under us and could not be restarted: the
+    /// microphone is no longer being recorded, though everything else still is.
+    ///
+    /// Headphones going flat mid-meeting tears down the engine. Nothing used to notice: the
+    /// screen and the system audio kept recording, the level meter sat at zero, and the
+    /// user's own voice was simply missing from that point on - discovered afterwards, when
+    /// the recording is the only copy of the conversation.
+    var inputDeviceLost = false
+    /// Fired on the main thread when the microphone stops being recorded mid-take.
+    var onInputDeviceLost: (() -> Void)?
+
+    private var configurationObserver: NSObjectProtocol?
+
     // MARK: - Private
     private var engine: AVAudioEngine?
 
@@ -142,16 +155,16 @@ final class AudioCaptureManager: NSObject {
         // node's output format.
         let inputFormat = input.outputFormat(forBus: 0)
 
-        input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] pcmBuffer, when in
-            guard let self = self else { return }
-            self.diagBuffersReceived += 1
-            if when.hostTime != 0 {
-                self.diagBuffersWithValidPTS += 1
-            }
-            self.updateAudioLevel(from: pcmBuffer)
-            if let sampleBuffer = self.makeSampleBuffer(from: pcmBuffer, time: when) {
-                self.onAudioSampleBuffer?(sampleBuffer)
-            }
+        installTap(on: input, format: inputFormat)
+
+        // The graph is torn down and rebuilt whenever the hardware changes underneath it -
+        // headphones dying, a dock unplugged, the system switching default input. The engine
+        // stops, the tap goes with it, and without this nobody finds out until they play the
+        // recording back.
+        configurationObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
+        ) { [weak self] _ in
+            self?.recoverFromConfigurationChange()
         }
 
         // Reset diagnostics for this capture session
@@ -202,6 +215,48 @@ final class AudioCaptureManager: NSObject {
         }
     }
 
+    private func installTap(on input: AVAudioInputNode, format: AVAudioFormat) {
+        input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] pcmBuffer, when in
+            guard let self = self else { return }
+            self.diagBuffersReceived += 1
+            if when.hostTime != 0 {
+                self.diagBuffersWithValidPTS += 1
+            }
+            self.updateAudioLevel(from: pcmBuffer)
+            if let sampleBuffer = self.makeSampleBuffer(from: pcmBuffer, time: when) {
+                self.onAudioSampleBuffer?(sampleBuffer)
+            }
+        }
+    }
+
+    /// Puts the microphone back after the audio graph was rebuilt.
+    ///
+    /// A gap in the voice track beats losing the rest of the meeting, so this reinstalls the
+    /// tap on whatever the input node now is and restarts. When it cannot, it says so loudly
+    /// rather than leaving a level meter at zero to speak for itself.
+    private func recoverFromConfigurationChange() {
+        guard isCapturing, let engine else { return }
+        LogManager.shared.log("🎤 Audio: input configuration changed mid-capture - rebinding the microphone", type: .error)
+
+        let input = engine.inputNode
+        input.removeTap(onBus: 0)
+        installTap(on: input, format: input.outputFormat(forBus: 0))
+
+        if engine.isRunning { return }
+        do {
+            engine.prepare()
+            try engine.start()
+            LogManager.shared.log("🎤 Audio: microphone rebound after the device changed")
+        } catch {
+            inputDeviceLost = true
+            LogManager.shared.log(
+                "⚠️ Audio: the microphone could not be reattached (\(error.localizedDescription)) - the rest of this recording has no voice track",
+                type: .error
+            )
+            onInputDeviceLost?()
+        }
+    }
+
     func stopCapture() {
         if let engine = engine {
             engine.inputNode.removeTap(onBus: 0)
@@ -213,6 +268,11 @@ final class AudioCaptureManager: NSObject {
         isCapturing = false
         audioLevel = 0
         diagHealthCheckScheduled = false
+        if let configurationObserver {
+            NotificationCenter.default.removeObserver(configurationObserver)
+            self.configurationObserver = nil
+        }
+        inputDeviceLost = false
 
         // Reset ambient-noise detection so a fresh capture starts clean.
         noiseDetectionEnabled = false

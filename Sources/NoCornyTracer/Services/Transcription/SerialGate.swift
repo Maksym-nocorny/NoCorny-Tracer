@@ -20,7 +20,15 @@ actor SerialGate {
             return await work()
         }
         tail = Task { _ = await mine.value }
-        return await mine.value
+        // Cancellation has to reach through the queue. The task above is unstructured, so it
+        // does not inherit it - and without this a caller that gave up on its deadline still
+        // sat here until its turn came AND its work ran to the end, holding the queue for
+        // everyone behind it. Work that has not started yet can now see it is unwanted.
+        return await withTaskCancellationHandler {
+            await mine.value
+        } onCancel: {
+            mine.cancel()
+        }
     }
 
     /// Same queue, for work that can fail. A thrown error is the caller's, and never wedges
@@ -32,6 +40,10 @@ actor SerialGate {
             return try await work()
         }
         tail = Task { _ = try? await mine.value }
-        return try await mine.value
+        return try await withTaskCancellationHandler {
+            try await mine.value
+        } onCancel: {
+            mine.cancel()
+        }
     }
 }

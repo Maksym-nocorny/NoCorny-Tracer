@@ -147,14 +147,14 @@ struct CustomDropdownOverlay: View {
                     }
 
                 // Options menu
-                dropdownMenu(data: data, triggerRect: triggerRect)
+                dropdownMenu(data: data, triggerRect: triggerRect, availableHeight: proxy.size.height)
             }
         }
         .allowsHitTesting(activeDropdownID != nil)
     }
 
     @ViewBuilder
-    private func dropdownMenu(data: DropdownAnchorData, triggerRect: CGRect) -> some View {
+    private func dropdownMenu(data: DropdownAnchorData, triggerRect: CGRect, availableHeight: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             ForEach(data.options) { option in
                 DropdownOptionRow(
@@ -181,9 +181,34 @@ struct CustomDropdownOverlay: View {
         .designShadowDropdown()
         .position(
             x: triggerRect.midX,
-            y: triggerRect.maxY + menuHeight(optionCount: data.options.count) / 2 + 4
+            y: Self.menuCenterY(
+                triggerRect: triggerRect,
+                menuHeight: menuHeight(optionCount: data.options.count),
+                availableHeight: availableHeight
+            )
         )
         .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .top)))
+    }
+
+    /// Where the menu sits: below the trigger when it fits, above it when it does not.
+    ///
+    /// It always opened downwards, which is fine for a two-option menu in a settings pane and
+    /// wrong for a seven-option one on a row near the bottom of a list - the last options land
+    /// past the window edge, unreachable unless you happen to scroll the list first. The
+    /// Speakers menu is exactly that shape.
+    static func menuCenterY(triggerRect: CGRect, menuHeight: CGFloat, availableHeight: CGFloat) -> CGFloat {
+        let gap: CGFloat = 4
+        let below = triggerRect.maxY + menuHeight / 2 + gap
+        // Taller than the window: nothing can be done about it here, so keep it centred
+        // rather than pinned to an edge it overflows in one direction.
+        guard menuHeight + gap * 2 < availableHeight else { return availableHeight / 2 }
+
+        let roomBelow = availableHeight - triggerRect.maxY
+        let roomAbove = triggerRect.minY
+        let opensUp = roomBelow < menuHeight + gap && roomAbove > roomBelow
+        let centre = opensUp ? triggerRect.minY - menuHeight / 2 - gap : below
+        // Neither side had room: keep every option inside the window anyway.
+        return min(max(centre, menuHeight / 2 + gap), availableHeight - menuHeight / 2 - gap)
     }
 
     private func menuHeight(optionCount: Int) -> CGFloat {
