@@ -443,8 +443,24 @@ struct RecordingRowView: View {
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
         case .uploading:
-            ProgressView()
-                .controlSize(.small)
+            // Determinate when the byte counter is flowing, a spinner in the moments before
+            // it starts. The spinner alone was the whole story for a 20-minute recording,
+            // which is indistinguishable from stuck.
+            if let fraction = appState.uploadProgress[recording.id] {
+                HStack(spacing: 5) {
+                    ProgressView(value: fraction)
+                        .controlSize(.small)
+                        .frame(width: 56)
+                    Text("\(Int(fraction * 100))%")
+                        .font(Theme.Typography.body(9))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+                .help("Uploading to Dropbox")
+            } else {
+                ProgressView()
+                    .controlSize(.small)
+            }
         case .uploaded:
             if showCloudIcon {
                 Image(systemName: "checkmark.icloud.fill")

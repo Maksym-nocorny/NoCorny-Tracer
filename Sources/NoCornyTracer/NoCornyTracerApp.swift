@@ -120,6 +120,11 @@ private struct MainWindowHost: View {
                     openWindow(id: "main")
                 }
 
+                appState.presentUploadFailure = {
+                    NSApp.activate(ignoringOtherApps: true)
+                    openWindow(id: "main")
+                }
+
                 // Opt the main window out of Cocoa state restoration. With
                 // NSQuitAlwaysKeepsWindows enabled, quitting while the window is closed would
                 // otherwise relaunch the app with no window — so MainWindowHost never appears,

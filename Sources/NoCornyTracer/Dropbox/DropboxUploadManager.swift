@@ -8,6 +8,11 @@ final class DropboxUploadManager {
         case uploadFailed(String)
         case noData
         case fileError(String)
+        /// Dropbox refused because the ACCOUNT is full. Split out from the generic HTTP
+        /// case because it is the one upload failure the user can fix themselves, and it
+        /// was reaching them as a raw JSON blob - or, worse, not reaching them at all: the
+        /// row quietly turned into a small grey icon while the recording sat on this Mac.
+        case outOfSpace
         /// A non-success HTTP response with its status code, optional parsed
         /// `Retry-After` hint (seconds) and response body. Lets `withRetry`
         /// classify retryable vs permanent failures without string-parsing.
@@ -20,8 +25,34 @@ final class DropboxUploadManager {
             case .noData: return "No data received from server"
             case .fileError(let msg): return "File operation failed: \(msg)"
             case .httpError(let status, _, let body): return "HTTP \(status): \(body)"
+            case .outOfSpace:
+                return "Your Dropbox is full, so the video stayed on this Mac. Free up space in Dropbox (or upgrade it), then tap the recording to retry."
             }
         }
+    }
+
+    /// One climbing number across a chunked upload.
+    ///
+    /// `chunkFraction` is URLSession's counter for the chunk in flight; completed bytes are
+    /// what previous chunks already delivered. The last chunk is usually short, so the
+    /// in-flight portion is capped at what actually remains - otherwise the bar overshoots
+    /// past 1 near the end and snaps back, which reads as the upload breaking.
+    static func overallFraction(completedBytes: UInt64, chunkFraction: Double, chunkBytes: UInt64, totalBytes: UInt64) -> Double {
+        guard totalBytes > 0 else { return 0 }
+        let remaining = totalBytes - min(completedBytes, totalBytes)
+        let inFlight = Double(min(chunkBytes, remaining)) * min(max(chunkFraction, 0), 1)
+        return min((Double(completedBytes) + inFlight) / Double(totalBytes), 1)
+    }
+
+    /// True when a Dropbox error body says the account itself is out of room.
+    /// Checked wherever an HTTP error is about to be thrown, because the session path can
+    /// hit it on start, append or finish just as the simple path can.
+    static func isOutOfSpace(_ body: String) -> Bool {
+        body.contains("insufficient_space")
+    }
+
+    static func isOutOfSpace(_ body: Data) -> Bool {
+        isOutOfSpace(String(data: body, encoding: .utf8) ?? "")
     }
 
     /// Conflict-resolution mode for `files/upload` requests.
@@ -62,11 +93,17 @@ final class DropboxUploadManager {
     /// Uploads a file to Dropbox at an explicit path. Returns the resulting
     /// Dropbox `path_display` on success (which may differ from the requested
     /// path if `mode == .add` and Dropbox auto-renamed on conflict).
+    /// - Parameter progress: called with 0...1 as bytes actually leave the machine. On the
+    ///   simple path that is URLSession's own byte counter; on the session path, bytes per
+    ///   chunk plus the offset of the chunks already sent. Optional because thumbnails and
+    ///   transcripts are too small for a bar to mean anything - the video is the upload
+    ///   someone sits and watches, and it had no indicator at all.
     func upload(
         fileURL: URL,
         dropboxPath: String,
         mode: UploadMode = .overwrite,
-        accessToken: String
+        accessToken: String,
+        progress: (@Sendable (Double) -> Void)? = nil
     ) async throws -> String {
         guard !accessToken.isEmpty else {
             throw DropboxError.invalidToken
@@ -78,10 +115,10 @@ final class DropboxUploadManager {
         if fileSize <= UInt64(simpleUploadLimit) {
             let fileData = try Data(contentsOf: fileURL)
             return try await withRetry(taskName: "Upload") {
-                try await self.simpleUpload(data: fileData, path: dropboxPath, mode: mode, accessToken: accessToken)
+                try await self.simpleUpload(data: fileData, path: dropboxPath, mode: mode, accessToken: accessToken, progress: progress)
             }
         } else {
-            return try await sessionUpload(fileURL: fileURL, fileSize: fileSize, path: dropboxPath, mode: mode, accessToken: accessToken)
+            return try await sessionUpload(fileURL: fileURL, fileSize: fileSize, path: dropboxPath, mode: mode, accessToken: accessToken, progress: progress)
         }
     }
 
@@ -116,7 +153,7 @@ final class DropboxUploadManager {
 
     // MARK: - Simple Upload
 
-    private func simpleUpload(data: Data, path: String, mode: UploadMode, accessToken: String) async throws -> String {
+    private func simpleUpload(data: Data, path: String, mode: UploadMode, accessToken: String, progress: (@Sendable (Double) -> Void)? = nil) async throws -> String {
         let url = URL(string: "https://content.dropboxapi.com/2/files/upload")!
 
         var request = URLRequest(url: url)
@@ -131,15 +168,19 @@ final class DropboxUploadManager {
             "mute": false
         ]
         try setDropboxAPIArg(request: &request, arguments: apiArg)
-        request.httpBody = data
 
-        let (responseData, response) = try await URLSession.shared.data(for: request)
+        // upload(for:from:) rather than httpBody + data(for:): only an upload task reports
+        // didSendBodyData, which is where the progress a person watches comes from.
+        let (responseData, response) = try await URLSession.shared.upload(
+            for: request, from: data, delegate: progress.map { UploadProgressDelegate(onFraction: $0) }
+        )
 
         guard let httpResponse = response as? HTTPURLResponse,
               (200...299).contains(httpResponse.statusCode) else {
             let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
             let body = String(data: responseData, encoding: .utf8) ?? ""
             LogManager.shared.log("Dropbox simpleUpload Error: HTTP \(statusCode) - \(body)", type: .error)
+            if Self.isOutOfSpace(responseData) { throw DropboxError.outOfSpace }
             throw DropboxError.httpError(
                 status: statusCode,
                 retryAfter: Self.retryAfter(from: response, body: responseData),
@@ -157,14 +198,25 @@ final class DropboxUploadManager {
 
     // MARK: - Session Upload (for files > 150MB)
 
-    private func sessionUpload(fileURL: URL, fileSize: UInt64, path: String, mode: UploadMode, accessToken: String) async throws -> String {
+    private func sessionUpload(fileURL: URL, fileSize: UInt64, path: String, mode: UploadMode, accessToken: String, progress: (@Sendable (Double) -> Void)? = nil) async throws -> String {
         let fileHandle = try FileHandle(forReadingFrom: fileURL)
         defer { try? fileHandle.close() }
+
+        // Per-request progress covers bytes of the chunk in flight; the completed offset is
+        // added so a 500 MB file reads as one climbing number, not ten separate 0-to-100s.
+        // The helper is pure so the arithmetic can be held by a test.
+        func chunkProgress(completed: UInt64) -> (@Sendable (Double) -> Void)? {
+            guard let progress else { return nil }
+            let total = fileSize
+            return { fraction in
+                progress(Self.overallFraction(completedBytes: completed, chunkFraction: fraction, chunkBytes: UInt64(self.chunkSize), totalBytes: total))
+            }
+        }
 
         // Start session with first chunk
         let firstChunkData = try fileHandle.read(upToCount: chunkSize) ?? Data()
         let sessionID = try await withRetry(taskName: "Session Start") {
-            try await self.startUploadSession(data: firstChunkData, accessToken: accessToken)
+            try await self.startUploadSession(data: firstChunkData, accessToken: accessToken, progress: chunkProgress(completed: 0))
         }
 
         var offset = UInt64(firstChunkData.count)
@@ -187,12 +239,13 @@ final class DropboxUploadManager {
                         data: chunkData,
                         path: path,
                         mode: mode,
-                        accessToken: accessToken
+                        accessToken: accessToken,
+                        progress: chunkProgress(completed: offset)
                     )
                 }
             } else {
                 try await withRetry(taskName: "Session Append") {
-                    try await self.appendUploadSession(sessionID: sessionID, offset: Int(offset), data: chunkData, accessToken: accessToken)
+                    try await self.appendUploadSession(sessionID: sessionID, offset: Int(offset), data: chunkData, accessToken: accessToken, progress: chunkProgress(completed: offset))
                 }
                 offset += UInt64(chunkData.count)
             }
@@ -211,7 +264,7 @@ final class DropboxUploadManager {
         }
     }
 
-    private func startUploadSession(data: Data, accessToken: String) async throws -> String {
+    private func startUploadSession(data: Data, accessToken: String, progress: (@Sendable (Double) -> Void)? = nil) async throws -> String {
         let url = URL(string: "https://content.dropboxapi.com/2/files/upload_session/start")!
 
         var request = URLRequest(url: url)
@@ -221,14 +274,15 @@ final class DropboxUploadManager {
 
         let apiArg: [String: Any] = ["close": false]
         try setDropboxAPIArg(request: &request, arguments: apiArg)
-        request.httpBody = data
-
-        let (responseData, response) = try await URLSession.shared.data(for: request)
+        let (responseData, response) = try await URLSession.shared.upload(
+            for: request, from: data, delegate: progress.map { UploadProgressDelegate(onFraction: $0) }
+        )
 
         guard let httpResponse = response as? HTTPURLResponse,
               (200...299).contains(httpResponse.statusCode) else {
             let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
             let body = String(data: responseData, encoding: .utf8) ?? ""
+            if Self.isOutOfSpace(responseData) { throw DropboxError.outOfSpace }
             throw DropboxError.httpError(
                 status: statusCode,
                 retryAfter: Self.retryAfter(from: response, body: responseData),
@@ -244,7 +298,7 @@ final class DropboxUploadManager {
         return sessionID
     }
 
-    private func appendUploadSession(sessionID: String, offset: Int, data: Data, accessToken: String) async throws {
+    private func appendUploadSession(sessionID: String, offset: Int, data: Data, accessToken: String, progress: (@Sendable (Double) -> Void)? = nil) async throws {
         let url = URL(string: "https://content.dropboxapi.com/2/files/upload_session/append_v2")!
 
         var request = URLRequest(url: url)
@@ -260,14 +314,15 @@ final class DropboxUploadManager {
             "close": false
         ]
         try setDropboxAPIArg(request: &request, arguments: apiArg)
-        request.httpBody = data
-
-        let (responseData, response) = try await URLSession.shared.data(for: request)
+        let (responseData, response) = try await URLSession.shared.upload(
+            for: request, from: data, delegate: progress.map { UploadProgressDelegate(onFraction: $0) }
+        )
 
         guard let httpResponse = response as? HTTPURLResponse,
               (200...299).contains(httpResponse.statusCode) else {
             let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
             let body = String(data: responseData, encoding: .utf8) ?? ""
+            if Self.isOutOfSpace(responseData) { throw DropboxError.outOfSpace }
             throw DropboxError.httpError(
                 status: statusCode,
                 retryAfter: Self.retryAfter(from: response, body: responseData),
@@ -276,7 +331,7 @@ final class DropboxUploadManager {
         }
     }
 
-    private func finishUploadSession(sessionID: String, offset: Int, data: Data, path: String, mode: UploadMode, accessToken: String) async throws -> String {
+    private func finishUploadSession(sessionID: String, offset: Int, data: Data, path: String, mode: UploadMode, accessToken: String, progress: (@Sendable (Double) -> Void)? = nil) async throws -> String {
         let url = URL(string: "https://content.dropboxapi.com/2/files/upload_session/finish")!
 
         var request = URLRequest(url: url)
@@ -297,14 +352,15 @@ final class DropboxUploadManager {
             ]
         ]
         try setDropboxAPIArg(request: &request, arguments: apiArg)
-        request.httpBody = data
-
-        let (responseData, response) = try await URLSession.shared.data(for: request)
+        let (responseData, response) = try await URLSession.shared.upload(
+            for: request, from: data, delegate: progress.map { UploadProgressDelegate(onFraction: $0) }
+        )
 
         guard let httpResponse = response as? HTTPURLResponse,
               (200...299).contains(httpResponse.statusCode) else {
             let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
             let body = String(data: responseData, encoding: .utf8) ?? ""
+            if Self.isOutOfSpace(responseData) { throw DropboxError.outOfSpace }
             throw DropboxError.httpError(
                 status: statusCode,
                 retryAfter: Self.retryAfter(from: response, body: responseData),
@@ -433,6 +489,7 @@ final class DropboxUploadManager {
 
             let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
             let bodyStr = String(data: responseData, encoding: .utf8) ?? ""
+            if Self.isOutOfSpace(responseData) { throw DropboxError.outOfSpace }
             throw DropboxError.httpError(
                 status: statusCode,
                 retryAfter: Self.retryAfter(from: response, body: responseData),
@@ -569,6 +626,7 @@ final class DropboxUploadManager {
                   (200...299).contains(httpResponse.statusCode) else {
                 let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
                 let body = String(data: data, encoding: .utf8) ?? ""
+                if Self.isOutOfSpace(data) { throw DropboxError.outOfSpace }
                 throw DropboxError.httpError(
                     status: statusCode,
                     retryAfter: Self.retryAfter(from: response, body: data),
@@ -594,5 +652,25 @@ final class DropboxUploadManager {
         }.joined()
         
         request.setValue(escaped, forHTTPHeaderField: "Dropbox-API-Arg")
+    }
+}
+
+/// Forwards URLSession's own byte counter as a 0...1 fraction.
+///
+/// This is the only layer that knows how many bytes have genuinely left the machine; anything
+/// computed above it is a guess dressed as a number.
+final class UploadProgressDelegate: NSObject, URLSessionTaskDelegate, Sendable {
+    private let onFraction: @Sendable (Double) -> Void
+
+    init(onFraction: @escaping @Sendable (Double) -> Void) {
+        self.onFraction = onFraction
+    }
+
+    func urlSession(
+        _ session: URLSession, task: URLSessionTask,
+        didSendBodyData bytesSent: Int64, totalBytesSent: Int64, totalBytesExpectedToSend: Int64
+    ) {
+        guard totalBytesExpectedToSend > 0 else { return }
+        onFraction(Double(totalBytesSent) / Double(totalBytesExpectedToSend))
     }
 }

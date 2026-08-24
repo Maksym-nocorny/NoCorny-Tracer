@@ -125,6 +125,22 @@ struct MainView: View {
         } message: {
             Text(appState.startRecordingFailure ?? "")
         }
+        .alert(
+            "Upload failed",
+            isPresented: Binding(
+                get: { appState.uploadFailureNotice != nil },
+                set: { if !$0 { appState.uploadFailureNotice = nil } }
+            )
+        ) {
+            Button("Open Dropbox", role: .none) {
+                if let url = URL(string: "https://www.dropbox.com/home") {
+                    NSWorkspace.shared.open(url)
+                }
+            }
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(appState.uploadFailureNotice ?? "")
+        }
         .alert("The microphone stopped recording", isPresented: $appState.showMicrophoneLostAlert) {
             Button("OK", role: .cancel) {}
         } message: {

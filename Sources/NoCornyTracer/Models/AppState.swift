@@ -192,6 +192,18 @@ final class AppState {
     /// Now that a vanished microphone is refused instead of crashing, silence would mean
     /// clicking Record and having nothing at all happen.
     var startRecordingFailure: String?
+
+    /// 0...1 per recording while its video is uploading; absent otherwise. Fed by
+    /// URLSession's byte counter, so it moves only when bytes genuinely leave the machine.
+    /// A 20-minute recording used to sit on a static "uploading" icon with nothing moving
+    /// anywhere in the app, which is indistinguishable from being stuck.
+    var uploadProgress: [UUID: Double] = [:]
+
+    /// The one upload failure worth interrupting for, shown as an alert rather than only a
+    /// small grey icon in a list nobody is looking at: the recording stayed local and the
+    /// user can actually fix the cause. Set for out-of-space; other failures keep the quiet
+    /// row treatment because retrying is all there is to do about them.
+    var uploadFailureNotice: String?
     /// Once the user picks "Don't suggest again", we never show the suggestion toast again.
     private var noiseSuggestionDismissedForever = false
     /// Presents/hides the floating suggestion toast. Set by the app scene's window host. Driven via
@@ -210,6 +222,9 @@ final class AppState {
     /// to be seen. Same shape as the two above, and needed for the same reason: the failure
     /// can arrive from the hotkey with every window closed.
     var presentStartFailure: (() -> Void)?
+    /// Same shape and reason as the two above: the failure can land while every window is
+    /// closed, and an alert on a closed window is silence with extra steps.
+    var presentUploadFailure: (() -> Void)?
 
     /// Polls Tracer for the current Dropbox connection state. Lets the macOS app
     /// notice within ~60s when the user disconnects (or switches accounts) on the
@@ -787,12 +802,17 @@ final class AppState {
                 let videoPath = "\(resolvedFolder)/\(videoFilename)"
                 LogManager.shared.log("📤 Upload: Starting video upload → \(videoPath)")
                 let uploadedPath: String
+                await MainActor.run { self.uploadProgress[id] = 0 }
+                defer { Task { @MainActor in self.uploadProgress.removeValue(forKey: id) } }
                 do {
                     uploadedPath = try await dropboxUploadManager.upload(
                         fileURL: fileURL,
                         dropboxPath: videoPath,
                         mode: .overwrite,
-                        accessToken: token
+                        accessToken: token,
+                        progress: { [weak self] fraction in
+                            Task { @MainActor in self?.uploadProgress[id] = fraction }
+                        }
                     )
                 } catch {
                     // B1.9: a long upload can outlive the short-lived Dropbox token,
@@ -848,6 +868,16 @@ final class AppState {
                 updateRecording(id: id) {
                     $0.uploadStatus = .failed
                     $0.uploadError = error.localizedDescription
+                }
+                if case DropboxUploadManager.DropboxError.outOfSpace = error {
+                    // Interrupt for this one: it is the only upload failure the user can fix,
+                    // and it used to fail in complete silence - the row went grey while the
+                    // person waited for a share link that was never coming.
+                    uploadFailureNotice = error.localizedDescription
+                    presentUploadFailure?()
+                    // The cached quota is what just lied to the user ("300 MB free" against
+                    // Dropbox's own insufficient_space), so pull the truth while we are here.
+                    await reloadRecordingsFromTracer()
                 }
                 // Mark the row as upload_failed so the web UI can stop spinning.
                 await tracerAPIClient.updateVideo(slug: resolvedSlug, processingStatus: "upload_failed")

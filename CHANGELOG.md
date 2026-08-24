@@ -1,5 +1,14 @@
 # Changelog
 
+## [3.17.1] - 2026-08-24
+### Added
+- **You can now see your video uploading.** The Recordings list shows a real progress bar with a percentage while a video uploads, driven by the bytes actually leaving your Mac - not a spinner that looks the same at second one and minute twenty.
+
+### Fixed
+- **A full Dropbox now says so, loudly and in plain words.** When Dropbox refuses an upload because the account is out of space, Tracer shows a proper alert: what happened, that the recording is safe on your Mac, and what to do - with a button straight to Dropbox to free up space. Before, the upload failed silently and the reason was a blob of technical text hidden behind a tiny grey icon. Retrying after you clear space works as it always did: click the recording in the list.
+- The storage numbers shown in the app refresh right after such a failure, so they reflect what Dropbox actually says rather than the last sync from hours ago.
+
+
 ## [3.17.0] - 2026-08-23
 ### Added
 - **Transcription on your own Mac, free and offline.** Settings now has a Transcription section where you can choose where transcripts come from. Pick "On this Mac" and Tracer downloads a speech model once (about 1.5 GB) and never sends your audio anywhere again - no account needed for the transcript itself, and nothing to pay for. Apple Silicon only; Intel Macs keep using the cloud. Titles still come from the cloud, except on macOS 26 with Apple Intelligence switched on, where those are produced locally too for the languages Apple supports.
