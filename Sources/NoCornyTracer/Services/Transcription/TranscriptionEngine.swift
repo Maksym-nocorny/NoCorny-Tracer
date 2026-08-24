@@ -25,6 +25,20 @@ enum TranscriptionEngineKind: String, CaseIterable, Identifiable {
         }
     }
 
+    /// What the Settings picker offers.
+    ///
+    /// Groq is parked: no key on the server, switched off, and not for sale - so listing it,
+    /// even padlocked, advertises a choice nobody can make. It appears only when the server
+    /// EXPLICITLY offers it, which inverts the permissive default on purpose: for gemini,
+    /// "the server said nothing" must mean available (a server rollback must not lock
+    /// people out), but for a parked engine the same silence must mean absent - visibility
+    /// is an announcement, and announcements are opt-in.
+    static func pickerCases(offeredCloudEngines: [String]?) -> [TranscriptionEngineKind] {
+        allCases.filter { kind in
+            kind != .cloudGroq || (offeredCloudEngines?.contains("groq") ?? false)
+        }
+    }
+
     var displayName: String {
         switch self {
         case .cloudGemini: return "Cloud (Gemini)"

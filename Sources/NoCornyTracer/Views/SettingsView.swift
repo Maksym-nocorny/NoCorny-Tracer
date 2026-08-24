@@ -456,7 +456,7 @@ struct SettingsView: View {
     /// a choice you have not unlocked yet.
     private var engineOptions: [DropdownOption<TranscriptionEngineKind>] {
         let entitlements = appState.tracerAPIClient.entitlements
-        return TranscriptionEngineKind.allCases.map { kind in
+        return TranscriptionEngineKind.pickerCases(offeredCloudEngines: entitlements.cloudEngines).map { kind in
             switch kind {
             case .localWhisper where !LocalWhisperEngine.isAvailable:
                 return DropdownOption(

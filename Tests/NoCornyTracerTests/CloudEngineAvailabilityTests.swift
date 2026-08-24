@@ -62,4 +62,27 @@ final class CloudEngineAvailabilityTests: XCTestCase {
         XCTAssertFalse(e.offersCloudEngine(.cloudGroq))
         XCTAssertTrue(e.offersCloudEngine(.localWhisper), "the on-device engine is not the server's to withdraw")
     }
+
+    // MARK: - What the picker lists at all
+
+    /// Parked means invisible, not padlocked: a lock advertises a choice nobody can make.
+    func testGroqIsAbsentFromThePickerUntilTheServerOffersIt() {
+        XCTAssertFalse(TranscriptionEngineKind.pickerCases(offeredCloudEngines: ["gemini"]).contains(.cloudGroq))
+        XCTAssertFalse(TranscriptionEngineKind.pickerCases(offeredCloudEngines: nil).contains(.cloudGroq),
+                       "server silence re-advertised the parked engine")
+        XCTAssertFalse(TranscriptionEngineKind.pickerCases(offeredCloudEngines: []).contains(.cloudGroq))
+    }
+
+    func testGroqAppearsTheDayTheServerOffersIt() {
+        XCTAssertTrue(TranscriptionEngineKind.pickerCases(offeredCloudEngines: ["gemini", "groq"]).contains(.cloudGroq))
+    }
+
+    /// Hiding the parked engine must not take anything else with it.
+    func testTheOtherTwoEnginesAreAlwaysListed() {
+        for offered in [nil, [], ["gemini"], ["gemini", "groq"]] as [[String]?] {
+            let cases = TranscriptionEngineKind.pickerCases(offeredCloudEngines: offered)
+            XCTAssertTrue(cases.contains(.cloudGemini))
+            XCTAssertTrue(cases.contains(.localWhisper))
+        }
+    }
 }

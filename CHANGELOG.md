@@ -1,6 +1,10 @@
 # Changelog
 
 ## [3.17.3] - 2026-08-24
+### Changed
+- The transcription picker no longer lists Cloud (Groq). It was shown padlocked while it is not available to anyone; it will come back the day it is actually offered.
+- Diagnostic testing switches no longer affect release builds. A leftover test setting on one Mac had silently changed the default transcription engine and the recording language.
+
 ### Fixed
 - **Titles stay in the language you spoke.** On-device titling answered Cyrillic recordings in English (and mistranslated names while at it). Recordings in Ukrainian or Russian now go straight to the cloud for their title, which is told exactly what language to answer in. The transcript itself was always correct - only the title was wrong.
 - **The Recordings list now says "Transcribing…" while the AI works.** After the upload finishes there can be minutes of real work - the first on-device transcription compiles the model - and the row used to show a green "uploaded" tick and nothing else the whole time.
