@@ -66,7 +66,6 @@ struct NoCornyTracerApp: App {
         // unbounded and re-applies that over any manual clamp.
         .defaultSize(width: 380, height: 560)
         .windowResizability(.contentSize)
-
         // Permissions Window
         Window("Permissions", id: "permissions") {
             PermissionsView(permissionsManager: permissionsManager)
@@ -98,6 +97,8 @@ private struct MainWindowHost: View {
             .onAppear {
                 appDelegate.updaterController = updaterController
                 appDelegate.reopenMainWindow = { openWindow(id: "main") }
+                // The window exists, so a recovery relaunch (if one happened) worked.
+                UserDefaults.standard.removeObject(forKey: AppDelegate.windowBootstrapKey)
                 cameraWindowManager.updateVisibility(isEnabled: appState.isCameraEnabled, appState: appState)
                 // Route toast presentation through a closure so it works while the main window is
                 // hidden during recording (see AppState.presentNoiseSuggestion).
@@ -163,7 +164,41 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var recordingLightImage: NSImage?
     private var recordingDarkImage: NSImage?
 
+    /// One-shot guard so the windowless-launch recovery below cannot loop: set before the
+    /// recovery relaunch, cleared the moment the window actually presents.
+    static let windowBootstrapKey = "windowBootstrapRelaunchAttempted"
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // The app can come up with NO window at all: SwiftUI remembers the main scene was
+        // closed at quit and does not re-present it, and every reopen path here runs through
+        // a bridge closure that only exists once the window has appeared. Zero windows, nil
+        // bridge, and every menu-bar and Dock click lands on nothing - which reached the
+        // first user of 3.17.1 minutes after the update, as "the app will not open". The
+        // macOS 15 scene modifiers that fix this properly are above our deployment target
+        // and SceneBuilder refuses an availability branch, so: detect and relaunch, once.
+        // A plain relaunch demonstrably presents the scene - that is how the incident was
+        // resolved live.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+            guard let self, self.reopenMainWindow == nil,
+                  !NSApp.windows.contains(where: { $0.title == "NoCorny Tracer" }) else {
+                UserDefaults.standard.removeObject(forKey: Self.windowBootstrapKey)
+                return
+            }
+            guard !UserDefaults.standard.bool(forKey: Self.windowBootstrapKey) else {
+                // Relaunched once already and still windowless: stop, say so, and leave a
+                // loud trace instead of a relaunch loop.
+                LogManager.shared.log("🪟 Window: still no main window after a recovery relaunch — giving up", type: .error)
+                return
+            }
+            LogManager.shared.log("🪟 Window: launched with no main window and a nil reopen bridge — relaunching once to recover", type: .error)
+            UserDefaults.standard.set(true, forKey: Self.windowBootstrapKey)
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.createsNewApplicationInstance = true
+            NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration) { _, _ in
+                DispatchQueue.main.async { NSApp.terminate(nil) }
+            }
+        }
+
         // URL handler for Tracer browser sign-in (nocornytracer://...).
         NSAppleEventManager.shared().setEventHandler(
             self,
@@ -360,6 +395,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func showMainWindow() {
         NSApp.activate(ignoringOtherApps: true)
 
+        // A nil bridge means the scene never presented this launch, so the click would land
+        // on nothing - silently, which is how this bug reached a user as "the app will not
+        // open". Nothing can summon a SwiftUI window scene from AppKit, so the honest move
+        // is the blunt one: relaunch ourselves; the scene presents at launch.
+        if reopenMainWindow == nil {
+            LogManager.shared.log("🪟 Window: reopen bridge is nil — the scene never presented; relaunching to recover", type: .error)
+            UserDefaults.standard.set(true, forKey: Self.windowBootstrapKey)
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.createsNewApplicationInstance = true
+            NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration) { _, _ in
+                DispatchQueue.main.async { NSApp.terminate(nil) }
+            }
+            return
+        }
+
         // Always ask SwiftUI to present the "main" Window scene. For a `Window` scene this
         // recreates it if the user closed it, or brings it forward if it was ordered-out
         // (e.g. hidden during recording). Previously we returned early after
@@ -493,3 +543,4 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 }
+

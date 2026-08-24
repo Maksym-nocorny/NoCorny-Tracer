@@ -1,5 +1,10 @@
 # Changelog
 
+## [3.17.2] - 2026-08-24
+### Fixed
+- **The app can no longer come up with no window and no way to open one.** After an update installed while the main window was closed, the app could relaunch as just a menu-bar icon: clicking it, or the Dock icon, did nothing at all. The app now notices it has launched windowless and quietly relaunches itself once, which brings the window back; if a click ever finds the app in that state anyway, the click itself triggers the same recovery instead of doing nothing.
+
+
 ## [3.17.1] - 2026-08-24
 ### Added
 - **You can now see your video uploading.** The Recordings list shows a real progress bar with a percentage while a video uploads, driven by the bytes actually leaving your Mac - not a spinner that looks the same at second one and minute twenty.
