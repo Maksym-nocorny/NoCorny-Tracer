@@ -273,48 +273,12 @@ private struct DrawerRecordingRow: View {
         return formatter.string(from: date)
     }
 
-    // MARK: Status axes (ported from RecordingsListView)
+    // MARK: Status axes
 
-    /// The transcription axis, independent of the upload axis on purpose — see the
-    /// rationale on RecordingsListView.transcriptionIndicator.
-    @ViewBuilder
+    /// The transcription axis (Figma 533:1606) — the shared spark cluster, so this
+    /// row and the old RecordingsListView cannot drift apart.
     private var transcriptionStatus: some View {
-        switch recording.effectiveTranscriptionStatus {
-        case .queued:
-            HStack(spacing: 4) {
-                ProgressView()
-                    .controlSize(.mini)
-                Text("Queued")
-                    .font(.system(size: 9))
-                    .foregroundStyle(DrawerStyle.ink(0.45))
-            }
-            .help("Waiting for transcription to start")
-        case .transcribing:
-            HStack(spacing: 4) {
-                ProgressView()
-                    .controlSize(.mini)
-                if let fraction = appState.transcriptionActivity[recording.id]?.fraction, fraction > 0 {
-                    Text("\(Int(fraction * 100))%")
-                        .font(.system(size: 9))
-                        .monospacedDigit()
-                        .foregroundStyle(DrawerStyle.ink(0.45))
-                }
-            }
-            .help("Transcribing…")
-        case .failed:
-            Button {
-                appState.retryTranscription(recording)
-            } label: {
-                Image(systemName: "exclamationmark.bubble.fill")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Theme.Colors.recordRed)
-            }
-            .buttonStyle(.plain)
-            .help(recording.transcriptionError ?? "Transcription failed — click to retry")
-            .pointerOnHover()
-        case .done, .idle:
-            EmptyView()
-        }
+        TranscriptionStatusCluster(appState: appState, recording: recording)
     }
 
     @ViewBuilder

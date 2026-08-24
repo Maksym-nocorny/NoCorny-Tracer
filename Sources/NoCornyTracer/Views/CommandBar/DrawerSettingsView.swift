@@ -11,6 +11,12 @@ struct DrawerSettingsView: View {
     /// One open dropdown at a time across the whole drawer, same as SettingsView.
     @State private var activeDropdownID: String? = nil
 
+    /// Why a locked engine could not be picked, shown under the Engine row.
+    @State private var lockedEngineNotice: String? = nil
+    /// Download failures thrown before LocalModelState hears about them (no disk
+    /// space, a download already running) — see `modelPhase`.
+    @State private var modelDownloadError: String? = nil
+
     private var isRecording: Bool { appState.recordingManager.isRecording }
 
     var body: some View {
@@ -20,10 +26,10 @@ struct DrawerSettingsView: View {
             ScrollView(.vertical) {
                 VStack(spacing: 0) {
                     recordingSection
-
-                    // MARK: Transcription section lands after design sync (phase 3b)
-
                     accountSection
+                    // After ACCOUNT, not after RECORDING — that is where the macro
+                    // (Drawer / Settings, 77:1179) places it.
+                    transcriptionSection
                     generalSection
                 }
                 .padding(.trailing, 4)
@@ -321,6 +327,272 @@ struct DrawerSettingsView: View {
         .overlay(Circle().strokeBorder(DrawerStyle.ink(0.15), lineWidth: 1))
         .task(id: urlString) {
             AvatarCache.shared.ensure(urlString: urlString)
+        }
+    }
+
+    // MARK: TRANSCRIPTION (phase 3b, macro component "Drawer / Settings" 77:1179)
+
+    private var transcriptionSection: some View {
+        VStack(spacing: 0) {
+            DrawerSectionHeader(title: "TRANSCRIPTION")
+
+            settingRow(icon: "sparkles", label: "Engine") {
+                CustomDropdownButton(
+                    id: "drawer-transcription-engine",
+                    options: engineOptions,
+                    selection: $appState.transcriptionEngine,
+                    activeDropdownID: $activeDropdownID,
+                    minWidth: 160,
+                    onLockedTap: handleLockedEngine
+                )
+            }
+
+            if let lockedEngineNotice {
+                Text(lockedEngineNotice)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(Theme.Colors.brandPurple)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.leading, 24)
+                    .padding(.bottom, 8)
+                    .padding(.trailing, 4)
+            }
+
+            if showsModelRow {
+                hairline
+                localModelRow
+            }
+
+            hairline
+
+            settingRow(icon: "person.2", label: "Speakers (diarization)") {
+                diarizationControl
+            }
+        }
+    }
+
+    /// The picker's options, padlock semantics 1:1 with the old SettingsView: an
+    /// unavailable option is shown locked rather than hidden — an option that silently
+    /// does not exist reads as a missing feature, one with a padlock and a reason reads
+    /// as a choice you have not unlocked yet.
+    private var engineOptions: [DropdownOption<TranscriptionEngineKind>] {
+        let entitlements = appState.tracerAPIClient.entitlements
+        return TranscriptionEngineKind.pickerCases(offeredCloudEngines: entitlements.cloudEngines).map { kind in
+            switch kind {
+            case .localWhisper where !LocalWhisperEngine.isAvailable:
+                return DropdownOption(
+                    id: kind.rawValue, label: drawerEngineLabel(kind), value: kind,
+                    isLocked: true, badge: "Apple Silicon"
+                )
+            // Entitled, but switched off server-side. Picking it would upload a chunk and
+            // collect a 503, then quietly transcribe on a different engine than the one
+            // chosen -- a choice that does not exist, offered as though it did.
+            case _ where !entitlements.offersCloudEngine(kind):
+                return DropdownOption(
+                    id: kind.rawValue, label: drawerEngineLabel(kind), value: kind,
+                    isLocked: true, badge: "Unavailable"
+                )
+            case .cloudGemini where !entitlements.cloudTranscription,
+                 .cloudGroq where !entitlements.cloudTranscription:
+                return DropdownOption(
+                    id: kind.rawValue, label: drawerEngineLabel(kind), value: kind,
+                    isLocked: true, badge: "Premium"
+                )
+            default:
+                return DropdownOption(id: kind.rawValue, label: drawerEngineLabel(kind), value: kind)
+            }
+        }
+    }
+
+    /// The macro names the local engine "On-device (Whisper)"; displayName still says
+    /// "On this Mac" for the old SettingsView, so the override lives here.
+    private func drawerEngineLabel(_ kind: TranscriptionEngineKind) -> String {
+        kind == .localWhisper ? "On-device (Whisper)" : kind.displayName
+    }
+
+    /// Sends people to where the decision is actually made rather than pretending to
+    /// switch and failing later (port of SettingsView.handleLockedEngine).
+    private func handleLockedEngine(_ kind: TranscriptionEngineKind) {
+        // Switched off server-side is not the same as not paid for, and sending someone
+        // to a plan page over something no plan can buy wastes their time.
+        guard appState.tracerAPIClient.entitlements.offersCloudEngine(kind) else {
+            lockedEngineNotice = "\(kind.displayName) is switched off right now. Nothing to do on your side."
+            return
+        }
+        switch kind {
+        case .cloudGemini, .cloudGroq:
+            if let url = URL(string: "\(TracerAPIClient.baseURL)/settings#plan") {
+                NSWorkspace.shared.open(url)
+            }
+        case .localWhisper:
+            lockedEngineNotice = "On-device transcription needs a Mac with Apple Silicon."
+        }
+    }
+
+    // MARK: On-device model row
+
+    /// Visible whenever the local engine is chosen OR the model exists in any form on
+    /// this Mac (downloading, preparing, ready, failed) — a row that hides mid-download
+    /// would take a running progress indicator with it.
+    private var showsModelRow: Bool {
+        appState.transcriptionEngine == .localWhisper
+            || LocalModelState.shared.phase != .notDownloaded
+            || modelDownloadError != nil
+    }
+
+    /// `LocalModelState` misses failures thrown before the byte fetch starts (no disk
+    /// space, download already running), which the old SettingsView showed from a local
+    /// catch. Merge them: the pushed phase wins whenever it is doing or saying anything.
+    private var modelPhase: LocalModelState.Phase {
+        let phase = LocalModelState.shared.phase
+        if let modelDownloadError, phase == .notDownloaded {
+            return .failed(modelDownloadError)
+        }
+        return phase
+    }
+
+    /// The clear 14pt block keeps the label on the same column as the icon rows —
+    /// the macro draws this as a sub-row of Engine, without an icon of its own.
+    private var localModelRow: some View {
+        HStack(spacing: 10) {
+            Color.clear.frame(width: 14, height: 14)
+
+            Text("On-device model")
+                .font(.system(size: 12.5, weight: .medium))
+                .foregroundStyle(DrawerStyle.ink(0.88))
+
+            Spacer(minLength: 8)
+
+            modelStatusCluster
+        }
+        .padding(.vertical, 9)
+        .padding(.trailing, 4)
+    }
+
+    /// Right side of the model row: status dot + line (macro shows the Ready state:
+    /// green 7pt dot, "Ready · 1.5 GB") and the action link in the Sign Out style.
+    /// The other states follow the old modelStatusControl's behaviour.
+    private var modelStatusCluster: some View {
+        HStack(spacing: 6) {
+            modelStatusContent
+        }
+    }
+
+    @ViewBuilder
+    private var modelStatusContent: some View {
+        switch modelPhase {
+        case .ready:
+            modelDot(Theme.Colors.statusGreen)
+            modelStatusText("Ready · 1.5 GB")
+            modelLink("Remove") {
+                LocalWhisperEngine.deleteModel()
+                LocalModelState.pushRefresh()
+            }
+
+        case .downloading:
+            modelDot(Theme.Colors.pausedAmber)
+            if let progress = LocalModelState.shared.downloadProgress {
+                modelStatusText("Downloading… \(Int(progress * 100))%")
+            } else {
+                modelStatusText("Downloading…")
+            }
+
+        case .preparing:
+            // The bytes are down and nothing visible happens for minutes while Core ML
+            // compiles. Without saying so, a finished download looks like a hang.
+            modelStatusText("Preparing…")
+
+        case .notDownloaded:
+            modelStatusText("Not downloaded")
+            modelLink("Download") { startModelDownload() }
+                .disabled(!LocalWhisperEngine.isAvailable)
+
+        case .failed(let message):
+            modelDot(Theme.Colors.recordRed)
+            modelStatusText(message.isEmpty ? "Failed" : message)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .help(message)
+            modelLink("Retry") { startModelDownload() }
+        }
+    }
+
+    private func modelDot(_ color: Color) -> some View {
+        Circle()
+            .fill(color)
+            .frame(width: 7, height: 7)
+    }
+
+    private func modelStatusText(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 11.5))
+            .foregroundStyle(DrawerStyle.ink(0.55))
+            .monospacedDigit()
+    }
+
+    private func modelLink(_ title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundStyle(DrawerStyle.ink(0.55))
+        }
+        .buttonStyle(.plain)
+        .pointerOnHover()
+        .padding(.leading, 4)
+    }
+
+    private func startModelDownload() {
+        modelDownloadError = nil
+        Task {
+            do {
+                try await LocalWhisperEngine.downloadModel()
+            } catch {
+                modelDownloadError = error.localizedDescription
+            }
+        }
+    }
+
+    // MARK: Speakers (diarization)
+
+    /// Same binding and padlock semantics as SettingsView.diarizationRow: the toggle
+    /// reads OFF the moment the plan stops including it (bound straight to the stored
+    /// setting, a downgrade left a switch sitting ON, disabled, doing nothing), and the
+    /// Premium badge is the thing you click to go and unlock it.
+    @ViewBuilder
+    private var diarizationControl: some View {
+        let unlocked = appState.tracerAPIClient.entitlements.diarization
+
+        HStack(spacing: 8) {
+            if !unlocked {
+                Button {
+                    if let url = URL(string: "\(TracerAPIClient.baseURL)/settings#plan") {
+                        NSWorkspace.shared.open(url)
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Text("Premium")
+                            .font(.system(size: 10))
+                            .foregroundStyle(Theme.Colors.brandPurple)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 1)
+                            .background(Capsule().fill(Theme.Colors.brandPurple.opacity(0.12)))
+                        Image(systemName: "lock.fill")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(DrawerStyle.ink(0.55))
+                    }
+                }
+                .buttonStyle(.plain)
+                .pointerOnHover()
+            }
+
+            Toggle("", isOn: Binding(
+                get: { unlocked && appState.diarizationEnabled },
+                set: { appState.diarizationEnabled = $0 }
+            ))
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            .disabled(!unlocked)
         }
     }
 
