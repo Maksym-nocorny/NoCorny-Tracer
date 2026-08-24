@@ -199,6 +199,16 @@ final class AppState {
     /// anywhere in the app, which is indistinguishable from being stuck.
     var uploadProgress: [UUID: Double] = [:]
 
+    /// What the AI is doing to a recording right now, shown on its row. The gap this fills
+    /// was measured on a real run: the first on-device transcription took 2.5 minutes -
+    /// 110 seconds of it compiling the model - and for that whole time the row showed a
+    /// green "uploaded" tick and nothing else. Waiting on an indicator that does not exist
+    /// is indistinguishable from the feature being broken.
+    enum AIPhase: String {
+        case transcribing = "Transcribing…"
+    }
+    var aiPhase: [UUID: AIPhase] = [:]
+
     /// The one upload failure worth interrupting for, shown as an alert rather than only a
     /// small grey icon in a list nobody is looking at: the recording stayed local and the
     /// user can actually fix the cause. Set for out-of-space; other failures keep the quiet
@@ -967,9 +977,14 @@ final class AppState {
                 }
             }
         } else {
+            // One label for the whole run rather than a guess at sub-phases: the first local
+            // run spends most of its time compiling the model, but the engine owns that
+            // knowledge and this row only needs to say "working, not stuck".
+            await MainActor.run { self.aiPhase[id] = .transcribing }
             let pass = await aiNamingService.generateSubtitlesAndName(
                 for: fileURL, systemAudioURL: cached?.systemAudioURL, diarize: shouldDiarize
             )
+            await MainActor.run { self.aiPhase.removeValue(forKey: id) }
             firstPass = pass
             generatedSubtitles = pass.srt
             aiName = pass.name

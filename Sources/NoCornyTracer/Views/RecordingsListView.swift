@@ -462,7 +462,18 @@ struct RecordingRowView: View {
                     .controlSize(.small)
             }
         case .uploaded:
-            if showCloudIcon {
+            // The AI runs AFTER the upload, and its first local run is minutes long. A green
+            // tick alone for that whole stretch reads as "done and broken", because the
+            // transcript the user is waiting for is nowhere and nothing says it is coming.
+            if let phase = appState.aiPhase[recording.id] {
+                HStack(spacing: 4) {
+                    ProgressView()
+                        .controlSize(.mini)
+                    Text(phase.rawValue)
+                        .font(Theme.Typography.body(9))
+                        .foregroundStyle(.secondary)
+                }
+            } else if showCloudIcon {
                 Image(systemName: "checkmark.icloud.fill")
                     .font(.system(size: 11))
                     .foregroundStyle(Theme.Colors.green)

@@ -54,10 +54,27 @@ enum OnDeviceNaming {
         #endif
     }
 
+    /// Whether the on-device model should be asked to title this transcript at all.
+    ///
+    /// It refuses Ukrainian and Russian on a good day - and on a bad one it does something
+    /// worse than refuse: it answers, in English. The first Cyrillic recording after 3.17.0
+    /// shipped came back titled "Working on new design concepts with the trainer" - wrong
+    /// language, and "трейсер" mistranslated into a gym instructor - while the transcript
+    /// itself was flawless. A cloud title in the right language beats a local one in the
+    /// wrong language, so anything non-Latin goes straight to Gemini, which is explicitly
+    /// told what language to answer in.
+    static func canTitle(transcript: String) -> Bool {
+        LanguageDetection.dominantScript(transcript) == .latin
+    }
+
     /// Returns a title, or nil to mean "ask the cloud instead".
     static func title(fromTranscript transcript: String) async -> String? {
         #if canImport(FoundationModels)
         guard #available(macOS 26.0, *), isAvailable else { return nil }
+        guard canTitle(transcript: transcript) else {
+            LogManager.shared.log("🍎 Naming: ⏭️ transcript is not Latin-script — asking the cloud for the title")
+            return nil
+        }
 
         let text = String(transcript.prefix(maxTranscriptChars))
         guard text.count > 40 else { return nil }

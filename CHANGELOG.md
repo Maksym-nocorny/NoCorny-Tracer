@@ -1,5 +1,11 @@
 # Changelog
 
+## [3.17.3] - 2026-08-24
+### Fixed
+- **Titles stay in the language you spoke.** On-device titling answered Cyrillic recordings in English (and mistranslated names while at it). Recordings in Ukrainian or Russian now go straight to the cloud for their title, which is told exactly what language to answer in. The transcript itself was always correct - only the title was wrong.
+- **The Recordings list now says "Transcribing…" while the AI works.** After the upload finishes there can be minutes of real work - the first on-device transcription compiles the model - and the row used to show a green "uploaded" tick and nothing else the whole time.
+
+
 ## [3.17.2] - 2026-08-24
 ### Fixed
 - **The app can no longer come up with no window and no way to open one.** After an update installed while the main window was closed, the app could relaunch as just a menu-bar icon: clicking it, or the Dock icon, did nothing at all. The app now notices it has launched windowless and quietly relaunches itself once, which brings the window back; if a click ever finds the app in that state anyway, the click itself triggers the same recovery instead of doing nothing.

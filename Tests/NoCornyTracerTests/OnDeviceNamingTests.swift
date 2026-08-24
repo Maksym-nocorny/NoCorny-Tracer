@@ -49,3 +49,30 @@ final class OnDeviceNamingTests: XCTestCase {
         }
     }
 }
+
+/// The on-device model's answer to a Cyrillic transcript is worse than a refusal: an English
+/// title, with the product's own name mistranslated. Found on the first real Cyrillic
+/// recording after release - the transcript was flawless and the title called a screen
+/// recorder a gym trainer.
+final class OnDeviceNamingLanguageGateTests: XCTestCase {
+
+    func testACyrillicTranscriptIsSentToTheCloud() {
+        let transcript = "записываем экран того как я работаю сейчас с нокорни трейсером мы продумываем новый дизайн"
+        XCTAssertFalse(OnDeviceNaming.canTitle(transcript: transcript),
+                       "the on-device model would answer this in English")
+    }
+
+    func testAUkrainianTranscriptIsSentToTheCloud() {
+        XCTAssertFalse(OnDeviceNaming.canTitle(transcript: "сьогодні ми записуємо екран і проговорюємо новий дизайн застосунку"))
+    }
+
+    func testAnEnglishTranscriptStaysOnDevice() {
+        XCTAssertTrue(OnDeviceNaming.canTitle(transcript: "today we are walking through the new design concepts for the tracer app"))
+    }
+
+    /// Latin words inside Cyrillic speech are normal - Figma, API, product names - and must
+    /// not flip the decision: the dominant script decides, not the presence of either.
+    func testLatinWordsInsideCyrillicSpeechDoNotFlipTheGate() {
+        XCTAssertFalse(OnDeviceNaming.canTitle(transcript: "ми зараз сидимо в Claude Code і працюємо з NoCorny Tracer над дизайном застосунку"))
+    }
+}
