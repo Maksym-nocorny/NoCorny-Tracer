@@ -125,6 +125,9 @@ final class OnboardingWindowManager {
             window.isReleasedWhenClosed = false
             window.level = .floating            // above the old main window, like the bar
             window.collectionBehavior = [.fullScreenAuxiliary]
+            // Same rule as every other floating panel of the redesign: the app's own
+            // chrome never joins a screen capture.
+            window.sharingType = .none
             self.window = window
         }
 

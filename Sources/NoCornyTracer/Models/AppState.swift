@@ -75,6 +75,13 @@ final class AppState {
     /// Why the last re-run for a recording produced nothing, in words meant for the person
     /// reading the row. Cleared when a re-run starts.
     private(set) var speakerReapplyErrors: [UUID: String] = [:]
+    /// Recordings whose failed transcription is being retried right now — the
+    /// `reapplyingSpeakers` recipe on the retry axis. Claimed synchronously BEFORE the
+    /// retry's Task starts (see `claimTranscriptionRetry`): the `.queued` status write
+    /// goes through an async hop, so between click and landing the row still reads
+    /// `.failed`, and two quick clicks used to start two parallel AI pipelines over the
+    /// same file. Also drives the retry button's spinner/disable in the row cluster.
+    private(set) var retryingTranscriptions: Set<UUID> = []
     var dropboxUsedSpace: UInt64 = 0
     var dropboxAllocatedSpace: UInt64 = 0
     var isSyncingDropbox: Bool = false
@@ -190,11 +197,6 @@ final class AppState {
     /// Tracks whether the floating "noisy environment" suggestion toast is currently shown.
     /// Transient; guards against re-presenting while already visible.
     private(set) var showNoiseSuggestion = false
-
-    /// The microphone stopped being recorded partway through the current take. Surfaced as an
-    /// alert, because it is the one failure the user can still act on while it matters: the
-    /// screen and the far side of the call are still being captured, their own voice is not.
-    var showMicrophoneLostAlert = false
 
     /// Why the last attempt to start a recording did not start one, when the reason is worth
     /// telling somebody. Nil the rest of the time.
@@ -356,16 +358,19 @@ final class AppState {
         // to notice before playing the recording back and finding themselves missing from it.
         recordingManager.audioCaptureManager.onInputDeviceLost = { [weak self] in
             guard let self else { return }
-            self.showMicrophoneLostAlert = true
-            // Hide the noise suggestion BEFORE toasting: both share one panel, and
-            // updateNoiseSuggestion(false) hides whatever is up unconditionally.
+            // Hide the noise suggestion BEFORE toasting: both share one panel.
             self.presentNoiseSuggestion?(false)
             // Phase 7: the alert lived on the main window; the toast is what remains.
+            // Critical, because this is the one failure the user can still act on while
+            // it matters — their own voice is missing from a take that is otherwise
+            // recording fine — and an info toast ("Uploaded — link copied") arriving a
+            // moment later used to shove it off the panel before it was read.
             self.presentToast?(ToastContent(
                 icon: "mic.slash",
                 iconColor: Theme.Colors.recordRed,
                 message: "The microphone stopped recording — stop and start a new take to get your voice back",
-                duration: 8
+                duration: 8,
+                priority: .critical
             ))
         }
 
@@ -1321,8 +1326,19 @@ final class AppState {
             }
         }
 
-        // Step 5: Final PATCH — title + transcript + status="ready".
-        // No Dropbox renames: the slug folder is the stable identifier.
+        // The run's verdict, computed once and shared by the PATCH below and the local
+        // status write at the bottom: a transcript in hand — or an engine's honest "no
+        // speech" — is a success; anything else failed.
+        let transcriptDelivered = generatedSubtitles?.isEmpty == false
+        let outcomeSucceeded = transcriptDelivered || aiSucceeded
+
+        // Step 5: Final PATCH — title + transcript, and status="ready" ONLY when this
+        // run actually earned it. A failed transcription used to stamp "ready" anyway,
+        // and the next sync then read that "ready" back and repainted the local
+        // `.failed` as a green tick over a transcript that does not exist — with the
+        // Retry button (which lives only on `.failed`) gone for good. On failure the
+        // server's processingStatus is simply not sent, so whatever it honestly says
+        // stays put. No Dropbox renames: the slug folder is the stable identifier.
         if let resolvedSlug = slug {
             let finalTitle = aiName ?? placeholderTitle
             await tracerAPIClient.updateVideo(
@@ -1330,7 +1346,7 @@ final class AppState {
                 title: finalTitle,
                 transcriptSrt: generatedSubtitles,
                 thumbnailURL: thumbnailShareURL,
-                processingStatus: "ready",
+                processingStatus: Self.finalPatchStatus(transcriptionSucceeded: outcomeSucceeded),
                 aiUsage: aiUsagePayload
             )
             LogManager.shared.log("🌐 Tracer: ✅ Final PATCH - title \(finalTitle.count) chars")
@@ -1356,13 +1372,11 @@ final class AppState {
             }
         }
 
-        // The axis closes with the run. A transcript in hand - or an engine's honest "no
-        // speech" - is done; anything else is failed, with the engine's last code as the
-        // row's answer to "why". Written through MainActor.run rather than the async
-        // updateRecording so the write has LANDED by the time this function returns:
-        // processRecording's deletion step reads this status the moment we hand back.
-        let transcriptDelivered = generatedSubtitles?.isEmpty == false
-        let outcomeSucceeded = transcriptDelivered || aiSucceeded
+        // The axis closes with the run, on the same `outcomeSucceeded` verdict the final
+        // PATCH above used, with the engine's last code as the row's answer to "why".
+        // Written through MainActor.run rather than the async updateRecording so the
+        // write has LANDED by the time this function returns: processRecording's
+        // deletion step reads this status the moment we hand back.
         let failureText = aiLastError ?? "transcription_failed"
         await MainActor.run {
             if let index = self.recordings.firstIndex(where: { $0.id == id }) {
@@ -1861,6 +1875,15 @@ final class AppState {
     /// test agree on the words by construction.
     static let interruptedTranscriptionMessage = "Transcription interrupted — tap to retry"
 
+    /// What the final PATCH is allowed to claim about the server's `processingStatus`,
+    /// as a pure decision: "ready" when this run's transcription actually succeeded,
+    /// nil — leave the server's status alone — when it did not. Static and named so a
+    /// test can hold it; inline, "did this run earn a ready" was one expression a
+    /// mutant could replace with the old unconditional "ready" and pass the suite.
+    static func finalPatchStatus(transcriptionSucceeded: Bool) -> String? {
+        transcriptionSucceeded ? "ready" : nil
+    }
+
     /// What the server's `processingStatus` is allowed to change locally, as a pure
     /// decision: nil in a slot means "leave that axis alone".
     ///
@@ -1868,20 +1891,26 @@ final class AppState {
     /// - A live local run is never clobbered. `.uploading` and an active transcription are
     ///   claims by a task in THIS process, which knows more than a server row that may lag
     ///   the PATCH carrying the very result being synced.
-    /// - "ready" means the whole pipeline finished somewhere, so transcription is `.done`.
+    /// - "ready" means the whole pipeline finished somewhere — but it only becomes a local
+    ///   `.done` when `hasTranscript` backs it up (the server row carries an SRT, or this
+    ///   Mac's store holds one). "ready" with no transcript anywhere is a row a buggy or
+    ///   older client stamped on a failed run, and repainting a local `.failed` from it
+    ///   put a green tick over a transcript that does not exist, with the Retry button
+    ///   (which lives only on `.failed`) gone for good.
     /// - "upload_failed" is the server's word on the upload axis and only that axis.
     /// - "processing"/"uploading" (and an absent status) say a run is underway elsewhere or
     ///   the row predates statuses - neither is a reason to rewrite local knowledge.
     static func reconciledTranscription(
         serverStatus: String?,
-        local: Recording
+        local: Recording,
+        hasTranscript: Bool
     ) -> (transcription: TranscriptionStatus?, upload: UploadStatus?) {
         guard local.uploadStatus != .uploading, !local.isTranscriptionActive else {
             return (nil, nil)
         }
         switch serverStatus {
         case "ready":
-            return (.done, nil)
+            return (hasTranscript ? .done : nil, nil)
         case "upload_failed":
             return (nil, .failed)
         default:
@@ -1933,6 +1962,11 @@ final class AppState {
               recording.effectiveTranscriptionStatus == .failed,
               FileManager.default.fileExists(atPath: recording.fileURL.path) else { return }
         guard connectsToTracer else { return }
+        // Synchronous double-click gate, LAST so a refused retry claims nothing. The
+        // `.queued` write below lands through an async hop, so the guards above still
+        // read `.failed` on a second quick click — without this claim that click
+        // started a second AI pipeline over the same file, in parallel with the first.
+        guard claimTranscriptionRetry(recording.id) else { return }
 
         LogManager.shared.log("🔄 Retry: re-running transcription for slug=\(recording.tracerSlug ?? "none")", type: .info)
         updateRecording(id: recording.id) {
@@ -1951,6 +1985,9 @@ final class AppState {
         let slug = recording.tracerSlug
         let uploadFolder = recording.dropboxFolder
         Task {
+            // The claim goes with the run, success or failure — a stuck claim would
+            // disable the retry button for good.
+            defer { self.releaseTranscriptionRetry(id) }
             let token = await self.dropboxAuthManager.refreshTokenIfNeeded() ?? self.dropboxAuthManager.accessToken
             await self.runAIPipeline(
                 id: id, fileURL: fileURL, placeholderTitle: placeholderTitle,
@@ -1970,6 +2007,27 @@ final class AppState {
                 }
                 await self.reloadRecordingsFromTracer()
             }
+        }
+    }
+
+    /// Claims the retry slot for one recording, synchronously, on the caller's (main)
+    /// thread — the actual gate `retryTranscription` runs behind. False means a retry
+    /// already holds it and the caller must do nothing. Internal rather than private so
+    /// the gate's two halves can be exercised by a test without running a pipeline.
+    func claimTranscriptionRetry(_ id: UUID) -> Bool {
+        guard !retryingTranscriptions.contains(id) else { return false }
+        retryingTranscriptions.insert(id)
+        return true
+    }
+
+    /// Releases the claim when the retry's Task finishes. Hops to main when needed: the
+    /// claim is read by SwiftUI rows and written at claim time on the main thread, and
+    /// the pipeline's Task ends off it.
+    func releaseTranscriptionRetry(_ id: UUID) {
+        if Thread.isMainThread {
+            _ = retryingTranscriptions.remove(id)
+        } else {
+            DispatchQueue.main.async { _ = self.retryingTranscriptions.remove(id) }
         }
     }
 
@@ -2117,9 +2175,15 @@ final class AppState {
                 working[idx].tracerURL = "https://tracer.nocorny.com/v/\(v.slug)"
                 // Server truth for the two axes, through the one shared decision. The
                 // `.uploading` guard above already protected a live upload; the function
-                // repeats it so its answer is safe wherever it is asked from.
-                let reconciled = Self.reconciledTranscription(serverStatus: v.processingStatus,
-                                                              local: working[idx])
+                // repeats it so its answer is safe wherever it is asked from. The
+                // transcript evidence checks the server's own SRT first — the store save
+                // above can fail on disk — and falls back to what this Mac already holds.
+                let reconciled = Self.reconciledTranscription(
+                    serverStatus: v.processingStatus,
+                    local: working[idx],
+                    hasTranscript: v.transcriptSrt?.isEmpty == false
+                        || TranscriptStore.shared.hasTranscript(for: working[idx].id)
+                )
                 if let transcription = reconciled.transcription {
                     working[idx].transcriptionStatus = transcription
                     if transcription == .done { working[idx].transcriptionError = nil }
@@ -2138,11 +2202,17 @@ final class AppState {
                     aiGeneratedName: v.title,
                     uploadStatus: .uploaded
                 )
-                // Same decision for a row this Mac has never seen: "ready" arrives as
-                // uploaded + done, "upload_failed" as a failed upload, and a mid-pipeline
-                // "processing" stays uploaded with transcription honestly unknown (nil)
-                // rather than invented.
-                let reconciled = Self.reconciledTranscription(serverStatus: v.processingStatus, local: rec)
+                // Same decision for a row this Mac has never seen: "ready" WITH the
+                // server's transcript arrives as uploaded + done, "upload_failed" as a
+                // failed upload, and a mid-pipeline "processing" — or a "ready" with no
+                // transcript to show for it — stays uploaded with transcription honestly
+                // unknown (nil) rather than invented. A brand-new row has nothing in the
+                // local store yet, so the server's SRT is the only evidence there is.
+                let reconciled = Self.reconciledTranscription(
+                    serverStatus: v.processingStatus,
+                    local: rec,
+                    hasTranscript: v.transcriptSrt?.isEmpty == false
+                )
                 if let transcription = reconciled.transcription {
                     rec.transcriptionStatus = transcription
                 }

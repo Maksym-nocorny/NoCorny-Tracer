@@ -86,7 +86,17 @@ struct TranscriptionStatusCluster: View {
         case .failed:
             HStack(spacing: 6) {
                 icon("exclamationmark.triangle.fill", tint: Self.failedAlert)
-                retryButton
+                // A claimed retry hasn't landed its `.queued` write yet (async hop), so
+                // the row still reads `.failed` for a beat — show the work instead of a
+                // button whose second click would be a no-op anyway.
+                if appState.retryingTranscriptions.contains(recording.id) {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .frame(width: 24, height: 24)
+                        .help("Retrying transcription…")
+                } else {
+                    retryButton
+                }
             }
             .help(recording.transcriptionError ?? "Transcription failed — click to retry")
         }

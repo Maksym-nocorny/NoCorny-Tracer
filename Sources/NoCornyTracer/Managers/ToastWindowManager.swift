@@ -7,6 +7,15 @@ import AppKit
 /// The first client is "Uploaded — link copied" (Figma 88:762); anything transient
 /// and glanceable belongs here rather than in a modal alert.
 struct ToastContent {
+    /// How hard a toast fights for the single panel. `.info` is glanceable good news
+    /// ("Uploaded — link copied") that any newer toast may shove aside; `.critical` is
+    /// something the user must act on while it matters (the microphone dying mid-take)
+    /// and holds the panel for its whole duration against `.info` arrivals.
+    enum Priority {
+        case info
+        case critical
+    }
+
     var icon: String
     var iconColor: Color = Theme.Colors.statusGreen
     var message: String
@@ -14,6 +23,7 @@ struct ToastContent {
     var buttonAction: (() -> Void)?
     /// Info toasts default to 4s; the noise-suggestion toast keeps its historical 12s.
     var duration: TimeInterval = 4
+    var priority: Priority = .info
 }
 
 /// Pure decision for the after-upload moment: what goes to the pasteboard and what
@@ -44,18 +54,63 @@ private final class ToastPanel: NSPanel {
 /// richer noise-reduction suggestion (`updateNoiseSuggestion`), which keeps its exact
 /// three-button content and 12s auto-dismiss.
 ///
-/// One panel, latest content wins — two simultaneous toasts would fight for the same
-/// spot anyway. `sharingType = .none` keeps toasts out of the recording itself.
+/// One panel, latest content wins — with one exception: a live `.critical` toast keeps
+/// the panel against `.info` arrivals until its duration runs out (see `shouldReplace`).
+/// `sharingType = .none` keeps toasts out of the recording itself.
 @Observable
 final class ToastWindowManager {
     private var window: NSPanel?
     private var dismissTimer: Timer?
 
+    /// What the panel is holding right now, for the replacement decision: the priority of
+    /// the content and when its duration runs out. Cleared by `hideWindow`. The noise
+    /// suggestion counts as `.info` — it is advice, not an emergency.
+    private var shownPriority: ToastContent.Priority?
+    private var shownUntil: Date?
+    /// Whether the panel's current content is the noise suggestion specifically, so
+    /// `updateNoiseSuggestion(show: false)` only tears down its own content.
+    private var isShowingNoiseSuggestion = false
+
+    // MARK: Replacement policy (pure, covered by ToastReplacementPolicyTests)
+
+    /// May `incoming` take the panel from what is showing? Pure so the answer is testable
+    /// without a panel. `current` nil (or a duration that already ran out) means the panel
+    /// is free — anything may present. `.critical` replaces anything, including an older
+    /// critical toast: newer news of the same weight wins. `.info` replaces `.info` (the
+    /// historical "latest wins") but never a critical toast that is still inside its
+    /// duration. The losing info toast is DROPPED, not queued: it is glanceable, momentary
+    /// news, and replaying it after the critical toast would surface stale information at
+    /// a random later moment.
+    static func shouldReplace(
+        current: ToastContent.Priority?,
+        remaining: TimeInterval,
+        incoming: ToastContent.Priority
+    ) -> Bool {
+        guard let current, remaining > 0 else { return true }
+        if incoming == .critical { return true }
+        return current != .critical
+    }
+
+    /// The `remaining` argument for the policy, read off the panel's bookkeeping.
+    private var remainingSeconds: TimeInterval {
+        shownUntil?.timeIntervalSinceNow ?? 0
+    }
+
     // MARK: Info toasts
 
     func show(toast: ToastContent, appState: AppState) {
         onMain { [self] in
+            guard Self.shouldReplace(current: shownPriority,
+                                     remaining: remainingSeconds,
+                                     incoming: toast.priority) else {
+                // Dropped, not queued — see shouldReplace. The log keeps the drop visible.
+                LogManager.shared.log("🔔 Toast dropped (critical toast on screen): \(toast.message)")
+                return
+            }
             present(rootView: AnyView(InfoToastView(content: toast)), appState: appState)
+            shownPriority = toast.priority
+            shownUntil = Date().addingTimeInterval(toast.duration)
+            isShowingNoiseSuggestion = false
             // Self-dismiss: nothing outside tracks an info toast's visibility.
             scheduleDismiss(after: toast.duration) { [weak self] in
                 self?.hideWindow()
@@ -70,13 +125,30 @@ final class ToastWindowManager {
     func updateNoiseSuggestion(show: Bool, appState: AppState) {
         onMain { [self] in
             if show {
+                guard Self.shouldReplace(current: shownPriority,
+                                         remaining: remainingSeconds,
+                                         incoming: .info) else {
+                    // Blocked by a critical toast. Reset the AppState flag rather than
+                    // leaving `showNoiseSuggestion` latched true with nothing on screen,
+                    // which would block every later suggestion for the whole session.
+                    appState.dismissNoiseSuggestion(forever: false)
+                    return
+                }
                 present(rootView: AnyView(NoiseSuggestionToastView(appState: appState)), appState: appState)
+                shownPriority = .info
+                shownUntil = Date().addingTimeInterval(12.0)
+                isShowingNoiseSuggestion = true
                 // Auto-dismiss goes through AppState (not a plain hide) so
                 // `showNoiseSuggestion` is reset and the suggestion can re-arm.
                 scheduleDismiss(after: 12.0) { [weak appState] in
                     appState?.dismissNoiseSuggestion(forever: false)
                 }
             } else {
+                // Hiding the suggestion must not take down a critical toast that already
+                // replaced it (dismissNoiseSuggestion hides unconditionally otherwise).
+                if shownPriority == .critical, remainingSeconds > 0, !isShowingNoiseSuggestion {
+                    return
+                }
                 hideWindow()
             }
         }
@@ -144,6 +216,9 @@ final class ToastWindowManager {
         dismissTimer = nil
         window?.orderOut(nil)
         window = nil
+        shownPriority = nil
+        shownUntil = nil
+        isShowingNoiseSuggestion = false
     }
 
     /// AppState's closures fire from async pipeline contexts as well as the main

@@ -245,7 +245,8 @@ private struct DrawerRecordingRow: View {
         Button("Retry transcription") {
             appState.retryTranscription(recording)
         }
-        .disabled(recording.effectiveTranscriptionStatus != .failed)
+        .disabled(recording.effectiveTranscriptionStatus != .failed
+                  || appState.retryingTranscriptions.contains(recording.id))
 
         if canReapplySpeakers {
             Divider()
@@ -266,6 +267,37 @@ private struct DrawerRecordingRow: View {
                 }
             }
             .disabled(appState.reapplyingSpeakers.contains(recording.id))
+        }
+
+        Divider()
+
+        // The one destructive action, last and behind a confirmation — the old list's
+        // Delete lost its only door when phase 6b removed that list.
+        Button("Delete…", role: .destructive) {
+            confirmDelete()
+        }
+    }
+
+    /// NSAlert rather than SwiftUI .alert for the same reason as the Problem Reports
+    /// consent dialog: the drawer sits on a borderless nonactivating panel, where
+    /// sheet-style alerts have nothing reliable to attach to. The drawer is only open
+    /// outside a recording, so the activation NSAlert brings is fine. The text mirrors
+    /// what `deleteRecording` will actually do: the server + Dropbox copy goes only for
+    /// a registered recording while signed in; otherwise only the local file goes.
+    private func confirmDelete() {
+        let deletesFromServer = recording.tracerSlug != nil && appState.tracerAPIClient.isSignedIn
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Delete \u{201C}\(recording.displayName)\u{201D}?"
+        alert.informativeText = deletesFromServer
+            ? "Deletes this recording from Tracer and Dropbox. This cannot be undone."
+            : "Deletes the local file. This cannot be undone."
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        alert.buttons.first?.hasDestructiveAction = true
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn {
+            Task { await appState.deleteRecording(recording) }
         }
     }
 
