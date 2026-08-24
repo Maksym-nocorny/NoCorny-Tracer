@@ -62,3 +62,7 @@ If you change the Bundle ID, macOS will treat the app as a new application. You 
 - Accessibility
 
 This is the expected behavior and helps test the **Permissions Window** in the app.
+
+## Keychain trap on unattended dev runs (2026-08-24)
+
+The test bundle id isolates UserDefaults and TCC, **not the keychain**: `KeychainHelper` uses a hardcoded service name, so a debug binary (different code signature) hits the real keychain item and macOS shows a modal password prompt **inside `App.init`** (AppState → TracerAPIClient → KeychainHelper.load → SecItemCopyMatching). Until someone clicks it, the process hangs silently — nothing is written to app.log because LogManager has not been touched yet. Diagnose with `sample <pid>` (stack parked in SecItemCopyMatching); kill the process to dismiss. Live UI verification therefore needs a human at the keyboard to approve the keychain prompt (or deny it — the app then runs signed-out).
