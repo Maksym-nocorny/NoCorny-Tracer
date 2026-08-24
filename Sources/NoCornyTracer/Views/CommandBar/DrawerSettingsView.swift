@@ -154,6 +154,28 @@ struct DrawerSettingsView: View {
                         minWidth: 160
                     )
                 }
+
+                hairline
+
+                // Ported from the old SettingsView's Input Devices section when phase 7
+                // deleted it (these two had no drawer row yet and would have lost their
+                // only UI). Row styling is the drawer's own; the macro doesn't cover
+                // them — flagged for the design pass.
+                settingRow(icon: "waveform", label: "Reduce background noise") {
+                    Toggle("", isOn: $appState.reduceBackgroundNoise)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                }
+
+                hairline
+
+                settingRow(icon: "speaker.wave.2", label: "Record system audio") {
+                    Toggle("", isOn: $appState.recordSystemAudio)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                }
             }
             // Same rule as the old Settings: capture parameters are fixed mid-recording.
             .disabled(isRecording)
@@ -644,6 +666,8 @@ struct DrawerSettingsView: View {
     }
 
     /// The macro's flat link row (76:156): Check for Updates · Show Logs · Privacy.
+    /// "Report a Problem" joined in phase 7, ported from the old SettingsView's
+    /// General section so the reporting door survives the main window.
     private var linksRow: some View {
         HStack(spacing: 16) {
             linkButton("Check for Updates") {
@@ -655,6 +679,10 @@ struct DrawerSettingsView: View {
                     inFileViewerRootedAtPath: ""
                 )
             }
+            linkButton(isSendingReport ? "Sending…" : "Report a Problem") {
+                reportAProblem()
+            }
+            .disabled(isSendingReport)
             linkButton("Privacy") {
                 if let url = URL(string: "https://tracer.nocorny.com/privacy") {
                     NSWorkspace.shared.open(url)
@@ -663,6 +691,72 @@ struct DrawerSettingsView: View {
             Spacer(minLength: 0)
         }
         .padding(.vertical, 10)
+    }
+
+    // MARK: Problem reports (ported from the old SettingsView in phase 7)
+
+    @State private var isSendingReport = false
+
+    /// Same flow as the old Settings tab: availability check, then an explicit
+    /// consent dialog listing what actually goes (the report contains the app's
+    /// own diagnostic log, and telling someone that only after the fact is not
+    /// consent — the numbers are real ones read off the payload). NSAlert rather
+    /// than SwiftUI .alert: the drawer sits on a borderless nonactivating panel,
+    /// where sheet-style alerts have nothing reliable to attach to. The drawer is
+    /// only open outside a recording, so the activation NSAlert brings is fine.
+    private func reportAProblem() {
+        switch BugReportComposer.availability {
+        case .ready:
+            let payload = BugReportClient.makePayload()
+            let alert = NSAlert()
+            alert.messageText = "Send a problem report?"
+            alert.informativeText = """
+            This sends recent diagnostic log entries (about \(payload.logSizeKB) KB), \
+            your app version (\(payload.appVersion)), macOS version and Mac model.
+
+            No video, audio or transcript text is included, and links to your recordings \
+            are removed.
+            """
+            alert.addButton(withTitle: "Send")
+            alert.addButton(withTitle: "Cancel")
+            NSApp.activate(ignoringOtherApps: true)
+            if alert.runModal() == .alertFirstButtonReturn {
+                sendReport(payload)
+            }
+        case .noLogYet:
+            showReportOutcome("There is nothing in the log to send yet.")
+        case .onlyOlderVersions:
+            // Normal right after an update, and worth saying plainly: a report
+            // only carries entries this version wrote, and it has not written
+            // any yet.
+            showReportOutcome("Everything logged so far came from the previous version. Reports only include entries from the current one - use the app for a moment and try again.")
+        }
+    }
+
+    private func sendReport(_ payload: BugReportClient.Payload) {
+        isSendingReport = true
+        Task {
+            let outcome: String
+            do {
+                try await BugReportClient.send(payload, token: appState.tracerAPIClient.apiToken)
+                outcome = "Report sent. Thank you."
+            } catch {
+                outcome = error.localizedDescription
+            }
+            await MainActor.run {
+                isSendingReport = false
+                showReportOutcome(outcome)
+            }
+        }
+    }
+
+    private func showReportOutcome(_ message: String) {
+        let alert = NSAlert()
+        alert.messageText = "Problem report"
+        alert.informativeText = message
+        alert.addButton(withTitle: "OK")
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
     }
 
     private func linkButton(_ title: String, action: @escaping () -> Void) -> some View {

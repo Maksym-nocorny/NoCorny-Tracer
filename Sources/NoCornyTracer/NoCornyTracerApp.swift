@@ -2,13 +2,21 @@ import SwiftUI
 import Sparkle
 
 /// NoCorny Tracer — A macOS screen recording app with Dropbox sync
+///
+/// Phase 7 of the redesign: the app has NO SwiftUI windows any more. The whole
+/// surface is imperative AppKit panels owned by the AppDelegate — the floating
+/// command bar (with its Gallery/Settings drawers), the recording pill, the
+/// background-activity pills, toasts, the storage banner, the camera bubble,
+/// the onboarding card and the tray. The `Settings` scene below is a required
+/// placeholder: a SwiftUI `App` must declare at least one scene.
 @main
 struct NoCornyTracerApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
+    /// `AppState.shared` is a WEAK static — this @State is what actually keeps
+    /// the app's state alive for the lifetime of the process.
     @State private var appState = AppState()
-    @State private var cameraWindowManager = CameraWindowManager()
-    @State private var toastWindowManager = ToastWindowManager()
+    /// Same deal: `PermissionsManager.shared` is weak, this reference retains it.
     @State private var permissionsManager: PermissionsManager
 
     // Sparkle auto-updater
@@ -36,118 +44,21 @@ struct NoCornyTracerApp: App {
         // Read live rather than captured: the app almost always launches with no recording
         // running, so a captured value would always say "go ahead".
         scheduler.isRecording = { AppState.shared?.recordingManager.isRecording ?? false }
+
+        // Hand Sparkle to the AppDelegate through a static rather than by touching
+        // `appDelegate` here: the adaptor's timing in `init` is an implementation
+        // detail, the static is deterministic. Consumed in applicationDidFinishLaunching;
+        // the Settings drawer reaches it via (NSApp.delegate as? AppDelegate).
+        AppDelegate.bootstrapUpdaterController = updater
     }
 
     var body: some Scene {
-        // Main Window
-        Window("NoCorny Tracer", id: "main") {
-            MainWindowHost(
-                appState: appState,
-                updaterController: updaterController,
-                permissionsManager: permissionsManager,
-                cameraWindowManager: cameraWindowManager,
-                toastWindowManager: toastWindowManager,
-                appDelegate: appDelegate
-            )
-                .preferredColorScheme(appState.appTheme.colorScheme)
-                .tint(Theme.Colors.brandPurple)
-                // The nocornytracer:// sign-in callback is handled in AppDelegate
-                // (handleProcessURLEvent) so it works even when this window is closed.
-                .onChange(of: appState.isCameraEnabled) { _, newValue in
-                    cameraWindowManager.updateVisibility(isEnabled: newValue, appState: appState)
-                }
-        }
-        // .contentSize: the window takes both its min AND max from the content, which is
-        // what locks the width — MainView is a fixed 380pt wide, so 380 becomes the
-        // window's max width too and the frame can't be dragged wider. Height stays
-        // freely resizable because every tab's content is vertically flexible (max
-        // height infinity), which also keeps switching tabs from collapsing the window.
-        // Note: .contentMinSize can't lock the width — it leaves contentMaxSize
-        // unbounded and re-applies that over any manual clamp.
-        .defaultSize(width: 380, height: 560)
-        .windowResizability(.contentSize)
-        // Permissions Window
-        Window("Permissions", id: "permissions") {
-            PermissionsView(permissionsManager: permissionsManager)
-                .preferredColorScheme(appState.appTheme.colorScheme)
-                .tint(Theme.Colors.brandPurple)
-        }
-        .windowResizability(.contentSize)
-    }
-}
-
-// MARK: - Main Window Host
-
-/// Thin wrapper around MainView that captures the SwiftUI `openWindow` action and
-/// bridges it to the AppDelegate so the menu-bar icon can reopen the Scene after
-/// it's been closed. (Before this bridge, `NSApp.windows` would be empty after the
-/// user closed the window, leaving the status-item click with nothing to focus.)
-private struct MainWindowHost: View {
-    @Bindable var appState: AppState
-    let updaterController: SPUStandardUpdaterController
-    @Bindable var permissionsManager: PermissionsManager
-    let cameraWindowManager: CameraWindowManager
-    let toastWindowManager: ToastWindowManager
-    let appDelegate: AppDelegate
-
-    @Environment(\.openWindow) private var openWindow
-
-    var body: some View {
-        MainView(appState: appState, updaterController: updaterController, permissionsManager: permissionsManager)
-            .onAppear {
-                appDelegate.updaterController = updaterController
-                appDelegate.reopenMainWindow = { openWindow(id: "main") }
-                // The window exists, so a recovery relaunch (if one happened) worked.
-                UserDefaults.standard.removeObject(forKey: AppDelegate.windowBootstrapKey)
-                cameraWindowManager.updateVisibility(isEnabled: appState.isCameraEnabled, appState: appState)
-                // Route toast presentation through a closure so it works while the main window is
-                // hidden during recording (see AppState.presentNoiseSuggestion). Both the
-                // noise suggestion and the phase-4 info toasts ("Uploaded — link copied",
-                // "Upload failed — Dropbox full") share the one ToastWindowManager.
-                appState.presentNoiseSuggestion = { show in
-                    toastWindowManager.updateNoiseSuggestion(show: show, appState: appState)
-                }
-                appState.presentToast = { toast in
-                    toastWindowManager.show(toast: toast, appState: appState)
-                }
-
-                // Route the recording permission gate to the onboarding card (phase 5):
-                // a Start blocked on Screen Recording re-opens step 1, which explains
-                // the grant AND the relaunch it needs. Mic/camera can only be missing
-                // here when the user DENIED them earlier (undetermined ones get the
-                // system prompt inside ensureRecordingPermissions) — onboarding can't
-                // help with a denial, so those go straight to System Settings.
-                appState.presentPermissionsGate = { missing in
-                    NSApp.activate(ignoringOtherApps: true)
-                    if missing.contains(.screenRecording) {
-                        appDelegate.presentOnboardingPermissionStep()
-                    } else if let first = missing.first {
-                        PermissionsManager.openSystemSettings(for: first)
-                    }
-                }
-
-                // A start refusal arriving from the hotkey has no window to appear on, and
-                // an alert on a closed window is "nothing at all happened" with extra steps.
-                appState.presentStartFailure = {
-                    NSApp.activate(ignoringOtherApps: true)
-                    openWindow(id: "main")
-                }
-
-                appState.presentUploadFailure = {
-                    NSApp.activate(ignoringOtherApps: true)
-                    openWindow(id: "main")
-                }
-
-                // Opt the main window out of Cocoa state restoration. With
-                // NSQuitAlwaysKeepsWindows enabled, quitting while the window is closed would
-                // otherwise relaunch the app with no window — so MainWindowHost never appears,
-                // the `reopenMainWindow` bridge stays nil, and the menu-bar / Dock click can't
-                // summon the window. Disabling restoration makes the app reliably relaunch with
-                // the window present and the bridge initialized.
-                DispatchQueue.main.async {
-                    NSApp.windows.first(where: { $0.title == "NoCorny Tracer" })?.isRestorable = false
-                }
-            }
+        // Zero windows (phase 7). `Settings { EmptyView() }` is the standard
+        // agent-style-app placeholder scene. Known compromise: the app menu's
+        // "Settings…" (⌘,) — visible on the rare occasions the app is active,
+        // e.g. during onboarding — opens this empty window. The real Settings
+        // live in the command bar's drawer (tray menu → Settings…).
+        Settings { EmptyView() }
     }
 }
 
@@ -162,61 +73,34 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// all live in the controller; the delegate only owns and wires it.
     @MainActor private var statusItemController: StatusItemController?
 
-    // Sparkle updater (set from NoCornyTracerApp)
+    // Sparkle updater (set from NoCornyTracerApp via the bootstrap static)
     var updaterController: SPUStandardUpdaterController?
-
-    /// Reopens the main window Scene. Set by MainView via `.onAppear` so that we can
-    /// invoke SwiftUI's environment `openWindow` from the AppDelegate (e.g. from the
-    /// menu-bar icon after the window has been closed).
-    var reopenMainWindow: (() -> Void)?
+    /// One-way handoff from the SwiftUI App's init — see the note there.
+    static var bootstrapUpdaterController: SPUStandardUpdaterController?
 
     /// The floating command bar of the redesign (phase 2). Owned here rather than as
-    /// App @State because it must come up at launch and from the tray menu — neither
-    /// path can rely on the main window's view graph having appeared.
+    /// App @State because it must come up at launch and from the tray menu — since
+    /// phase 7 there is no window view graph anywhere to hang it off.
     @MainActor var commandBarWindowManager: CommandBarWindowManager?
 
     /// The background-activity pills panel (phase 4) — owned here for the same
-    /// reason as the bar: uploads resume at launch, before any window appears.
+    /// reason as the bar: uploads resume at launch, before any UI appears.
     @MainActor var backgroundPillsWindowManager: BackgroundPillsWindowManager?
 
     /// The onboarding window (phase 5) — owned here because both of its doors
     /// (first launch, permission gate) can open with no SwiftUI window anywhere.
     @MainActor var onboardingWindowManager: OnboardingWindowManager?
 
-    /// One-shot guard so the windowless-launch recovery below cannot loop: set before the
-    /// recovery relaunch, cleared the moment the window actually presents.
-    static let windowBootstrapKey = "windowBootstrapRelaunchAttempted"
+    /// Toasts (phase 4) — owned here since phase 7: the old main window's host
+    /// used to wire the present* closures, and the window is gone.
+    @MainActor var toastWindowManager: ToastWindowManager?
+
+    /// The floating camera bubble — owned here since phase 7 for the same reason:
+    /// its visibility used to be driven by the main window's .onChange.
+    @MainActor var cameraWindowManager: CameraWindowManager?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // The app can come up with NO window at all: SwiftUI remembers the main scene was
-        // closed at quit and does not re-present it, and every reopen path here runs through
-        // a bridge closure that only exists once the window has appeared. Zero windows, nil
-        // bridge, and every menu-bar and Dock click lands on nothing - which reached the
-        // first user of 3.17.1 minutes after the update, as "the app will not open". The
-        // macOS 15 scene modifiers that fix this properly are above our deployment target
-        // and SceneBuilder refuses an availability branch, so: detect and relaunch, once.
-        // A plain relaunch demonstrably presents the scene - that is how the incident was
-        // resolved live.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
-            guard let self, self.reopenMainWindow == nil,
-                  !NSApp.windows.contains(where: { $0.title == "NoCorny Tracer" }) else {
-                UserDefaults.standard.removeObject(forKey: Self.windowBootstrapKey)
-                return
-            }
-            guard !UserDefaults.standard.bool(forKey: Self.windowBootstrapKey) else {
-                // Relaunched once already and still windowless: stop, say so, and leave a
-                // loud trace instead of a relaunch loop.
-                LogManager.shared.log("🪟 Window: still no main window after a recovery relaunch — giving up", type: .error)
-                return
-            }
-            LogManager.shared.log("🪟 Window: launched with no main window and a nil reopen bridge — relaunching once to recover", type: .error)
-            UserDefaults.standard.set(true, forKey: Self.windowBootstrapKey)
-            let configuration = NSWorkspace.OpenConfiguration()
-            configuration.createsNewApplicationInstance = true
-            NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration) { _, _ in
-                DispatchQueue.main.async { NSApp.terminate(nil) }
-            }
-        }
+        updaterController = Self.bootstrapUpdaterController
 
         // URL handler for Tracer browser sign-in (nocornytracer://...).
         NSAppleEventManager.shared().setEventHandler(
@@ -226,16 +110,26 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             andEventID: AEEventID(kAEGetURL)
         )
 
-        // Redesign phase-2 scaffolding: show the floating command bar alongside the old
-        // main window (which stays fully functional until phase 7 dismantles it).
-        // Phase 5 adds the tray controller and the first-launch onboarding check
-        // (which runs AFTER the bar so the card lands on top of it).
+        // The command bar IS the app now (phase 7): tray first, then the bar and
+        // its wiring, then the first-launch onboarding check (which runs AFTER
+        // the bar so the card lands on top of it).
         Task { @MainActor [weak self] in
             guard let self else { return }
             self.setupStatusItemController()
             self.bootstrapCommandBar()
             self.presentOnboardingAtLaunchIfNeeded()
         }
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        // Moved from the old MainView's .onReceive(didBecomeActive) in phase 7,
+        // same isSignedIn gate: refresh when the user switches back to the app
+        // (e.g. after renaming a video on tracer.nocorny.com in their browser).
+        // Entitlements too — someone who just upgraded in the browser switches
+        // straight back here expecting it to have taken effect.
+        guard let appState = AppState.shared, appState.tracerAPIClient.isSignedIn else { return }
+        Task { await appState.reloadRecordingsFromTracer() }
+        Task { await appState.tracerAPIClient.refreshProfile() }
     }
 
     // MARK: - Tray (redesign phase 5)
@@ -295,11 +189,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Command Bar (redesign phase 2)
 
-    /// Brings the command bar up and repeats the launch bootstrap that used to live only
-    /// in MainView.onAppear (device refresh, hotkeys, Dropbox sync) — the bar can't rely
-    /// on the old window's view graph once phase 7 removes it. Running both is safe: the
-    /// refreshes are idempotent re-enumerations and hotkeyManager.start has an
-    /// isStarted guard.
+    /// Brings the command bar up, runs the launch bootstrap that used to live in
+    /// MainView.onAppear (device refresh, hotkeys, Dropbox sync), and — since
+    /// phase 7 — owns the present* closure wiring that used to live in the old
+    /// main window's host view. The refreshes are idempotent re-enumerations and
+    /// hotkeyManager.start has an isStarted guard, so re-running is safe.
     @MainActor private func bootstrapCommandBar(retriesLeft: Int = 3) {
         guard let appState = AppState.shared else {
             // AppState is built in the SwiftUI App's init, which normally runs before
@@ -314,6 +208,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
             return
         }
+
+        wirePresentationClosures(appState: appState)
 
         appState.cameraManager.refreshDevices()
         appState.recordingManager.audioCaptureManager.refreshDevices()
@@ -339,57 +235,85 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    // MARK: - Main window
+    /// The present* closures (phase 7): every AppState "surface this" hook lands on
+    /// a floating panel the delegate owns. They used to be wired in the main
+    /// window's .onAppear; the window is gone and the delegate always exists —
+    /// which is the whole reason these are closures in the first place (they fire
+    /// from the pipeline / hotkeys, with no window anywhere).
+    @MainActor private func wirePresentationClosures(appState: AppState) {
+        let toasts = toastWindowManager ?? ToastWindowManager()
+        toastWindowManager = toasts
 
-    @objc private func showMainWindow() {
-        NSApp.activate(ignoringOtherApps: true)
+        // Both the noise suggestion and the info toasts share the one ToastWindowManager.
+        appState.presentNoiseSuggestion = { [weak toasts] show in
+            guard let appState = AppState.shared else { return }
+            toasts?.updateNoiseSuggestion(show: show, appState: appState)
+        }
+        appState.presentToast = { [weak toasts] toast in
+            guard let appState = AppState.shared else { return }
+            toasts?.show(toast: toast, appState: appState)
+        }
 
-        // A nil bridge means the scene never presented this launch, so the click would land
-        // on nothing - silently, which is how this bug reached a user as "the app will not
-        // open". Nothing can summon a SwiftUI window scene from AppKit, so the honest move
-        // is the blunt one: relaunch ourselves; the scene presents at launch.
-        if reopenMainWindow == nil {
-            LogManager.shared.log("🪟 Window: reopen bridge is nil — the scene never presented; relaunching to recover", type: .error)
-            UserDefaults.standard.set(true, forKey: Self.windowBootstrapKey)
-            let configuration = NSWorkspace.OpenConfiguration()
-            configuration.createsNewApplicationInstance = true
-            NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration) { _, _ in
-                DispatchQueue.main.async { NSApp.terminate(nil) }
+        // A start blocked on Screen Recording re-opens onboarding step 1, which
+        // explains the grant AND the relaunch it needs. Mic/camera can only be
+        // missing here when the user DENIED them earlier (undetermined ones get
+        // the system prompt inside ensureRecordingPermissions) — onboarding can't
+        // help with a denial, so those go straight to System Settings.
+        appState.presentPermissionsGate = { [weak self] missing in
+            NSApp.activate(ignoringOtherApps: true)
+            if missing.contains(.screenRecording) {
+                self?.presentOnboardingPermissionStep()
+            } else if let first = missing.first {
+                PermissionsManager.openSystemSettings(for: first)
             }
-            return
         }
 
-        // Always ask SwiftUI to present the "main" Window scene. For a `Window` scene this
-        // recreates it if the user closed it, or brings it forward if it was ordered-out
-        // (e.g. hidden during recording). Previously we returned early after
-        // makeKeyAndOrderFront on a lingering, content-less NSWindow that AppKit keeps in
-        // NSApp.windows after a SwiftUI close — so the scene never actually reopened and the
-        // menu-bar / Dock click appeared to do nothing.
-        reopenMainWindow?()
-
-        // Raise / un-miniaturize the resulting window once SwiftUI has (re)created it. A
-        // miniaturized window won't expand from openWindow alone, so deminiaturize here.
-        DispatchQueue.main.async { [weak self] in
-            self?.raiseMainWindow()
+        // A start refusal used to be an alert on the main window; phase 7 makes it
+        // a toast — the message is already written for people (startFailureMessage).
+        appState.presentStartFailure = { [weak toasts] in
+            guard let appState = AppState.shared else { return }
+            toasts?.show(toast: ToastContent(
+                icon: "exclamationmark.triangle.fill",
+                iconColor: Theme.Colors.recordRed,
+                message: appState.startRecordingFailure ?? "The recording could not be started",
+                duration: 6
+            ), appState: appState)
         }
+
+        // Nothing sets uploadFailureNotice today (out-of-space became toast+banner in
+        // phase 4), but the door stays wired so a future notice surfaces instead of
+        // vanishing silently.
+        appState.presentUploadFailure = { [weak toasts] in
+            guard let appState = AppState.shared else { return }
+            toasts?.show(toast: ToastContent(
+                icon: "exclamationmark.triangle.fill",
+                iconColor: Theme.Colors.pausedAmber,
+                message: appState.uploadFailureNotice ?? "Upload failed",
+                duration: 6
+            ), appState: appState)
+        }
+
+        // The camera bubble used to follow the main window's .onChange(of:
+        // isCameraEnabled); AppState now announces the flip itself.
+        let camera = cameraWindowManager ?? CameraWindowManager()
+        cameraWindowManager = camera
+        appState.presentCameraOverlay = { [weak camera] enabled in
+            guard let appState = AppState.shared else { return }
+            camera?.updateVisibility(isEnabled: enabled, appState: appState)
+        }
+        // Restore the bubble at launch if the camera was left enabled.
+        camera.updateVisibility(isEnabled: appState.isCameraEnabled, appState: appState)
     }
 
-    /// Brings the main window to the front, expanding it if it was collapsed to the Dock.
-    private func raiseMainWindow() {
-        guard let window = NSApp.windows.first(where: {
-            $0.title == "NoCorny Tracer" && $0.canBecomeKey
-        }) else { return }
-        if window.isMiniaturized {
-            window.deminiaturize(nil)
-        }
-        window.makeKeyAndOrderFront(nil)
-    }
+    // MARK: - Reopen (Dock click)
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        // The floating camera overlay counts as a "visible window" to AppKit, which
-        // breaks the default dock-click reopen. Handle it ourselves.
-        showMainWindow()
-        return false
+        // A Dock click summons the command bar — there is no main window any more,
+        // and the floating panels don't count as "visible windows" to AppKit anyway.
+        Task { @MainActor [weak self] in
+            self?.presentCommandBar()
+        }
+        return true
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -440,9 +364,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
               let url = URL(string: urlString) else { return }
 
         // Handle the Tracer sign-in callback HERE in the AppDelegate, which always
-        // exists — rather than only via a SwiftUI .onReceive on the main window's
-        // view, which isn't in the hierarchy when the window is closed (so the
-        // callback was silently dropped, leaving the user stuck mid-sign-in).
+        // exists — since phase 7 there is no window whose view hierarchy could
+        // observe it, and even before that a closed window silently dropped the
+        // callback, leaving the user stuck mid-sign-in.
         if url.scheme == "nocornytracer", let appState = AppState.shared {
             Task { @MainActor in
                 await appState.tracerAPIClient.completeBrowserSignIn(url: url)
@@ -454,4 +378,3 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 }
-

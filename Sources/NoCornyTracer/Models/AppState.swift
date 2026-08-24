@@ -67,14 +67,6 @@ final class AppState {
         var displayName: String { rawValue.capitalized }
     }
 
-    // MARK: - Tabs
-    enum MainTab: String, CaseIterable {
-        case recorder = "Recorder"
-        case recordings = "Recordings"
-        case settings = "Settings"
-    }
-    var selectedTab: MainTab = .recorder
-
     // MARK: - State
     var recordings: [Recording] = []
     /// Recordings whose speaker labels are being recomputed right now. Drives the row spinner
@@ -192,14 +184,10 @@ final class AppState {
 
     // MARK: - Persistence Keys
     private let recordingsKey = "savedRecordings"
-    private static let hasLaunchedBeforeKey = "hasLaunchedBefore"
     private static let dropboxUsedSpaceKey = "dropboxUsedSpace"
     private static let dropboxAllocatedSpaceKey = "dropboxAllocatedSpace"
     private static let lastTracerSyncAtKey = "lastTracerSyncAt"
     private static let noiseSuggestionDismissedKey = "noiseSuggestionDismissedForever"
-
-    /// Set to true on first launch to show a dialog asking about launch at login
-    var showLaunchAtLoginPrompt = false
 
     /// Tracks whether the floating "noisy environment" suggestion toast is currently shown.
     /// Transient; guards against re-presenting while already visible.
@@ -242,21 +230,21 @@ final class AppState {
     var uploadFailureNotice: String?
     /// Once the user picks "Don't suggest again", we never show the suggestion toast again.
     private var noiseSuggestionDismissedForever = false
-    /// Presents/hides the floating suggestion toast. Set by the app scene's window host. Driven via
-    /// a closure (not SwiftUI `.onChange`) because the toast must appear DURING recording, when the
-    /// main window is hidden and its view graph can't be relied on to observe state changes.
+    /// Presents/hides the floating suggestion toast. Set by the AppDelegate (phase 7). Driven via
+    /// a closure (not SwiftUI `.onChange`) because the toast must appear DURING recording, and
+    /// since phase 7 there is no window view graph anywhere to observe state changes.
     @ObservationIgnored
     var presentNoiseSuggestion: ((Bool) -> Void)?
 
-    /// Presents the Permissions window (and brings the app forward) when a recording is
-    /// blocked on a missing permission. Set by the app scene's window host — like
-    /// `presentNoiseSuggestion` — because the gate fires while the main window is hidden
-    /// (both Start paths `orderOut` the window before awaiting `startRecording`).
+    /// Presents the onboarding permission step (and brings the app forward) when a recording
+    /// is blocked on a missing permission. Set by the AppDelegate — like
+    /// `presentNoiseSuggestion` — because the gate fires from the hotkey and the pipeline,
+    /// with no window anywhere.
     @ObservationIgnored
     var presentPermissionsGate: (([PermissionsManager.RecordingPermission]) -> Void)?
-    /// Brings the app and the main window forward so `startRecordingFailure` has somewhere
-    /// to be seen. Same shape as the two above, and needed for the same reason: the failure
-    /// can arrive from the hotkey with every window closed.
+    /// Surfaces `startRecordingFailure` (a toast since phase 7). Same shape as the two
+    /// above, and needed for the same reason: the failure can arrive from the hotkey
+    /// with no UI on screen.
     var presentStartFailure: (() -> Void)?
     /// Same shape and reason as the two above: the failure can land while every window is
     /// closed, and an alert on a closed window is silence with extra steps.
@@ -266,6 +254,11 @@ final class AppState {
     /// same reason: toasts fire from the pipeline, with every window possibly closed.
     @ObservationIgnored
     var presentToast: ((ToastContent) -> Void)?
+    /// Shows/hides the floating camera bubble. Set by the AppDelegate (phase 7) — the
+    /// bubble used to follow the main window's `.onChange(of: isCameraEnabled)`, and the
+    /// window scene is gone.
+    @ObservationIgnored
+    var presentCameraOverlay: ((Bool) -> Void)?
 
     /// Polls Tracer for the current Dropbox connection state. Lets the macOS app
     /// notice within ~60s when the user disconnects (or switches accounts) on the
@@ -334,8 +327,6 @@ final class AppState {
         loadRecordings()
         // Ensure system state matches our stored preference
         updateLaunchAtLogin()
-        // Check if this is the first launch
-        checkFirstLaunch()
         // Start global hotkeys (temporarily disabled for debugging)
         // hotkeyManager.start(appState: self)
         
@@ -368,7 +359,16 @@ final class AppState {
         recordingManager.audioCaptureManager.onInputDeviceLost = { [weak self] in
             guard let self else { return }
             self.showMicrophoneLostAlert = true
+            // Hide the noise suggestion BEFORE toasting: both share one panel, and
+            // updateNoiseSuggestion(false) hides whatever is up unconditionally.
             self.presentNoiseSuggestion?(false)
+            // Phase 7: the alert lived on the main window; the toast is what remains.
+            self.presentToast?(ToastContent(
+                icon: "mic.slash",
+                iconColor: Theme.Colors.recordRed,
+                message: "The microphone stopped recording — stop and start a new take to get your voice back",
+                duration: 8
+            ))
         }
 
         // A writer that dies mid-recording silently drops every further frame. This is
@@ -508,13 +508,6 @@ final class AppState {
         }
     }
 
-    private func checkFirstLaunch() {
-        if !defaults.bool(forKey: Self.hasLaunchedBeforeKey) {
-            defaults.set(true, forKey: Self.hasLaunchedBeforeKey)
-            showLaunchAtLoginPrompt = true
-        }
-    }
-
     // MARK: - Launch at Login
     func updateLaunchAtLogin() {
         do {
@@ -537,12 +530,15 @@ final class AppState {
     // MARK: - Camera State
     private func updateCameraState() {
         cameraManager.isEnabled = isCameraEnabled
-        
+
         if isCameraEnabled {
             Task { await cameraManager.startSession() }
         } else {
             cameraManager.stopSession()
         }
+
+        // Phase 7: the bubble's show/hide used to be the main window's .onChange.
+        presentCameraOverlay?(isCameraEnabled)
     }
 
     // MARK: - Noise Suggestion
@@ -2010,6 +2006,15 @@ final class AppState {
             // both the init Task and didBecomeActive — either can win the race.
             if !wasSignedIn && !isInitialSync {
                 dropboxAuthManager.showConnectionConfirmation = true
+                // Phase 7: the "Dropbox Connected" success sheet lived on the old
+                // Settings tab and nothing presents it any more — a toast announces
+                // the moment instead. The flag above stays set for a future
+                // in-drawer treatment.
+                presentToast?(ToastContent(
+                    icon: "cloud",
+                    iconColor: Theme.Colors.statusGreen,
+                    message: "Dropbox connected"
+                ))
                 await reloadRecordingsFromTracer()
             }
         }
