@@ -141,7 +141,8 @@ private struct DrawerBrandMark: View {
 
 /// One row of the Gallery drawer (Figma 59:58): thumbnail, name, meta line, and the
 /// two independent status axes (upload / transcription) on the right — logic ported
-/// from RecordingsListView. Clicking the row copies the share link.
+/// from the old RecordingsListView (deleted in phase 6b). Clicking the row copies
+/// the share link; right-click opens the row's context menu.
 private struct DrawerRecordingRow: View {
     @Bindable var appState: AppState
     let recording: Recording
@@ -178,6 +179,7 @@ private struct DrawerRecordingRow: View {
                         .foregroundStyle(DrawerStyle.ink(0.45))
                 }
             } else {
+                speakersActivity
                 transcriptionStatus
                 uploadStatus
             }
@@ -206,6 +208,105 @@ private struct DrawerRecordingRow: View {
             }
         }
         .help(recording.canCopyLink ? "Click to copy the share link" : "No link yet — the recording hasn't uploaded")
+        .contextMenu { rowContextMenu }
+    }
+
+    // MARK: Context menu (phase 6b — system menu, no macro)
+
+    /// Right-click actions for a row. Everything here is a second door to an action
+    /// that already exists elsewhere, plus the per-recording speaker correction that
+    /// lost its only UI when phase 6b deleted the orphaned RecordingsListView — the
+    /// "Speakers" submenu is that control's compensation (same reapplySpeakers call,
+    /// same gates), pending the phase-8 design blessing.
+    ///
+    /// Inapplicable actions are shown disabled rather than hidden (macOS convention:
+    /// a stable menu is scannable; items that come and go read as missing features).
+    /// The Speakers submenu is the exception — it appears only when a re-run is
+    /// possible at all, exactly like the old control did.
+    @ViewBuilder
+    private var rowContextMenu: some View {
+        Button("Copy link") { copyLink() }
+            .disabled(!recording.canCopyLink)
+
+        Button("Open on web") {
+            if let url = tracerPageURL { NSWorkspace.shared.open(url) }
+        }
+        .disabled(tracerPageURL == nil)
+
+        Divider()
+
+        Button("Retry upload") {
+            Task { await appState.retryUpload(recording) }
+        }
+        // Same set retryUpload itself accepts: .notUploaded counts (a processing task
+        // that died with the process never left that state).
+        .disabled(recording.uploadStatus != .failed && recording.uploadStatus != .notUploaded)
+
+        Button("Retry transcription") {
+            appState.retryTranscription(recording)
+        }
+        .disabled(recording.effectiveTranscriptionStatus != .failed)
+
+        if canReapplySpeakers {
+            Divider()
+            Menu("Speakers") {
+                ForEach(ExpectedSpeakers.quickPickChoices(including: currentSpeakers)) { choice in
+                    // A plain Button, not a Picker: re-picking the CURRENT value must
+                    // still fire — that is how a failed re-run is retried (the old
+                    // control's contract, kept on purpose).
+                    Button {
+                        Task { await appState.reapplySpeakers(recordingID: recording.id, expected: choice) }
+                    } label: {
+                        if choice == currentSpeakers {
+                            Label(choice.shortName, systemImage: "checkmark")
+                        } else {
+                            Text(choice.shortName)
+                        }
+                    }
+                }
+            }
+            .disabled(appState.reapplyingSpeakers.contains(recording.id))
+        }
+    }
+
+    /// "Open on web" means the tracer page specifically — no Dropbox fallback here,
+    /// unlike `shareURL` (a share link and "where this recording lives on the site"
+    /// are different questions).
+    private var tracerPageURL: URL? {
+        recording.tracerURL.flatMap(URL.init(string:))
+    }
+
+    private var currentSpeakers: ExpectedSpeakers {
+        recording.expectedSpeakers ?? appState.expectedSpeakers
+    }
+
+    /// Port of the deleted RecordingsListView.canReapplySpeakers: a re-run needs all
+    /// three — the plan includes separation, a transcript to re-label, and the audio
+    /// to re-run against (still cached here, or in Dropbox). Anything less and the
+    /// submenu would be a control that fails.
+    private var canReapplySpeakers: Bool {
+        guard appState.tracerAPIClient.entitlements.diarization else { return false }
+        guard recording.hasTranscript else { return false }
+        return DiarizationAudioCache.shared.hasMicAudio(for: recording.id)
+            || recording.diarizationMicPath != nil
+    }
+
+    /// Compact echo of a speaker re-run in the row itself: a mini spinner while it
+    /// works, and on failure a small alert glyph whose tooltip carries the full
+    /// sentence from `speakerReapplyErrors` (the drawer row has no room for the old
+    /// list's inline error text).
+    @ViewBuilder
+    private var speakersActivity: some View {
+        if appState.reapplyingSpeakers.contains(recording.id) {
+            ProgressView()
+                .controlSize(.mini)
+                .help("Re-labelling speakers…")
+        } else if let failure = appState.speakerReapplyErrors[recording.id] {
+            Image(systemName: "person.2.slash")
+                .font(.system(size: 11))
+                .foregroundStyle(TranscriptionStatusCluster.failedAlert)
+                .help(failure)
+        }
     }
 
     // MARK: Link copy (gate: shareURL == nil → inert)
@@ -275,8 +376,7 @@ private struct DrawerRecordingRow: View {
 
     // MARK: Status axes
 
-    /// The transcription axis (Figma 533:1606) — the shared spark cluster, so this
-    /// row and the old RecordingsListView cannot drift apart.
+    /// The transcription axis (Figma 533:1606) — the shared spark cluster.
     private var transcriptionStatus: some View {
         TranscriptionStatusCluster(appState: appState, recording: recording)
     }

@@ -4,10 +4,9 @@ import Foundation
 /// persisted on AppState (UserDefaults key "captureMode"; the full choice — which
 /// window, which area — is CaptureSelection, key "captureSelection").
 ///
-/// Entire-screen and window record today (phase 6a). Selected-area has its engine wired
-/// (CaptureGeometry + sourceRect in ScreenRecorder) but waits for the area-picking
-/// overlay (phase 6b), so the menu shows that row disabled rather than letting the user
-/// pick a mode that silently records the whole screen anyway.
+/// All three modes record: entire-screen and window since phase 6a, selected-area
+/// since phase 6b wired its picking overlay (AreaSelectionOverlay) to the engine that
+/// was already waiting (CaptureGeometry + sourceRect in ScreenRecorder).
 enum CaptureMode: String, CaseIterable, Codable {
     case entireScreen
     case window
@@ -30,7 +29,8 @@ enum CaptureMode: String, CaseIterable, Codable {
         }
     }
 
-    /// Whether the capture engine can actually record this mode. Selected-area flips
-    /// when its overlay ships (phase 6b).
-    var isAvailable: Bool { self != .selectedArea }
+    /// Whether the capture engine can actually record this mode. All modes are live
+    /// since phase 6b shipped the area overlay; the property (and the menu's disabled
+    /// styling behind it) stays so a future half-shipped mode has a gate to stand on.
+    var isAvailable: Bool { true }
 }

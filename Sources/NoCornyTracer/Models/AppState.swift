@@ -82,8 +82,6 @@ final class AppState {
     var selectedMicrophoneID: String?
     var isMicrophoneEnabled: Bool = true
     /// What the next recording captures, chosen from the command bar's capture-mode menu.
-    /// Entire-screen and window record today; selected-area waits for its overlay
-    /// (phase 6b), and the menu keeps that row disabled until then.
     ///
     /// This is the menu's lightweight handle; the full choice — WHICH window, WHICH area —
     /// lives in `captureSelection` below, and the two are kept in sync both ways.
@@ -623,6 +621,27 @@ final class AppState {
             }
         }
 
+        // Same early check for a remembered area (phase 6b, mirror of the window branch):
+        // the display it lives on can be unplugged between takes, and a mode picked with
+        // no rect ever saved is unsatisfiable by definition. Either way the honest answer
+        // is the overlay, not an error alert - and the recorder still re-checks
+        // authoritatively at capture start.
+        if captureMode == .selectedArea {
+            var liveDisplayIDs: Set<CGDirectDisplayID> = []
+            if let content = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true) {
+                liveDisplayIDs = Set(content.displays.map(\.displayID))
+            }
+            if !captureSelection.isSatisfiable(liveWindowIDs: [], liveDisplayIDs: liveDisplayIDs) {
+                LogManager.shared.log("Capture: remembered area is gone (no rect, or its display disconnected) - asking for a new pick", type: .info)
+                var cleared = captureSelection
+                cleared.areaRect = nil
+                cleared.areaDisplayID = nil
+                captureSelection = cleared
+                await chooseAreaForCapture()
+                return
+            }
+        }
+
         startRecordingFailure = nil
 
         // Play start sound immediately on button click.
@@ -691,6 +710,25 @@ final class AppState {
             selection.mode = .window
             selection.windowID = window.windowID
             selection.windowTitle = window.title
+            self.captureSelection = selection
+            Task { try? await self.startRecording() }
+        }
+    }
+
+    /// The command bar's "Selected Area" row lands here. Mirror of the window flow
+    /// (phase 6a decision, applied to areas in 6b): the row ALWAYS opens the overlay,
+    /// and Enter saves the rect AND starts recording immediately - pick = record. The
+    /// record button is what reuses the remembered area without the overlay (see the
+    /// liveness check in `startRecording`). Esc changes nothing: mode and the
+    /// previously remembered area stay as they were.
+    @MainActor
+    func chooseAreaForCapture() {
+        AreaSelectionWindowManager.shared.present(current: captureSelection) { [weak self] rect, displayID in
+            guard let self else { return }
+            var selection = self.captureSelection
+            selection.mode = .selectedArea
+            selection.areaRect = rect
+            selection.areaDisplayID = displayID
             self.captureSelection = selection
             Task { try? await self.startRecording() }
         }
@@ -2005,11 +2043,9 @@ final class AppState {
             // flag (not a parameter) because launch fires concurrent syncs from
             // both the init Task and didBecomeActive — either can win the race.
             if !wasSignedIn && !isInitialSync {
-                dropboxAuthManager.showConnectionConfirmation = true
-                // Phase 7: the "Dropbox Connected" success sheet lived on the old
-                // Settings tab and nothing presents it any more — a toast announces
-                // the moment instead. The flag above stays set for a future
-                // in-drawer treatment.
+                // The "Dropbox Connected" success sheet died with the old Settings tab
+                // (phase 7); the toast is the announcement now. Phase 6b removed the
+                // sheet's orphaned view and its showConnectionConfirmation flag with it.
                 presentToast?(ToastContent(
                     icon: "cloud",
                     iconColor: Theme.Colors.statusGreen,

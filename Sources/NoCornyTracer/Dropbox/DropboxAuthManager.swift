@@ -19,7 +19,6 @@ final class DropboxAuthManager: NSObject {
     var accessToken: String?
     var isLoading = false
     var errorMessage: String?
-    var showConnectionConfirmation = false
 
     /// Always true once a token has been issued. Kept for API parity with
     /// older callers that still inspect `isProxied`.

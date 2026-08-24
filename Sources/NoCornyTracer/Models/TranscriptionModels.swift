@@ -261,3 +261,37 @@ enum ExpectedSpeakers: String, CaseIterable, Identifiable, Codable {
     }
 }
 
+// MARK: Compact menus (redesign, phase 6b)
+
+/// The redesign's compact speaker menus (the drawer's "People in new recordings" row,
+/// macro 559:2030, and the Gallery row's context submenu) offer Auto / 2 / 3 / 4 —
+/// the everyday answers — instead of the old Settings page's full seven-row list.
+/// The full enum still exists and old values still work: a stored choice outside the
+/// quick four is spliced into the menu so it can show as selected and be re-picked.
+extension ExpectedSpeakers {
+    /// What the compact menus offer by default (macro: Auto / 2 / 3 / 4).
+    static let quickPickCases: [ExpectedSpeakers] = [.auto, .two, .three, .four]
+
+    /// Short labels for the compact menus, where "People in new recordings" or
+    /// "Speakers" already says what the number counts.
+    var shortName: String {
+        switch self {
+        case .auto: return "Auto"
+        case .justMe: return "Just me"
+        case .two: return "2"
+        case .three: return "3"
+        case .four: return "4"
+        case .five: return "5"
+        case .manyMore: return "6+"
+        }
+    }
+
+    /// The compact offer, guaranteed to contain `current`: a value outside the quick
+    /// four (picked in the old UI, or per-recording) is inserted at its natural
+    /// position in `allCases` order, so the menu can never show an empty selection.
+    static func quickPickChoices(including current: ExpectedSpeakers) -> [ExpectedSpeakers] {
+        guard !quickPickCases.contains(current) else { return quickPickCases }
+        return allCases.filter { quickPickCases.contains($0) || $0 == current }
+    }
+}
+

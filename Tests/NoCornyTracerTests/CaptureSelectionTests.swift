@@ -98,10 +98,11 @@ final class CaptureSelectionTests: XCTestCase {
 
     // MARK: - Phase gate
 
-    func testWindowModeIsAvailableAndAreaStillGated() {
-        // Phase 6a flips window on; selected-area stays behind its overlay (6b).
-        XCTAssertTrue(CaptureMode.entireScreen.isAvailable)
-        XCTAssertTrue(CaptureMode.window.isAvailable)
-        XCTAssertFalse(CaptureMode.selectedArea.isAvailable)
+    func testEveryCaptureModeIsAvailable() {
+        // Phase 6b shipped the area overlay — the last gated mode is open. A mode
+        // regressing to unavailable would grey out a menu row that used to work.
+        for mode in CaptureMode.allCases {
+            XCTAssertTrue(mode.isAvailable, "\(mode) must be recordable")
+        }
     }
 }

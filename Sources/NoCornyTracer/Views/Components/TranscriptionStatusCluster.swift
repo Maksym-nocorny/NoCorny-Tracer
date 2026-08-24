@@ -1,15 +1,16 @@
 import SwiftUI
 
-/// The transcription status axis of a recording row (Figma 533:1606), shared by the
-/// Gallery drawer rows and the old Recordings list so the two surfaces cannot drift.
+/// The transcription status axis of a recording row (Figma 533:1606). Extracted as a
+/// shared cluster when the Gallery drawer and the old Recordings list coexisted;
+/// phase 6b deleted that list, and the Gallery drawer row is now the sole client.
 ///
 /// The glyph of the axis is a spark: dim while the run waits, statusGreen while it
 /// works, a green tick once cues exist — the tick stays, because this is the second
 /// axis and a row with no transcription mark reads as "never transcribed". The axis
-/// is independent of the upload axis and always stands to its LEFT; the rationale
-/// lives on the original RecordingsListView.transcriptionIndicator comment (a
-/// recording can be transcribing while its upload is still moving, or hold a failed
-/// transcript over a green cloud tick).
+/// is independent of the upload axis and always stands to its LEFT: a recording can
+/// be transcribing while its upload is still moving, or hold a failed transcript
+/// over a green cloud tick — and during the AI's minutes-long first run, a green
+/// upload tick alone would read as "done and broken".
 struct TranscriptionStatusCluster: View {
     @Bindable var appState: AppState
     let recording: Recording

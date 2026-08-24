@@ -390,6 +390,26 @@ struct DrawerSettingsView: View {
             settingRow(icon: "person.2", label: "Speakers (diarization)") {
                 diarizationControl
             }
+
+            // The default headcount for NEW recordings (macro 559:2030) — the row the
+            // old SettingsView lost in phase 7. Deliberately the same person.2 icon as
+            // the Speakers row: the two form the diarization group. Same visibility
+            // rule as the old page: only while separation is unlocked AND on — a
+            // headcount for a feature that is off would be a dead control.
+            if appState.tracerAPIClient.entitlements.diarization && appState.diarizationEnabled {
+                hairline
+
+                settingRow(icon: "person.2", label: "People in new recordings") {
+                    CustomDropdownButton(
+                        id: "drawer-expected-speakers",
+                        options: ExpectedSpeakers.quickPickChoices(including: appState.expectedSpeakers).map {
+                            DropdownOption(id: $0.rawValue, label: $0.shortName, value: $0)
+                        },
+                        selection: $appState.expectedSpeakers,
+                        activeDropdownID: $activeDropdownID
+                    )
+                }
+            }
         }
     }
 
