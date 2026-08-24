@@ -181,6 +181,12 @@ struct Recording: Identifiable, Codable {
         return nil
     }
 
+    /// Whether a click has anything to copy — the drawer row's link-copy gate.
+    /// Mirrors `shareURL`'s priority (tracer page → Dropbox link → legacy Drive).
+    var canCopyLink: Bool {
+        shareURL != nil
+    }
+
     var formattedDate: String {
         let formatter = DateFormatter()
         formatter.dateFormat = "MMM d, HH:mm"

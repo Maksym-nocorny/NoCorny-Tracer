@@ -4,7 +4,7 @@ import AppKit
 // MARK: - Root
 
 /// Content of the floating command-bar panel. Switches between the redesign's
-/// surfaces; the drawers and the recording pill are placeholders until phases 3–4.
+/// surfaces; the recording pill remains a placeholder until phase 4.
 struct CommandBarRootView: View {
     @Bindable var appState: AppState
     let manager: CommandBarWindowManager
@@ -17,7 +17,12 @@ struct CommandBarRootView: View {
             case .barWithDrawer(let tab):
                 VStack(spacing: MorphGeometry.drawerGap) {
                     CommandBarView(appState: appState, manager: manager)
-                    CommandBarDrawerStub(tab: tab)
+                    switch tab {
+                    case .gallery:
+                        DrawerGalleryView(appState: appState)
+                    case .settings:
+                        DrawerSettingsView(appState: appState, manager: manager)
+                    }
                 }
             case .recordingPill:
                 RecordingPillStub()
@@ -30,6 +35,20 @@ struct CommandBarRootView: View {
         // Keep the panel's NSAppearance pinned to the in-app theme toggle.
         .onChange(of: appState.appTheme, initial: true) {
             manager.applyPanelAppearance()
+        }
+        // Same refresh contract the old MainView tabs had (onChange(selectedTab)):
+        // opening the Gallery pulls fresh recording metadata, opening Settings
+        // refreshes the profile and the Dropbox link state.
+        .onChange(of: manager.surface) { _, newSurface in
+            guard case .barWithDrawer(let tab) = newSurface,
+                  appState.tracerAPIClient.isSignedIn else { return }
+            switch tab {
+            case .gallery:
+                Task { await appState.reloadRecordingsFromTracer() }
+            case .settings:
+                Task { await appState.tracerAPIClient.refreshProfile() }
+                Task { await appState.syncDropboxFromTracer() }
+            }
         }
     }
 }
@@ -371,24 +390,6 @@ enum CommandBarMarkImage {
 }
 
 // MARK: - Phase stubs
-
-/// Placeholder drawer (real gallery/settings content is phase 3): an empty glass
-/// sheet at the drawer's exact final size, so the morph geometry is honest.
-private struct CommandBarDrawerStub: View {
-    let tab: CommandBarDrawerTab
-
-    var body: some View {
-        Text(tab == .gallery ? "Gallery" : "Settings")
-            .font(Theme.Typography.heading(20))
-            .foregroundStyle(Theme.Colors.timerDimmed)
-            .frame(
-                width: Theme.Metrics.drawerSize.width,
-                height: Theme.Metrics.drawerSize.height
-            )
-            .glassSurface(cornerRadius: Theme.Radius.xl)
-            .floatingPanelShadow()
-    }
-}
 
 /// Placeholder recording pill (phase 4). Nothing morphs to it yet.
 private struct RecordingPillStub: View {

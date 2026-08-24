@@ -307,8 +307,11 @@ struct MainView: View {
             Spacer()
 
             if appState.dropboxAuthManager.isSignedIn && appState.dropboxAllocatedSpace > 0 {
-                let remaining = max(0, Double(appState.dropboxAllocatedSpace) - Double(appState.dropboxUsedSpace))
-                let approxMinutes = Int(remaining / (19.5 * 1024 * 1024))
+                // Formula lives in DropboxQuota so this footer and the drawer footer agree.
+                let approxMinutes = DropboxQuota.minutesLeft(
+                    used: appState.dropboxUsedSpace,
+                    allocated: appState.dropboxAllocatedSpace
+                )
                 Text("~\(approxMinutes) min left")
                     .font(Theme.Typography.body(11, weight: .light))
                     .foregroundStyle(.secondary)

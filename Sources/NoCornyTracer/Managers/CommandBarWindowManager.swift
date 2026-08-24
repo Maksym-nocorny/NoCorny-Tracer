@@ -14,6 +14,23 @@ final class CommandBarPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 
+    /// Esc fallback for the drawers: fires when the panel is key and nothing in the
+    /// SwiftUI hierarchy consumed the key (`.onExitCommand` needs focus inside the
+    /// drawer, which a nonactivating panel often doesn't have). Set by the manager.
+    var onEsc: (() -> Void)?
+
+    override func cancelOperation(_ sender: Any?) {
+        if let onEsc { onEsc() } else { super.cancelOperation(sender) }
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 53, let onEsc {   // 53 = Esc
+            onEsc()
+            return
+        }
+        super.keyDown(with: event)
+    }
+
     init(contentRect: NSRect) {
         super.init(
             contentRect: contentRect,
@@ -102,6 +119,11 @@ final class CommandBarWindowManager {
             let newPanel = CommandBarPanel(contentRect: .zero)
             newPanel.contentViewController = host
             newPanel.delegate = panelDelegate
+            // Esc closes an open drawer (and does nothing on the bare bar/pill).
+            newPanel.onEsc = { [weak self] in
+                guard let self, case .barWithDrawer = self.surface else { return }
+                self.morph(to: .bar)
+            }
             panel = newPanel
         }
         guard let panel else { return }

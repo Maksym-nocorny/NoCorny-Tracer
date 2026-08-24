@@ -1,0 +1,419 @@
+import SwiftUI
+import AppKit
+
+/// The Gallery drawer of the command bar (Figma 59:3; empty state 87:708;
+/// signed-out 87:561). A fixed 560×332 glass sheet that morphs open under the bar —
+/// it does not move on its own, the panel is one surface.
+struct DrawerGalleryView: View {
+    @Bindable var appState: AppState
+
+    var body: some View {
+        Group {
+            if appState.tracerAPIClient.isSignedIn {
+                signedInContent
+            } else {
+                DrawerSignedOutView(appState: appState)
+            }
+        }
+        .frame(
+            width: Theme.Metrics.drawerSize.width,
+            height: Theme.Metrics.drawerSize.height
+        )
+        .glassSurface(cornerRadius: DrawerStyle.cornerRadius)
+        .floatingPanelShadow()
+    }
+
+    // MARK: Signed in — header / list / footer
+
+    private var signedInContent: some View {
+        VStack(spacing: 0) {
+            header
+
+            if appState.recordings.isEmpty {
+                emptyState
+            } else {
+                recordingList
+            }
+
+            DrawerFooterView(appState: appState)
+        }
+        .padding(.leading, DrawerStyle.leadingInset)
+        .padding(.trailing, DrawerStyle.trailingInset)
+        .padding(.top, DrawerStyle.topInset)
+    }
+
+    private var header: some View {
+        HStack(spacing: 8) {
+            Text("Recent")
+                .font(.system(size: 12.5, weight: .semibold))
+                .foregroundStyle(DrawerStyle.ink(0.9))
+
+            Text("\(appState.recordings.count)")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(DrawerStyle.ink(0.7))
+                .padding(.horizontal, 7)
+                .padding(.vertical, 2)
+                .background(Capsule().fill(DrawerStyle.ink(0.1)))
+
+            Spacer(minLength: 8)
+
+            Button {
+                appState.openTracerDashboard()
+            } label: {
+                Text("Library ↗")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(DrawerStyle.ink(0.5))
+            }
+            .buttonStyle(.plain)
+            .help("Open the full library on tracer.nocorny.com")
+            .pointerOnHover()
+        }
+        .padding(.bottom, 8)
+        .padding(.trailing, 4)
+    }
+
+    private var recordingList: some View {
+        ScrollView(.vertical) {
+            LazyVStack(spacing: 6) {
+                ForEach(appState.recordings) { recording in
+                    DrawerRecordingRow(appState: appState, recording: recording)
+                }
+            }
+            .padding(.trailing, 4)
+        }
+        .scrollIndicators(.never)
+        .frame(maxHeight: .infinity)
+    }
+
+    // MARK: Empty state (87:708)
+
+    private var emptyState: some View {
+        VStack(spacing: 10) {
+            ZStack {
+                Circle()
+                    .fill(DrawerStyle.rowFill)
+                Circle()
+                    .strokeBorder(
+                        DrawerStyle.ink(0.16),
+                        style: StrokeStyle(lineWidth: 1.2, dash: [4, 3])
+                    )
+                DrawerBrandMark()
+                    .frame(width: 26, height: 26)
+            }
+            .frame(width: 64, height: 64)
+
+            Text("No recordings yet")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(DrawerStyle.ink(0.88))
+
+            Text("Hit ⌥⇧R — your first clip lands here,\nnamed by AI and synced to Dropbox.")
+                .font(.system(size: 11.5))
+                .foregroundStyle(DrawerStyle.ink(0.45))
+                .multilineTextAlignment(.center)
+                .lineSpacing(4)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+// MARK: - Brand mark
+
+/// The phase-2 record-mark PNGs (Resources/commandbar_mark*), scaled down for the
+/// empty state's dashed badge. Falls back to a glyph if the PNGs are missing.
+private struct DrawerBrandMark: View {
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        if let mark = CommandBarMarkImage.image(dark: colorScheme == .dark) {
+            Image(nsImage: mark)
+                .resizable()
+                .interpolation(.high)
+                .scaledToFit()
+        } else {
+            Image(systemName: "play.circle")
+                .font(.system(size: 20))
+                .foregroundStyle(DrawerStyle.ink(0.6))
+        }
+    }
+}
+
+// MARK: - Recording row
+
+/// One row of the Gallery drawer (Figma 59:58): thumbnail, name, meta line, and the
+/// two independent status axes (upload / transcription) on the right — logic ported
+/// from RecordingsListView. Clicking the row copies the share link.
+private struct DrawerRecordingRow: View {
+    @Bindable var appState: AppState
+    let recording: Recording
+
+    @State private var showCopied = false
+    @State private var isHovered = false
+
+    var body: some View {
+        HStack(spacing: 11) {
+            thumbnail
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(recording.displayName)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(DrawerStyle.ink(0.94))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+
+                Text(metaLine)
+                    .font(.system(size: 11))
+                    .foregroundStyle(DrawerStyle.ink(0.45))
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 8)
+
+            if showCopied {
+                HStack(spacing: 4) {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Theme.Colors.statusGreen)
+                    Text("Copied")
+                        .font(.system(size: 9))
+                        .foregroundStyle(DrawerStyle.ink(0.45))
+                }
+            } else {
+                transcriptionStatus
+                uploadStatus
+            }
+        }
+        .padding(.leading, 9)
+        .padding(.trailing, 12)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: DrawerStyle.rowCornerRadius, style: .continuous)
+                .fill(isHovered && recording.canCopyLink ? DrawerStyle.ink(0.08) : DrawerStyle.rowFill)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: DrawerStyle.rowCornerRadius, style: .continuous)
+                .strokeBorder(DrawerStyle.rowStroke, lineWidth: 1)
+        )
+        .contentShape(RoundedRectangle(cornerRadius: DrawerStyle.rowCornerRadius, style: .continuous))
+        // A gesture rather than wrapping the row in a Button: the retry controls on the
+        // right are buttons of their own, and nesting them inside one would swallow them.
+        .onTapGesture { copyLink() }
+        .onHover { hovering in
+            isHovered = hovering
+            if hovering && recording.canCopyLink {
+                NSCursor.pointingHand.push()
+            } else {
+                NSCursor.pop()
+            }
+        }
+        .help(recording.canCopyLink ? "Click to copy the share link" : "No link yet — the recording hasn't uploaded")
+    }
+
+    // MARK: Link copy (gate: shareURL == nil → inert)
+
+    private func copyLink() {
+        guard let url = recording.shareURL else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(url.absoluteString, forType: .string)
+        showCopied = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            showCopied = false
+        }
+    }
+
+    // MARK: Thumbnail (62×42, r9)
+
+    private var thumbnail: some View {
+        ZStack {
+            if let path = recording.dropboxPath {
+                DropboxThumbnailView(path: path, appState: appState)
+            } else {
+                RoundedRectangle(cornerRadius: DrawerStyle.thumbCornerRadius, style: .continuous)
+                    .fill(DrawerStyle.thumbFill)
+                Image(systemName: "play.fill")
+                    .font(.system(size: 11))
+                    .foregroundStyle(DrawerStyle.ink(0.5))
+            }
+        }
+        .frame(width: 62, height: 42)
+        .clipShape(RoundedRectangle(cornerRadius: DrawerStyle.thumbCornerRadius, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: DrawerStyle.thumbCornerRadius, style: .continuous)
+                .strokeBorder(DrawerStyle.ink(0.1), lineWidth: 1)
+        )
+    }
+
+    // MARK: Meta line ("612 MB · 41:05 · Today, 11:20")
+
+    private var metaLine: String {
+        var parts: [String] = []
+        if !recording.formattedFileSize.isEmpty {
+            parts.append(recording.formattedFileSize)
+        }
+        parts.append(recording.formattedDuration)
+        parts.append(Self.drawerDate(recording.createdAt))
+        return parts.joined(separator: " · ")
+    }
+
+    /// The macro's date style: "Today, 11:20" / "Yesterday, 18:05" / "Aug 18, 14:32".
+    /// Older dates reuse Recording.formattedDate so the two formats never diverge.
+    static func drawerDate(_ date: Date, now: Date = Date()) -> String {
+        let timeFormatter = DateFormatter()
+        timeFormatter.dateFormat = "HH:mm"
+        let time = timeFormatter.string(from: date)
+        let calendar = Calendar.current
+        if calendar.isDate(date, inSameDayAs: now) {
+            return "Today, \(time)"
+        }
+        if let yesterday = calendar.date(byAdding: .day, value: -1, to: now),
+           calendar.isDate(date, inSameDayAs: yesterday) {
+            return "Yesterday, \(time)"
+        }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MMM d, HH:mm"
+        return formatter.string(from: date)
+    }
+
+    // MARK: Status axes (ported from RecordingsListView)
+
+    /// The transcription axis, independent of the upload axis on purpose — see the
+    /// rationale on RecordingsListView.transcriptionIndicator.
+    @ViewBuilder
+    private var transcriptionStatus: some View {
+        switch recording.effectiveTranscriptionStatus {
+        case .queued:
+            HStack(spacing: 4) {
+                ProgressView()
+                    .controlSize(.mini)
+                Text("Queued")
+                    .font(.system(size: 9))
+                    .foregroundStyle(DrawerStyle.ink(0.45))
+            }
+            .help("Waiting for transcription to start")
+        case .transcribing:
+            HStack(spacing: 4) {
+                ProgressView()
+                    .controlSize(.mini)
+                if let fraction = appState.transcriptionActivity[recording.id]?.fraction, fraction > 0 {
+                    Text("\(Int(fraction * 100))%")
+                        .font(.system(size: 9))
+                        .monospacedDigit()
+                        .foregroundStyle(DrawerStyle.ink(0.45))
+                }
+            }
+            .help("Transcribing…")
+        case .failed:
+            Button {
+                appState.retryTranscription(recording)
+            } label: {
+                Image(systemName: "exclamationmark.bubble.fill")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.Colors.recordRed)
+            }
+            .buttonStyle(.plain)
+            .help(recording.transcriptionError ?? "Transcription failed — click to retry")
+            .pointerOnHover()
+        case .done, .idle:
+            EmptyView()
+        }
+    }
+
+    @ViewBuilder
+    private var uploadStatus: some View {
+        switch recording.uploadStatus {
+        case .notUploaded:
+            Image(systemName: "icloud.slash")
+                .font(.system(size: 11))
+                .foregroundStyle(DrawerStyle.ink(0.45))
+        case .uploading:
+            if let fraction = appState.uploadProgress[recording.id] {
+                HStack(spacing: 5) {
+                    ProgressView(value: fraction)
+                        .controlSize(.small)
+                        .frame(width: 44)
+                    Text("\(Int(fraction * 100))%")
+                        .font(.system(size: 9))
+                        .monospacedDigit()
+                        .foregroundStyle(DrawerStyle.ink(0.45))
+                }
+                .help("Uploading to Dropbox")
+            } else {
+                ProgressView()
+                    .controlSize(.small)
+            }
+        case .uploaded:
+            // Persistent in the drawer (macro shows a status on every row), unlike the
+            // old list's 5-second transient tick.
+            Image(systemName: "checkmark.icloud.fill")
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.Colors.statusGreen)
+        case .failed:
+            Button {
+                Task { await appState.retryUpload(recording) }
+            } label: {
+                Image(systemName: "exclamationmark.icloud.fill")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.Colors.recordRed)
+            }
+            .buttonStyle(.plain)
+            .help(recording.uploadError ?? "Upload failed — click to retry")
+            .pointerOnHover()
+        }
+    }
+}
+
+// MARK: - Signed out (87:561)
+
+/// The signed-out drawer body: person mark, pitch, Google sign-in, and the local
+/// waiting-clips line. Replaces the whole drawer content, not just the list.
+struct DrawerSignedOutView: View {
+    @Bindable var appState: AppState
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "person.crop.circle")
+                .font(.system(size: 36, weight: .light))
+                .foregroundStyle(DrawerStyle.ink(0.8))
+
+            Text("Sign in to sync & share")
+                .font(.system(size: 17, weight: .bold))
+                .foregroundStyle(DrawerStyle.ink(0.95))
+
+            Text("Record freely — clips wait on this Mac\nand fly to Dropbox once you're in.")
+                .font(.system(size: 12))
+                .foregroundStyle(DrawerStyle.ink(0.5))
+                .multilineTextAlignment(.center)
+                .lineSpacing(4)
+
+            DrawerGoogleSignInButton(appState: appState)
+
+            if let error = appState.tracerAPIClient.errorMessage {
+                Text(error)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(Theme.Colors.recordRed)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+            }
+
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(Theme.Colors.pausedAmber)
+                    .frame(width: 7, height: 7)
+                Text("Not signed in · \(waitingLine)")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(DrawerStyle.ink(0.5))
+            }
+            .padding(.top, 22)
+        }
+        .padding(.top, 40)
+        .padding(.bottom, 20)
+        .padding(.horizontal, 16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    private var waitingLine: String {
+        let count = LocalClipQueue.waitingCount(recordings: appState.recordings) {
+            FileManager.default.fileExists(atPath: $0.path)
+        }
+        return count == 1 ? "1 clip waiting locally" : "\(count) clips waiting locally"
+    }
+}
