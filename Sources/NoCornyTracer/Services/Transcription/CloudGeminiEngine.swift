@@ -772,7 +772,7 @@ final class CloudGeminiEngine: TranscriptionEngine {
     /// Fail-open and all-or-nothing: one attempt, hard timeout, and any failure returns [] so
     /// every chunk runs byte-identically to the unmitigated path. Never worse than baseline.
     func buildFrameGlossary(frames: [Data]) async -> GlossaryResult {
-        guard !frames.isEmpty, !UserDefaults.standard.bool(forKey: "NCTGlossaryDisable") else {
+        guard !frames.isEmpty, !DebugOverrides.bool(forKey: "NCTGlossaryDisable") else {
             return GlossaryResult()
         }
 

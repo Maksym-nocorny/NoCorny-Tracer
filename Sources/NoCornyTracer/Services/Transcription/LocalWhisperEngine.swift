@@ -58,7 +58,7 @@ final class LocalWhisperEngine: TranscriptionEngine {
     /// `NCTForceIntelBehavior` exists so the Intel path can actually be exercised on the
     /// machines we develop on, which are all arm64.
     static var isAvailable: Bool {
-        if UserDefaults.standard.bool(forKey: "NCTForceIntelBehavior") { return false }
+        if DebugOverrides.bool(forKey: "NCTForceIntelBehavior") { return false }
         #if arch(arm64)
         return true
         #else
@@ -72,7 +72,7 @@ final class LocalWhisperEngine: TranscriptionEngine {
     /// straight through took the same time and covered 142 seconds instead of 88.
     /// Overridable to "vad" so the comparison can be repeated.
     static var chunkingStrategy: ChunkingStrategy? {
-        UserDefaults.standard.string(forKey: "whisperChunking") == "vad" ? .vad : nil
+        DebugOverrides.string(forKey: "whisperChunking") == "vad" ? .vad : nil
     }
 
     /// An explicit language, or nil for "work it out".
@@ -82,7 +82,11 @@ final class LocalWhisperEngine: TranscriptionEngine {
     /// "transcribe" quietly becomes "translate": a Russian recording came back in English,
     /// drifting into Spanish halfway through.
     static var preferredLanguage: String? {
-        let raw = UserDefaults.standard.string(forKey: "transcriptionLanguage") ?? "auto"
+        // Through DebugOverrides like every other knob: a live-test session once left this
+        // forced to "ru" in the real preferences, and a release build honoured it - every
+        // English recording on that Mac would have been transcribed as Russian, with no UI
+        // anywhere admitting why.
+        let raw = DebugOverrides.string(forKey: "transcriptionLanguage") ?? "auto"
         return raw == "auto" ? nil : raw
     }
 

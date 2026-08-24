@@ -51,12 +51,12 @@ enum ChunkPlanner {
     /// Debug override lets a 3-minute recording exercise the full chunked path in ~60s
     /// instead of needing a real hour-long asset.
     static var effectiveChunkTargetSeconds: Double {
-        let override = UserDefaults.standard.double(forKey: "NCTChunkTargetSecondsOverride")
+        let override = DebugOverrides.double(forKey: "NCTChunkTargetSecondsOverride") ?? 0
         return override > 0 ? override : singleCallMaxAudioSeconds
     }
 
     static var effectiveSingleCallThresholdSeconds: Double {
-        let override = UserDefaults.standard.double(forKey: "NCTChunkTargetSecondsOverride")
+        let override = DebugOverrides.double(forKey: "NCTChunkTargetSecondsOverride") ?? 0
         return override > 0 ? override * 0.67 : singleCallMaxAudioSeconds
     }
 
