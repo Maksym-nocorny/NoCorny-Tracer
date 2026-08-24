@@ -340,6 +340,7 @@ struct RecordingRowView: View {
                         if hovering && recording.shareURL != nil { NSCursor.pointingHand.push() } else { NSCursor.pop() }
                     }
 
+                    transcriptionIndicator
                     uploadStatusIcon
                 }
             }
@@ -435,6 +436,59 @@ struct RecordingRowView: View {
         .padding(.bottom, Theme.Spacing.xs)
     }
 
+    /// The transcription axis, shown NEXT TO the upload icon rather than inside its
+    /// `.uploaded` case, because the axes are independent: a recording can be transcribing
+    /// while its upload is still moving, or hold a failed transcript over a green tick.
+    /// The AI's first local run is minutes long, and a green tick alone for that stretch
+    /// reads as "done and broken" - the transcript the user is waiting for is nowhere and
+    /// nothing says it is coming.
+    @ViewBuilder
+    private var transcriptionIndicator: some View {
+        switch recording.effectiveTranscriptionStatus {
+        case .queued:
+            HStack(spacing: 4) {
+                ProgressView()
+                    .controlSize(.mini)
+                Text("Queued")
+                    .font(Theme.Typography.body(9))
+                    .foregroundStyle(.secondary)
+            }
+            .help("Waiting for transcription to start")
+        case .transcribing:
+            HStack(spacing: 4) {
+                ProgressView()
+                    .controlSize(.mini)
+                // The percentage appears once the engine reports one; engines that cannot
+                // measure themselves keep the bare label, which still says "working".
+                if let fraction = appState.transcriptionActivity[recording.id]?.fraction, fraction > 0 {
+                    Text("Transcribing… \(Int(fraction * 100))%")
+                        .font(Theme.Typography.body(9))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                } else {
+                    Text("Transcribing…")
+                        .font(Theme.Typography.body(9))
+                        .foregroundStyle(.secondary)
+                }
+            }
+        case .failed:
+            Button {
+                appState.retryTranscription(recording)
+            } label: {
+                Image(systemName: "exclamationmark.bubble.fill")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.Colors.red)
+            }
+            .buttonStyle(.plain)
+            .help(recording.transcriptionError ?? "Transcription failed — click to retry")
+            .onHover { inside in
+                if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+            }
+        case .done, .idle:
+            EmptyView()
+        }
+    }
+
     @ViewBuilder
     private var uploadStatusIcon: some View {
         switch recording.uploadStatus {
@@ -462,18 +516,7 @@ struct RecordingRowView: View {
                     .controlSize(.small)
             }
         case .uploaded:
-            // The AI runs AFTER the upload, and its first local run is minutes long. A green
-            // tick alone for that whole stretch reads as "done and broken", because the
-            // transcript the user is waiting for is nowhere and nothing says it is coming.
-            if let phase = appState.aiPhase[recording.id] {
-                HStack(spacing: 4) {
-                    ProgressView()
-                        .controlSize(.mini)
-                    Text(phase.rawValue)
-                        .font(Theme.Typography.body(9))
-                        .foregroundStyle(.secondary)
-                }
-            } else if showCloudIcon {
+            if showCloudIcon {
                 Image(systemName: "checkmark.icloud.fill")
                     .font(.system(size: 11))
                     .foregroundStyle(Theme.Colors.green)

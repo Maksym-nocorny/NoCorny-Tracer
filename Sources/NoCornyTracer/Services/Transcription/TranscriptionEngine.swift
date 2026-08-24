@@ -48,6 +48,48 @@ enum TranscriptionEngineKind: String, CaseIterable, Identifiable {
     }
 }
 
+/// Live progress of one transcription run, as the engine doing the work reports it.
+///
+/// Two shapes share the struct on purpose. The cloud engines count chunks, so they fill
+/// all three fields; the on-device engine has no chunks and reports a time-based share of
+/// the recording, with `completedChunks`/`totalChunks` both 0 as the "fraction stands
+/// alone" signal. Consumers that only draw a bar read `fraction` and never care which.
+struct TranscriptionProgress: Sendable, Equatable {
+    var completedChunks: Int
+    var totalChunks: Int
+    /// 0...1 of the run, whatever the engine's unit of work is.
+    var fraction: Double
+
+    /// Chunk-counting progress with the division done once, here, so no engine can get
+    /// the zero-chunks case wrong: 0 of 0 reports fraction 0, never NaN.
+    static func chunks(completed: Int, total: Int) -> TranscriptionProgress {
+        TranscriptionProgress(
+            completedChunks: completed,
+            totalChunks: total,
+            fraction: total > 0 ? min(1.0, max(0.0, Double(completed) / Double(total))) : 0.0
+        )
+    }
+}
+
+/// Keeps a reported fraction monotonic and in 0...1.
+///
+/// Exists for the on-device engine, whose segment-discovery callback reports whatever
+/// window just finished decoding -- windows can land out of order, and a bar that moves
+/// backwards reads as the run breaking. `advance` returns the fraction to report, or nil
+/// when reporting it would move the bar backwards (or nowhere).
+final class MonotonicProgress: @unchecked Sendable {
+    private let lock = NSLock()
+    private var reported: Double = 0
+
+    func advance(to fraction: Double) -> Double? {
+        lock.lock(); defer { lock.unlock() }
+        let clamped = min(1.0, max(0.0, fraction))
+        guard clamped > reported else { return nil }
+        reported = clamped
+        return clamped
+    }
+}
+
 /// What an engine hands back. Same shape as `NamingResult` on purpose -- the orchestrator
 /// maps between them -- with one rule the protocol depends on:
 ///
@@ -90,13 +132,27 @@ protocol TranscriptionEngine {
     /// rather than to fail.
     var isReady: Bool { get }
 
-    /// - Parameter multiSpeaker: ask for every audible speaker rather than only the
-    ///   foreground narrator. Ignored by engines that cannot tell them apart.
-    func transcribe(videoURL: URL, multiSpeaker: Bool) async -> EngineResult
+    /// - Parameters:
+    ///   - multiSpeaker: ask for every audible speaker rather than only the
+    ///     foreground narrator. Ignored by engines that cannot tell them apart.
+    ///   - progress: called as the run advances, from whatever task the engine is running
+    ///     on. Engines that cannot measure themselves simply never call it, which the UI
+    ///     reads as "working, amount unknown" rather than as an error.
+    func transcribe(
+        videoURL: URL,
+        multiSpeaker: Bool,
+        progress: @escaping @Sendable (TranscriptionProgress) -> Void
+    ) async -> EngineResult
 }
 
 extension TranscriptionEngine {
+    /// The pre-progress signatures, kept so call sites that have no bar to move stay as
+    /// they were.
     func transcribe(videoURL: URL) async -> EngineResult {
-        await transcribe(videoURL: videoURL, multiSpeaker: false)
+        await transcribe(videoURL: videoURL, multiSpeaker: false, progress: { _ in })
+    }
+
+    func transcribe(videoURL: URL, multiSpeaker: Bool) async -> EngineResult {
+        await transcribe(videoURL: videoURL, multiSpeaker: multiSpeaker, progress: { _ in })
     }
 }

@@ -26,8 +26,12 @@ final class CloudGeminiEngine: TranscriptionEngine {
     /// Requires a signed-in Tracer account: the proxy holds the API key, not the app.
     var isReady: Bool { proxyClient.isReady }
 
-    func transcribe(videoURL: URL, multiSpeaker: Bool) async -> EngineResult {
-        let r = await run(videoURL, multiSpeaker: multiSpeaker)
+    func transcribe(
+        videoURL: URL,
+        multiSpeaker: Bool,
+        progress: @escaping @Sendable (TranscriptionProgress) -> Void
+    ) async -> EngineResult {
+        let r = await run(videoURL, multiSpeaker: multiSpeaker, progress: progress)
         return EngineResult(
             srt: r.srt, name: r.name, usage: r.usage, model: r.model,
             latencyMs: r.latencyMs, attempts: r.attempts, success: r.success,
@@ -40,7 +44,11 @@ final class CloudGeminiEngine: TranscriptionEngine {
     /// Audio may be trimmed of silence (and optionally sped up) before sending to reduce
     /// per-second costs. The returned SRT timestamps are mapped back onto the original
     /// recording timeline so they sync perfectly with the unmodified video.
-    private func run(_ videoURL: URL, multiSpeaker: Bool) async -> NamingResult {
+    private func run(
+        _ videoURL: URL,
+        multiSpeaker: Bool,
+        progress: @escaping @Sendable (TranscriptionProgress) -> Void
+    ) async -> NamingResult {
         LogManager.shared.log("🤖 Combined: Starting for \(videoURL.lastPathComponent)")
 
         // AI naming runs through tracer.nocorny.com with a per-user token. Without
@@ -114,7 +122,8 @@ final class CloudGeminiEngine: TranscriptionEngine {
             return await generateChunked(
                 videoURL: videoURL, audioURL: audioURL,
                 analysis: analysis, keptRanges: keptRanges,
-                multiSpeaker: multiSpeaker
+                multiSpeaker: multiSpeaker,
+                progress: progress
             )
         }
 
@@ -630,7 +639,8 @@ final class CloudGeminiEngine: TranscriptionEngine {
         concurrency: Int,
         scratchKey: String,
         extraInstruction: String = "",
-        multiSpeaker: Bool
+        multiSpeaker: Bool,
+        progress: @escaping @Sendable (TranscriptionProgress) -> Void = { _ in }
     ) async -> [Int: ChunkResult] {
         var outcomes: [Int: ChunkResult] = [:]
         guard !plans.isEmpty else { return outcomes }
@@ -665,6 +675,9 @@ final class CloudGeminiEngine: TranscriptionEngine {
             while let outcome = await group.next() {
                 outcomes[outcome.index] = outcome
                 persistChunkScratch(key: scratchKey, result: outcome)
+                // A chunk with any outcome at all counts as done for the bar: a failed
+                // chunk is still work the run no longer has ahead of it.
+                progress(.chunks(completed: outcomes.count, total: totalChunks))
                 await verdict.record(code: outcome.errorCode)
                 // Drain what is already in flight, but schedule nothing further.
                 if await verdict.current() != nil { continue }
@@ -860,7 +873,8 @@ final class CloudGeminiEngine: TranscriptionEngine {
         audioURL: URL,
         analysis: SpeechAnalysis,
         keptRanges: [SampleRange],
-        multiSpeaker: Bool
+        multiSpeaker: Bool,
+        progress: @escaping @Sendable (TranscriptionProgress) -> Void = { _ in }
     ) async -> NamingResult {
         // Chunk audio is always built at 1.0×. Enabling `TranscriptionTuning.enableSpeedUp` requires threading the
         // factor through AudioPreparation.buildChunkAudio AND the merge — a mismatch yields uniformly
@@ -923,13 +937,17 @@ final class CloudGeminiEngine: TranscriptionEngine {
         if let m = glossaryResult.model { model = m }
         let glossary = glossaryResult.terms
 
-        // Wave 1 — all chunks.
+        // Wave 1 — all chunks. The only wave that reports progress: it covers every chunk
+        // exactly once, so its count is the honest "N of M". The retry and drift waves
+        // re-run chunks the bar has already counted, and counting them again would either
+        // overshoot the total or drag a finished bar backwards.
         var outcomes = await runChunkWave(
             plans: plans, totalChunks: plans.count,
             sourceAsset: sourceAsset, sourceTrack: sourceTrack,
             originalDuration: analysis.totalDuration,
             glossary: glossary, concurrency: tuning.maxConcurrent, scratchKey: scratchKey,
-            multiSpeaker: multiSpeaker
+            multiSpeaker: multiSpeaker,
+            progress: progress
         )
 
         // Wave 2 — targeted retry of ONLY the chunks that failed recoverably. This replaces

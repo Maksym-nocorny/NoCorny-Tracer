@@ -47,7 +47,11 @@ final class CloudGroqEngine: TranscriptionEngine {
 
     // MARK: - Transcription
 
-    func transcribe(videoURL: URL, multiSpeaker: Bool) async -> EngineResult {
+    func transcribe(
+        videoURL: URL,
+        multiSpeaker: Bool,
+        progress: @escaping @Sendable (TranscriptionProgress) -> Void
+    ) async -> EngineResult {
         let t0 = Date()
         // multiSpeaker is accepted and ignored: Whisper transcribes, it does not tell
         // speakers apart. Honouring the flag needs a diarizer, not a different request.
@@ -113,10 +117,14 @@ final class CloudGroqEngine: TranscriptionEngine {
         )
 
         let verdict = RunVerdict()
+        // Only wave 1 reports progress, same reasoning as the Gemini path: it covers every
+        // chunk exactly once, so its count is the honest "N of M". The retry wave re-runs
+        // chunks the bar has already counted.
         var outcomes = await runChunkWave(
             plans: plans, sourceAsset: sourceAsset, sourceTrack: sourceTrack,
             originalDuration: analysis.totalDuration,
-            concurrency: tuning.maxConcurrent, verdict: verdict
+            concurrency: tuning.maxConcurrent, verdict: verdict,
+            progress: progress
         )
 
         // Targeted retry of ONLY the chunks that failed recoverably, same shape as the
@@ -216,7 +224,8 @@ final class CloudGroqEngine: TranscriptionEngine {
         sourceTrack: AVAssetTrack,
         originalDuration: Double,
         concurrency: Int,
-        verdict: RunVerdict
+        verdict: RunVerdict,
+        progress: @escaping @Sendable (TranscriptionProgress) -> Void = { _ in }
     ) async -> [Int: ChunkResult] {
         var outcomes: [Int: ChunkResult] = [:]
         guard !plans.isEmpty else { return outcomes }
@@ -237,6 +246,9 @@ final class CloudGroqEngine: TranscriptionEngine {
 
             while let outcome = await group.next() {
                 outcomes[outcome.index] = outcome
+                // A chunk with any outcome counts as done for the bar: a failed chunk is
+                // still work the run no longer has ahead of it.
+                progress(.chunks(completed: outcomes.count, total: plans.count))
                 if next < plans.count {
                     let plan = plans[next]
                     next += 1

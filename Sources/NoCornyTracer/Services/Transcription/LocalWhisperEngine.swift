@@ -321,11 +321,19 @@ final class LocalWhisperEngine: TranscriptionEngine {
     /// anything is wired to it - which is how the walk it replaced shipped uncovered.
     static let runs = SerialGate()
 
-    func transcribe(videoURL: URL, multiSpeaker: Bool) async -> EngineResult {
-        await Self.runs.enqueue { await self.runTranscription(videoURL: videoURL, multiSpeaker: multiSpeaker) }
+    func transcribe(
+        videoURL: URL,
+        multiSpeaker: Bool,
+        progress: @escaping @Sendable (TranscriptionProgress) -> Void
+    ) async -> EngineResult {
+        await Self.runs.enqueue { await self.runTranscription(videoURL: videoURL, multiSpeaker: multiSpeaker, progress: progress) }
     }
 
-    private func runTranscription(videoURL: URL, multiSpeaker: Bool) async -> EngineResult {
+    private func runTranscription(
+        videoURL: URL,
+        multiSpeaker: Bool,
+        progress: @escaping @Sendable (TranscriptionProgress) -> Void
+    ) async -> EngineResult {
         let t0 = Date()
         // multiSpeaker is accepted and ignored: WhisperKit transcribes, it does not tell
         // speakers apart. Honouring the flag needs a diarizer, not a different prompt.
@@ -389,6 +397,23 @@ final class LocalWhisperEngine: TranscriptionEngine {
             wordTimestamps: false,
             chunkingStrategy: Self.chunkingStrategy
         )
+
+        // Progress from segment discovery: WhisperKit has no percentage of its own, so the
+        // share is the last decoded cue's end against the recording's duration. Windows can
+        // land out of order, so the fraction is held monotonic; chunk counts are 0/0, the
+        // signal for "a share of time, not of chunks". The callback lives on the SHARED
+        // WhisperKit instance, so it is cleared before this function returns -- the serial
+        // gate guarantees nobody else is mid-transcribe while it is set.
+        let totalDuration = analysis.totalDuration
+        if totalDuration > 0 {
+            let monotonic = MonotonicProgress()
+            pipe.segmentDiscoveryCallback = { segments in
+                guard let last = segments.last else { return }
+                guard let fraction = monotonic.advance(to: Double(last.end) / totalDuration) else { return }
+                progress(TranscriptionProgress(completedChunks: 0, totalChunks: 0, fraction: fraction))
+            }
+        }
+        defer { pipe.segmentDiscoveryCallback = nil }
 
         let results: [TranscriptionResult]
         do {

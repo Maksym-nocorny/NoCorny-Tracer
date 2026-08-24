@@ -100,10 +100,14 @@ final class AINamingService {
     ///     when `diarize` is on, and only as an input to speaker separation.
     ///   - diarize: label cues with who said them. Off unless the user asked for it AND their
     ///     plan includes it; the caller owns both halves of that decision.
+    ///   - progress: forwarded to whichever engine ends up transcribing. When the fallback
+    ///     walk switches engines mid-run, a 0/0/0 reset is sent first so the bar starts over
+    ///     rather than sitting on the refused engine's last number.
     func generateSubtitlesAndName(
         for videoURL: URL,
         systemAudioURL: URL? = nil,
-        diarize: Bool = false
+        diarize: Bool = false,
+        progress: @escaping @Sendable (TranscriptionProgress) -> Void = { _ in }
     ) async -> NamingResult {
         guard let engine = activeEngine else {
             LogManager.shared.log("🎛️ Engine: no engine is ready — sign in, or download the on-device model", type: .error)
@@ -117,7 +121,7 @@ final class AINamingService {
         // A multi-speaker transcript is one the engine had to be asked for: the cloud prompts
         // otherwise throw away everyone but the narrator, which would leave separation with a
         // transcript that has nobody to separate.
-        var result = await engine.transcribe(videoURL: videoURL, multiSpeaker: diarize)
+        var result = await engine.transcribe(videoURL: videoURL, multiSpeaker: diarize, progress: progress)
 
         // A refusal says nothing about the recording, so it is worth asking someone else
         // instead of returning nothing. `premium_required` belongs here as much as
@@ -135,7 +139,9 @@ final class AINamingService {
             var refusedBy = engine.kind
             for alternative in readyEngines where alternative.kind != engine.kind {
                 LogManager.shared.log("🎛️ Engine: \(refusedBy.rawValue) refused (\(result.errorCode ?? "unknown")), falling back to \(alternative.kind.rawValue)")
-                result = await alternative.transcribe(videoURL: videoURL, multiSpeaker: diarize)
+                // A different engine starts from nothing, and the bar has to say so.
+                progress(TranscriptionProgress(completedChunks: 0, totalChunks: 0, fraction: 0))
+                result = await alternative.transcribe(videoURL: videoURL, multiSpeaker: diarize, progress: progress)
                 if result.srt != nil { break }
                 guard Self.refusalCodes.contains(result.errorCode ?? "") else { break }
                 refusedBy = alternative.kind

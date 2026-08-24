@@ -199,15 +199,14 @@ final class AppState {
     /// anywhere in the app, which is indistinguishable from being stuck.
     var uploadProgress: [UUID: Double] = [:]
 
-    /// What the AI is doing to a recording right now, shown on its row. The gap this fills
-    /// was measured on a real run: the first on-device transcription took 2.5 minutes -
-    /// 110 seconds of it compiling the model - and for that whole time the row showed a
-    /// green "uploaded" tick and nothing else. Waiting on an indicator that does not exist
-    /// is indistinguishable from the feature being broken.
-    enum AIPhase: String {
-        case transcribing = "Transcribing…"
-    }
-    var aiPhase: [UUID: AIPhase] = [:]
+    /// Live transcription progress per recording, fed by the engine's progress callbacks;
+    /// absent outside a run. This is the moving number only - which PHASE a recording is in
+    /// lives on `Recording.transcriptionStatus`, where it persists across launches. The gap
+    /// the number fills was measured on a real run: the first on-device transcription took
+    /// 2.5 minutes - 110 seconds of it compiling the model - and for that whole time the
+    /// row showed a green "uploaded" tick and nothing else. Waiting on an indicator that
+    /// does not exist is indistinguishable from the feature being broken.
+    private(set) var transcriptionActivity: [UUID: TranscriptionProgress] = [:]
 
     /// The one upload failure worth interrupting for, shown as an alert rather than only a
     /// small grey icon in a list nobody is looking at: the recording stayed local and the
@@ -672,6 +671,28 @@ final class AppState {
         SoundManager.shared.play(.abort)
     }
 
+    /// Mutates one recording's row on the main queue and persists the list. The single
+    /// door for every status write in the pipeline; used to be a helper nested inside
+    /// `processRecording`, hoisted so the retry path and the extracted AI pipeline can
+    /// share it rather than re-spelling the find-mutate-save dance.
+    private func updateRecording(id: UUID, block: @escaping (inout Recording) -> Void) {
+        DispatchQueue.main.async {
+            if let index = self.recordings.firstIndex(where: { $0.id == id }) {
+                block(&self.recordings[index])
+                self.saveRecordings()
+            }
+        }
+    }
+
+    /// The placeholder title used when AI naming fails or has not run yet. Matches the
+    /// shape `isPlaceholderTitle` recognises.
+    private static func placeholderTitle(for creationDate: Date) -> String {
+        let fmt = DateFormatter()
+        fmt.locale = Locale(identifier: "en_US_POSIX")
+        fmt.dateFormat = "d MMM yyyy HH:mm"
+        return "Recording · \(fmt.string(from: creationDate))"
+    }
+
     /// Background processing: init → open browser → parallel video+thumb upload →
     /// PATCH (uploaded) → AI → upload SRT → final PATCH (ready) → cleanup.
     /// Title is now pure DB metadata — the slug-keyed Dropbox folder never gets renamed.
@@ -681,16 +702,6 @@ final class AppState {
         guard connectsToTracer else { return }
         LogManager.shared.log("🎬 Starting background processing for recording \(id)")
 
-        // Use a local helper to update recording state safely
-        func updateRecording(id: UUID, block: @escaping (inout Recording) -> Void) {
-            DispatchQueue.main.async {
-                if let index = self.recordings.firstIndex(where: { $0.id == id }) {
-                    block(&self.recordings[index])
-                    self.saveRecordings()
-                }
-            }
-        }
-
         guard let recording = recordings.first(where: { $0.id == id }) else {
             LogManager.shared.log("⚠️ Processing: Recording \(id) not found in state", type: .info)
             return
@@ -698,13 +709,7 @@ final class AppState {
         let fileURL = recording.fileURL
 
         // Placeholder title used as fallback if AI naming fails
-        let creationDate = recording.createdAt
-        let placeholderTitle: String = {
-            let fmt = DateFormatter()
-            fmt.locale = Locale(identifier: "en_US_POSIX")
-            fmt.dateFormat = "d MMM yyyy HH:mm"
-            return "Recording · \(fmt.string(from: creationDate))"
-        }()
+        let placeholderTitle = Self.placeholderTitle(for: recording.createdAt)
 
         // Slug + folder + token captured up front; the AI step at the end
         // PATCHes the same slug.
@@ -835,11 +840,17 @@ final class AppState {
                     guard refreshed != token else { throw error }
                     token = refreshed
                     LogManager.shared.log("📤 Upload: token refreshed after failure — retrying once", type: .info)
+                    // Same progress callback as the first attempt. Without it, the retry -
+                    // which restarts the upload from byte zero - froze the bar at wherever
+                    // the failed attempt died and climbed no further.
                     uploadedPath = try await dropboxUploadManager.upload(
                         fileURL: fileURL,
                         dropboxPath: videoPath,
                         mode: .overwrite,
-                        accessToken: token
+                        accessToken: token,
+                        progress: { [weak self] fraction in
+                            Task { @MainActor in self?.uploadProgress[id] = fraction }
+                        }
                     )
                 }
                 LogManager.shared.log("📤 Upload: ✅ Uploaded → \(uploadedPath)")
@@ -915,6 +926,59 @@ final class AppState {
             }
         }
 
+        // Steps 3-5.5 live in runAIPipeline: transcription (with live progress and a
+        // persisted status), naming, the SRT upload, the final PATCH and the
+        // diarization-audio cache. Extracted so the transcription retry can run exactly
+        // this half of the pipeline without re-reserving a slug or re-uploading the video.
+        await runAIPipeline(
+            id: id, fileURL: fileURL, placeholderTitle: placeholderTitle,
+            slug: slug, uploadFolder: uploadFolder, transcriptFilename: transcriptFilename,
+            token: token.isEmpty ? nil : token, thumbnailShareURL: thumbnailShareURL
+        )
+
+        // Step 6: Delete the local file after everything is done — but never a file the
+        // transcription retry still needs. A failed transcription keeps the local video
+        // (and its sidecar) so Retry has something to run against; the bytes are already
+        // safe in Dropbox either way, this is only about whether a retry stays possible.
+        let transcriptionFailed = recordings.first(where: { $0.id == id })?.effectiveTranscriptionStatus == .failed
+        if didUploadVideo && !transcriptionFailed {
+            try? FileManager.default.removeItem(at: fileURL)
+            LogManager.shared.log("🗑️ Local file deleted: \(fileURL.lastPathComponent)")
+            // The sidecar was kept alive only for this pipeline, and nothing cleaned it up
+            // before: 128 kbps stereo of a call is ~58 MB an hour piling up next to a video
+            // that no longer exists. Whatever a re-run needs from it now lives in the
+            // diarization cache at a quarter of the size.
+            if let sidecarURL = recordings.first(where: { $0.id == id })?.systemAudioURL {
+                try? FileManager.default.removeItem(at: sidecarURL)
+                updateRecording(id: id) { $0.systemAudioURL = nil }
+                LogManager.shared.log("🗑️ System audio sidecar deleted: \(sidecarURL.lastPathComponent)")
+            }
+            await reloadRecordingsFromTracer()
+        } else if didUploadVideo {
+            LogManager.shared.log("🗑️ Local file kept for a transcription retry: \(fileURL.lastPathComponent)")
+            await reloadRecordingsFromTracer()
+        }
+    }
+
+    /// The AI half of the pipeline: transcription, naming, the SRT's Dropbox copy, the
+    /// final PATCH, and the diarization-audio cache. Reads early pipeline state and never
+    /// writes it; everything it needs from the upload half arrives as a parameter, which
+    /// is what lets `retryTranscription` call it on its own with values recovered from the
+    /// Recording. Owns the transcription axis end to end: `.queued` on entry (set by the
+    /// caller for retry, here for a fresh run), `.transcribing` at the first sign of
+    /// progress, `.done`/`.failed` on the way out.
+    private func runAIPipeline(
+        id: UUID,
+        fileURL: URL,
+        placeholderTitle: String,
+        slug: String?,
+        uploadFolder: String?,
+        transcriptFilename: String,
+        token: String?,
+        thumbnailShareURL: String?
+    ) async {
+        let token = token ?? ""
+
         // Step 3: Combined Gemini call — generates SRT subtitles AND AI filename in one request.
         // Audio is locally trimmed of silence before sending (Phase A); SRT timestamps are
         // mapped back onto the original timeline so they sync with the unmodified video.
@@ -952,12 +1016,35 @@ final class AppState {
         // takes effect on this recording rather than the next one.
         let shouldDiarize = diarizationEnabled && tracerAPIClient.entitlements.diarization
 
+        // One handler for both passes. The first callback is what flips `.queued` into
+        // `.transcribing`: the engine has audibly started, and from here the row carries a
+        // number. Guarded so a late callback from an engine that lost the run cannot
+        // resurrect a status the pipeline already closed.
+        let progressHandler: @Sendable (TranscriptionProgress) -> Void = { [weak self] progressValue in
+            guard let self else { return }
+            Task { @MainActor in
+                guard let index = self.recordings.firstIndex(where: { $0.id == id }),
+                      self.recordings[index].isTranscriptionActive else { return }
+                if self.recordings[index].transcriptionStatus != .transcribing {
+                    self.recordings[index].transcriptionStatus = .transcribing
+                    self.saveRecordings()
+                }
+                self.transcriptionActivity[id] = progressValue
+            }
+        }
+
         var firstPass: NamingResult? = nil
         if let cachedTranscript {
             LogManager.shared.log("🤖 Reusing the transcript from an earlier pass (\(cachedTranscript.count) chars) — skipping transcription")
             generatedSubtitles = cachedTranscript
             aiName = cached?.aiGeneratedName
             aiSucceeded = true
+            // The transcript is in hand, so the axis is done right away - whatever the
+            // retitle call below does to the title, there is nothing left to transcribe.
+            updateRecording(id: id) {
+                $0.transcriptionStatus = .done
+                $0.transcriptionError = nil
+            }
             // A transcript can succeed while its title fails - a blocked naming call, a
             // proxy timeout - and the upload then fails and brings us back here. Skipping
             // transcription is right; skipping naming with it left the recording named
@@ -977,14 +1064,17 @@ final class AppState {
                 }
             }
         } else {
-            // One label for the whole run rather than a guess at sub-phases: the first local
-            // run spends most of its time compiling the model, but the engine owns that
-            // knowledge and this row only needs to say "working, not stuck".
-            await MainActor.run { self.aiPhase[id] = .transcribing }
+            // The run owns the recording from here. `.queued` covers the stretch before
+            // the engine says anything - model compile, audio extraction - and the first
+            // progress callback flips it to `.transcribing` with a number attached.
+            updateRecording(id: id) {
+                $0.transcriptionStatus = .queued
+                $0.transcriptionError = nil
+            }
             let pass = await aiNamingService.generateSubtitlesAndName(
-                for: fileURL, systemAudioURL: cached?.systemAudioURL, diarize: shouldDiarize
+                for: fileURL, systemAudioURL: cached?.systemAudioURL, diarize: shouldDiarize,
+                progress: progressHandler
             )
-            await MainActor.run { self.aiPhase.removeValue(forKey: id) }
             firstPass = pass
             generatedSubtitles = pass.srt
             aiName = pass.name
@@ -1005,7 +1095,8 @@ final class AppState {
             LogManager.shared.log("🤖 Combined: ⚠️ First pass returned nothing — waiting 10s before second pass...", type: .error)
             try? await Task.sleep(nanoseconds: 10_000_000_000)
             let secondPass = await aiNamingService.generateSubtitlesAndName(
-                for: fileURL, systemAudioURL: cached?.systemAudioURL, diarize: shouldDiarize
+                for: fileURL, systemAudioURL: cached?.systemAudioURL, diarize: shouldDiarize,
+                progress: progressHandler
             )
             generatedSubtitles = secondPass.srt
             aiName = secondPass.name
@@ -1109,20 +1200,27 @@ final class AppState {
             }
         }
 
-        // Step 6: Delete local file after everything is done
-        if didUploadVideo {
-            try? FileManager.default.removeItem(at: fileURL)
-            LogManager.shared.log("🗑️ Local file deleted: \(fileURL.lastPathComponent)")
-            // The sidecar was kept alive only for this pipeline, and nothing cleaned it up
-            // before: 128 kbps stereo of a call is ~58 MB an hour piling up next to a video
-            // that no longer exists. Whatever a re-run needs from it now lives in the
-            // diarization cache at a quarter of the size.
-            if let sidecarURL = cached?.systemAudioURL {
-                try? FileManager.default.removeItem(at: sidecarURL)
-                updateRecording(id: id) { $0.systemAudioURL = nil }
-                LogManager.shared.log("🗑️ System audio sidecar deleted: \(sidecarURL.lastPathComponent)")
+        // The axis closes with the run. A transcript in hand - or an engine's honest "no
+        // speech" - is done; anything else is failed, with the engine's last code as the
+        // row's answer to "why". Written through MainActor.run rather than the async
+        // updateRecording so the write has LANDED by the time this function returns:
+        // processRecording's deletion step reads this status the moment we hand back.
+        let transcriptDelivered = generatedSubtitles?.isEmpty == false
+        let outcomeSucceeded = transcriptDelivered || aiSucceeded
+        let failureText = aiLastError ?? "transcription_failed"
+        await MainActor.run {
+            if let index = self.recordings.firstIndex(where: { $0.id == id }) {
+                if outcomeSucceeded {
+                    self.recordings[index].transcriptionStatus = .done
+                    self.recordings[index].transcriptionError = nil
+                } else {
+                    self.recordings[index].transcriptionStatus = .failed
+                    self.recordings[index].transcriptionError = failureText
+                }
+                self.saveRecordings()
             }
-            await reloadRecordingsFromTracer()
+            // The live number goes with the run either way.
+            _ = self.transcriptionActivity.removeValue(forKey: id)
         }
     }
 
@@ -1429,6 +1527,14 @@ final class AppState {
                 TranscriptStore.shared.save(inline, for: r.id)
                 r.legacyInlineTranscript = nil
             }
+            // Mirror of the upload reconcile below, on the transcription axis: `.queued`
+            // and `.transcribing` at load time are claims by a run that died with the
+            // process. Flip them to `.failed` so the row offers a retry instead of
+            // spinning forever on work nobody is doing.
+            if Self.isTranscriptionStrandedAtLaunch(r.transcriptionStatus) {
+                r.transcriptionStatus = .failed
+                r.transcriptionError = Self.interruptedTranscriptionMessage
+            }
             // `.notUploaded` at load time means the same thing: the run that was going to
             // process this recording died before it started. Quitting during a recording is
             // the ordinary way there - the app finalises the file on the way out, and the
@@ -1589,6 +1695,44 @@ final class AppState {
         status == .uploading || status == .notUploaded
     }
 
+    /// The transcription axis's version of the same question: an active status at load
+    /// time belongs to a run that died with the process, because no task survives it.
+    static func isTranscriptionStrandedAtLaunch(_ status: TranscriptionStatus?) -> Bool {
+        status == .queued || status == .transcribing
+    }
+
+    /// What a stranded transcription's row says. Static so the launch reconcile and its
+    /// test agree on the words by construction.
+    static let interruptedTranscriptionMessage = "Transcription interrupted — tap to retry"
+
+    /// What the server's `processingStatus` is allowed to change locally, as a pure
+    /// decision: nil in a slot means "leave that axis alone".
+    ///
+    /// The rules, in order of precedence:
+    /// - A live local run is never clobbered. `.uploading` and an active transcription are
+    ///   claims by a task in THIS process, which knows more than a server row that may lag
+    ///   the PATCH carrying the very result being synced.
+    /// - "ready" means the whole pipeline finished somewhere, so transcription is `.done`.
+    /// - "upload_failed" is the server's word on the upload axis and only that axis.
+    /// - "processing"/"uploading" (and an absent status) say a run is underway elsewhere or
+    ///   the row predates statuses - neither is a reason to rewrite local knowledge.
+    static func reconciledTranscription(
+        serverStatus: String?,
+        local: Recording
+    ) -> (transcription: TranscriptionStatus?, upload: UploadStatus?) {
+        guard local.uploadStatus != .uploading, !local.isTranscriptionActive else {
+            return (nil, nil)
+        }
+        switch serverStatus {
+        case "ready":
+            return (.done, nil)
+        case "upload_failed":
+            return (nil, .failed)
+        default:
+            return (nil, nil)
+        }
+    }
+
     /// Which engine a recording should be credited to after a pass.
     ///
     /// Only ever writes an answer, never overwrites one with a guess. A retry that reuses a
@@ -1620,6 +1764,57 @@ final class AppState {
 
         let recordingID = recording.id
         Task { await self.processRecording(id: recordingID) }
+    }
+
+    // MARK: - Retry Transcription
+
+    /// Re-runs the AI half of the pipeline for a recording whose upload landed but whose
+    /// transcription did not. Only that exact shape qualifies: an upload failure retries
+    /// through `retryUpload` (which re-enters the whole pipeline and reuses a cached
+    /// transcript if one exists), and without the local file there is nothing to transcribe.
+    func retryTranscription(_ recording: Recording) {
+        guard recording.uploadStatus == .uploaded,
+              recording.effectiveTranscriptionStatus == .failed,
+              FileManager.default.fileExists(atPath: recording.fileURL.path) else { return }
+        guard connectsToTracer else { return }
+
+        LogManager.shared.log("🔄 Retry: re-running transcription for slug=\(recording.tracerSlug ?? "none")", type: .info)
+        updateRecording(id: recording.id) {
+            $0.transcriptionStatus = .queued
+            $0.transcriptionError = nil
+        }
+
+        // Everything the AI pipeline needs, recovered from the row: the slug and folder
+        // were cached at reservation time, the transcript filename is the server's default
+        // (initVideo's non-default answer is not persisted, and the server has used the
+        // default for every video to date), and the token comes through the same door
+        // processRecording uses.
+        let id = recording.id
+        let fileURL = recording.fileURL
+        let placeholderTitle = Self.placeholderTitle(for: recording.createdAt)
+        let slug = recording.tracerSlug
+        let uploadFolder = recording.dropboxFolder
+        Task {
+            let token = await self.dropboxAuthManager.refreshTokenIfNeeded() ?? self.dropboxAuthManager.accessToken
+            await self.runAIPipeline(
+                id: id, fileURL: fileURL, placeholderTitle: placeholderTitle,
+                slug: slug, uploadFolder: uploadFolder, transcriptFilename: "transcript.srt",
+                token: token, thumbnailShareURL: nil
+            )
+            // Mirror of processRecording's Step 6, under the same rule: the video is
+            // already in Dropbox (that is this function's entry gate), so once the
+            // transcript is in hand the local copy has done its job. A retry that failed
+            // again keeps the file for the next attempt.
+            if self.recordings.first(where: { $0.id == id })?.effectiveTranscriptionStatus != .failed {
+                try? FileManager.default.removeItem(at: fileURL)
+                LogManager.shared.log("🗑️ Local file deleted after transcription retry: \(fileURL.lastPathComponent)")
+                if let sidecarURL = self.recordings.first(where: { $0.id == id })?.systemAudioURL {
+                    try? FileManager.default.removeItem(at: sidecarURL)
+                    self.updateRecording(id: id) { $0.systemAudioURL = nil }
+                }
+                await self.reloadRecordingsFromTracer()
+            }
+        }
     }
 
     // MARK: - Open Dropbox Folder
@@ -1757,6 +1952,18 @@ final class AppState {
                     TranscriptStore.shared.save(srt, for: working[idx].id)
                 }
                 working[idx].tracerURL = "https://tracer.nocorny.com/v/\(v.slug)"
+                // Server truth for the two axes, through the one shared decision. The
+                // `.uploading` guard above already protected a live upload; the function
+                // repeats it so its answer is safe wherever it is asked from.
+                let reconciled = Self.reconciledTranscription(serverStatus: v.processingStatus,
+                                                              local: working[idx])
+                if let transcription = reconciled.transcription {
+                    working[idx].transcriptionStatus = transcription
+                    if transcription == .done { working[idx].transcriptionError = nil }
+                }
+                if let upload = reconciled.upload {
+                    working[idx].uploadStatus = upload
+                }
             } else if v.isDeleted != true {
                 let created = v.recordedAt ?? v.createdAt ?? Date()
                 let fakeURL = URL(fileURLWithPath: "/tmp/\(v.slug).mp4")
@@ -1768,6 +1975,17 @@ final class AppState {
                     aiGeneratedName: v.title,
                     uploadStatus: .uploaded
                 )
+                // Same decision for a row this Mac has never seen: "ready" arrives as
+                // uploaded + done, "upload_failed" as a failed upload, and a mid-pipeline
+                // "processing" stays uploaded with transcription honestly unknown (nil)
+                // rather than invented.
+                let reconciled = Self.reconciledTranscription(serverStatus: v.processingStatus, local: rec)
+                if let transcription = reconciled.transcription {
+                    rec.transcriptionStatus = transcription
+                }
+                if let upload = reconciled.upload {
+                    rec.uploadStatus = upload
+                }
                 rec.dropboxPath = v.dropboxPath
                 rec.dropboxSharedURL = v.dropboxSharedUrl
                 rec.tracerSlug = v.slug

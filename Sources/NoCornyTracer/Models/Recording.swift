@@ -42,6 +42,16 @@ struct Recording: Identifiable, Codable {
     /// show what was assumed rather than what the settings happen to say today.
     /// Optional with a default so an older cached recordings list still decodes.
     var expectedSpeakers: ExpectedSpeakers?
+    /// Where transcription stands for this recording, persisted so a run interrupted by a
+    /// quit is a visible `.failed` on the next launch rather than a green tick over nothing.
+    /// Optional ON PURPOSE: `loadRecordings` decodes with `try?`, so a non-optional field
+    /// would silently wipe the entire history of anyone upgrading from an older build.
+    /// Read `effectiveTranscriptionStatus`, which derives an answer for rows written before
+    /// this field existed.
+    var transcriptionStatus: TranscriptionStatus?
+    /// Why the last transcription attempt failed, in words meant for the row's tooltip.
+    /// Nil whenever `transcriptionStatus` is not `.failed`.
+    var transcriptionError: String?
 
     // MARK: - Transcript
 
@@ -56,6 +66,23 @@ struct Recording: Identifiable, Codable {
     /// Whether there is a transcript at all, without reading it back off disk.
     var hasTranscript: Bool {
         TranscriptStore.shared.hasTranscript(for: id)
+    }
+
+    /// Where transcription stands, with an answer even for rows that predate the persisted
+    /// field: a transcript in hand (in the store, or still inline in a legacy row that has
+    /// not been migrated yet) means the work was done; no field and no transcript means it
+    /// was never attempted as far as this recording knows.
+    var effectiveTranscriptionStatus: TranscriptionStatus {
+        if let transcriptionStatus { return transcriptionStatus }
+        if hasTranscript || legacyInlineTranscript?.isEmpty == false { return .done }
+        return .idle
+    }
+
+    /// True while transcription is claimed by a live run. The pair shows up together
+    /// everywhere activity matters: the pills, the server reconcile's do-not-clobber rule,
+    /// and the stranded-at-launch check are all asking this one question.
+    var isTranscriptionActive: Bool {
+        transcriptionStatus == .queued || transcriptionStatus == .transcribing
     }
 
     // MARK: - Codable
@@ -73,6 +100,7 @@ struct Recording: Identifiable, Codable {
         case legacyInlineTranscript = "transcriptSrt"
         case transcriptEngine, systemAudioURL
         case diarizationMicPath, diarizationSystemPath, expectedSpeakers
+        case transcriptionStatus, transcriptionError
     }
 
     func encode(to encoder: Encoder) throws {
@@ -99,6 +127,8 @@ struct Recording: Identifiable, Codable {
         try container.encodeIfPresent(diarizationMicPath, forKey: .diarizationMicPath)
         try container.encodeIfPresent(diarizationSystemPath, forKey: .diarizationSystemPath)
         try container.encodeIfPresent(expectedSpeakers, forKey: .expectedSpeakers)
+        try container.encodeIfPresent(transcriptionStatus, forKey: .transcriptionStatus)
+        try container.encodeIfPresent(transcriptionError, forKey: .transcriptionError)
         // legacyInlineTranscript is deliberately absent: transcripts live in TranscriptStore.
     }
 
@@ -170,5 +200,22 @@ enum UploadStatus: String, Codable {
     case notUploaded
     case uploading
     case uploaded
+    case failed
+}
+
+/// The transcription axis, independent of `UploadStatus` on purpose: a recording uploads
+/// and transcribes on separate tracks, and one word cannot say "uploaded fine, transcript
+/// failed". `idle` rather than `none`, so `Recording.transcriptionStatus` -- an Optional of
+/// this type -- never reads as `.none` meaning two different things in a switch.
+enum TranscriptionStatus: String, Codable {
+    /// Never attempted (auto-upload off, or the recording predates transcription).
+    case idle
+    /// A run owns this recording and has not produced its first progress yet.
+    case queued
+    /// The engine is audibly working: at least one progress callback has arrived.
+    case transcribing
+    /// A transcript (or a legitimate "nothing was said") is in hand.
+    case done
+    /// The run ended with nothing. `transcriptionError` says why; retry is on offer.
     case failed
 }

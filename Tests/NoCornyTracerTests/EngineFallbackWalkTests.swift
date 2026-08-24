@@ -15,7 +15,11 @@ private final class ScriptedEngine: TranscriptionEngine, @unchecked Sendable {
         self.answer = answer
     }
 
-    func transcribe(videoURL: URL, multiSpeaker: Bool) async -> EngineResult {
+    func transcribe(
+        videoURL: URL,
+        multiSpeaker: Bool,
+        progress: @escaping @Sendable (TranscriptionProgress) -> Void
+    ) async -> EngineResult {
         calls += 1
         return answer
     }
