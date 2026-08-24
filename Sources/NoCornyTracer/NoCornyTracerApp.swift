@@ -215,31 +215,32 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Menu Bar Images
 
     private func loadMenuBarImages() {
-        let bundle = Bundle.appResources
-        let names = [
-            "menubar_normal_light",
-            "menubar_recording_light",
-            "menubar_recording_dark"
-        ]
+        // icon-v2 menubar set: drawn at natural 22×22 pt, shipped as @1x/@2x/@3x PNGs.
+        normalImage = loadMenuBarImage(baseName: "menubar_idle_template", isTemplate: true)
+        recordingLightImage = loadMenuBarImage(baseName: "menubar_rec_light", isTemplate: false)
+        recordingDarkImage = loadMenuBarImage(baseName: "menubar_rec_dark", isTemplate: false)
+    }
 
-        for name in names {
-            if let url = bundle.url(forResource: name, withExtension: "png", subdirectory: "Resources")
-                ?? bundle.url(forResource: name, withExtension: "png"),
-               let image = NSImage(contentsOf: url) {
-                image.size = NSSize(width: 18, height: 18)
-                if name == "menubar_normal_light" {
-                    image.isTemplate = true  // macOS auto-tints for menubar appearance
-                    normalImage = image
-                } else {
-                    image.isTemplate = false
-                    switch name {
-                    case "menubar_recording_light": recordingLightImage = image
-                    case "menubar_recording_dark": recordingDarkImage = image
-                    default: break
-                    }
-                }
-            }
+    /// Builds one NSImage out of the @1x/@2x/@3x PNG scale set so the menubar
+    /// picks the right representation for the current display.
+    private func loadMenuBarImage(baseName: String, isTemplate: Bool) -> NSImage? {
+        let bundle = Bundle.appResources
+        let pointSize = NSSize(width: 22, height: 22)
+        let image = NSImage(size: pointSize)
+
+        for suffix in ["", "@2x", "@3x"] {
+            let name = baseName + suffix
+            guard let url = bundle.url(forResource: name, withExtension: "png", subdirectory: "Resources")
+                    ?? bundle.url(forResource: name, withExtension: "png"),
+                  let data = try? Data(contentsOf: url),
+                  let rep = NSBitmapImageRep(data: data) else { continue }
+            rep.size = pointSize  // 22 pt regardless of pixel density
+            image.addRepresentation(rep)
         }
+
+        guard !image.representations.isEmpty else { return nil }
+        image.isTemplate = isTemplate  // template = macOS auto-tints for menubar appearance
+        return image
     }
 
     // MARK: - Status Bar Icon

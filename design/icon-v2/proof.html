@@ -1,0 +1,50 @@
+<meta charset="utf-8">
+<style>
+ body{margin:0;font:14px -apple-system,Inter,sans-serif;background:#fff;color:#14161A;width:1360px}
+ h2{font-size:14px;letter-spacing:.03em;text-transform:uppercase;color:#8A909C;margin:30px 0 12px;font-weight:600}
+ .band{padding:24px 30px;border-radius:14px;display:flex;align-items:flex-end;gap:40px}
+ .light{background:#E9EBEF}.dark{background:#1E2127}
+ .cell{text-align:center}.cell img{display:block;margin:0 auto 7px}
+ .cap{font-size:11px;color:#8A909C}
+ .zoom img{image-rendering:pixelated;border:1px solid #D5D9E0}
+ .mb{background:linear-gradient(#F7F7F8,#EBEBED);border:1px solid #D8DADF;border-radius:8px;height:26px;
+     display:flex;align-items:center;justify-content:flex-end;gap:18px;padding:0 12px;width:430px;margin-bottom:7px}
+ .mb.d{background:linear-gradient(#2B2E35,#22252A);border-color:#3B3F47}
+ .wrap{padding:34px 40px}
+ .row{display:flex;gap:34px;flex-wrap:wrap}
+</style>
+<div class="wrap">
+<h2>Реальні пікселі — світлий фон</h2>
+<div class="band light">
+ <div class="cell"><img src="AppIcon.appiconset/mac16.png" width="16"><div class="cap">16</div></div>
+ <div class="cell"><img src="AppIcon.appiconset/mac32.png" width="32"><div class="cap">32</div></div>
+ <div class="cell"><img src="AppIcon.appiconset/mac64.png" width="64"><div class="cap">64</div></div>
+ <div class="cell"><img src="AppIcon.appiconset/mac128.png" width="128"><div class="cap">128</div></div>
+ <div class="cell"><img src="AppIcon.appiconset/mac256.png" width="256"><div class="cap">256</div></div>
+</div>
+<h2>Той самий файл на темному — кути справді прозорі</h2>
+<div class="band dark">
+ <div class="cell"><img src="AppIcon.appiconset/mac16.png" width="16"><div class="cap">16</div></div>
+ <div class="cell"><img src="AppIcon.appiconset/mac32.png" width="32"><div class="cap">32</div></div>
+ <div class="cell"><img src="AppIcon.appiconset/mac64.png" width="64"><div class="cap">64</div></div>
+ <div class="cell"><img src="AppIcon.appiconset/mac128.png" width="128"><div class="cap">128</div></div>
+ <div class="cell"><img src="AppIcon-Dark.appiconset/mac256.png" width="256"><div class="cap">256 — темний двійник</div></div>
+</div>
+<h2>16 / 32 / 64 збільшені без згладжування</h2>
+<div class="band light zoom">
+ <div class="cell"><img src="AppIcon.appiconset/mac16.png" width="176"><div class="cap">16 · без рамки, знак і крапка</div></div>
+ <div class="cell"><img src="AppIcon.appiconset/mac32.png" width="176"><div class="cap">32 · чотири товсті штрихи</div></div>
+ <div class="cell"><img src="AppIcon.appiconset/mac64.png" width="176"><div class="cap">64 · повний майстер</div></div>
+</div>
+<h2>Меню-бар, 22 px — накреслено окремо на цілопіксельній сітці</h2>
+<div class="band light">
+ <div class="row">
+  <div class="cell"><div class="mb"><img src="menubar/v2/idle-dark.png" width="22"><img src="menubar/v2/rec-dark.png" width="22"></div><div class="cap">світла тема · спокій і запис</div></div>
+ </div>
+</div>
+<div class="band dark" style="margin-top:10px">
+ <div class="row">
+  <div class="cell"><div class="mb d"><img src="menubar/v2/idle-light.png" width="22"><img src="menubar/v2/rec-light.png" width="22"></div><div class="cap" style="color:#767C88">темна тема · спокій і запис</div></div>
+ </div>
+</div>
+</div>

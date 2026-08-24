@@ -55,6 +55,58 @@ enum Theme {
             dark: Color(hex: 0x3A3A3C)
         )
 
+        // MARK: Redesign (command bar) accents
+        // Dark values measured on Figma node 76:168 / icon-v2 family,
+        // light values measured on Figma node 229:838 (light bar macro).
+
+        /// Recording accent — orange-red of the icon-v2 family (#F2584F → #CE3B33).
+        static let recordRed = Color.adaptive(
+            light: Color(hex: 0xCE3B33),
+            dark: Color(hex: 0xF2584F)
+        )
+        /// Status dots on mic/camera toggles. Same value in both schemes (from the macro).
+        static let statusGreen = Color(hex: 0x32D74B)
+        /// Pause ring / storage banner amber. Dark measured (#F0B24A);
+        /// light is a same-hue darkened derivative — verify against light frames in phase 2.
+        static let pausedAmber = Color.adaptive(
+            light: Color(hex: 0xC98B2D),
+            dark: Color(hex: 0xF0B24A)
+        )
+
+        // MARK: Glass surface tokens
+        // Light ink base is #0B1220 (dark navy), straight from the light bar macro.
+
+        /// Border of primary controls on glass (capture-mode toggle).
+        static let glassStroke = Color.adaptive(
+            light: Color(hex: 0x0B1220, opacity: 0.13),
+            dark: Color(hex: 0xFFFFFF, opacity: 0.16)
+        )
+        /// Border of secondary controls on glass (library / settings).
+        static let glassStrokeSubtle = Color.adaptive(
+            light: Color(hex: 0x0B1220, opacity: 0.06),
+            dark: Color(hex: 0xFFFFFF, opacity: 0.08)
+        )
+        /// Fill of primary controls on glass (capture-mode toggle).
+        static let glassControlFill = Color.adaptive(
+            light: Color(hex: 0x0B1220, opacity: 0.05),
+            dark: Color(hex: 0xFFFFFF, opacity: 0.10)
+        )
+        /// Fill of secondary controls on glass (library / settings).
+        static let glassControlFillSubtle = Color.adaptive(
+            light: Color(hex: 0x0B1220, opacity: 0.02),
+            dark: Color(hex: 0xFFFFFF, opacity: 0.04)
+        )
+        /// 1pt divider inside the command bar.
+        static let glassDivider = Color.adaptive(
+            light: Color(hex: 0x0B1220, opacity: 0.05),
+            dark: Color(hex: 0xFFFFFF, opacity: 0.10)
+        )
+        /// Idle 00:00 timer color.
+        static let timerDimmed = Color.adaptive(
+            light: Color(hex: 0x0B1220, opacity: 0.37),
+            dark: Color(hex: 0xFFFFFF, opacity: 0.40)
+        )
+
         // Gradients
         static let primaryGradient = LinearGradient(
             colors: [
@@ -85,8 +137,9 @@ enum Theme {
             guard !_fontsRegistered else { return }
             _fontsRegistered = true
 
-            // Mulish is a variable font (single file), PT Sans has regular + bold
-            let fontFiles = ["Mulish", "PTSans-Regular", "PTSans-Bold"]
+            // Mulish is a variable font (single file), PT Sans has regular + bold,
+            // JetBrains Mono (regular + medium) drives the redesign timer.
+            let fontFiles = ["Mulish", "PTSans-Regular", "PTSans-Bold", "JetBrainsMono-Regular", "JetBrainsMono-Medium"]
 
             // Try multiple bundle/path combinations to find fonts
             let bundles: [(String, Bundle)] = [
@@ -120,7 +173,7 @@ enum Theme {
             }
 
             // Log availability check
-            LogManager.shared.log("Font check — Mulish available: \(hasMulish), PT Sans available: \(hasPTSans)")
+            LogManager.shared.log("Font check — Mulish available: \(hasMulish), PT Sans available: \(hasPTSans), JetBrains Mono available: \(hasJetBrainsMono)")
         }
 
         /// Whether the custom Mulish font is available.
@@ -131,6 +184,11 @@ enum Theme {
         /// Whether the custom PT Sans font is available.
         private static var hasPTSans: Bool {
             NSFont(name: "PTSans-Regular", size: 12) != nil
+        }
+
+        /// Whether the bundled JetBrains Mono font is available.
+        private static var hasJetBrainsMono: Bool {
+            NSFont(name: "JetBrainsMono-Medium", size: 12) != nil
         }
 
         /// Global size bump applied to all typography (makes text larger throughout the app).
@@ -159,6 +217,49 @@ enum Theme {
         /// Monospaced font (always system).
         static func mono(_ size: CGFloat, weight: Font.Weight = .medium) -> Font {
             .system(size: size + sizeOffset, weight: weight, design: .monospaced)
+        }
+
+        /// Timer font of the redesign (JetBrains Mono Medium, fallback: system monospaced).
+        /// No sizeOffset — the command-bar timer is sized exactly per the redesign specs.
+        static func timer(_ size: CGFloat) -> Font {
+            if hasJetBrainsMono {
+                return .custom("JetBrainsMono-Medium", size: size)
+            }
+            return .system(size: size, weight: .medium, design: .monospaced)
+        }
+    }
+
+    // MARK: - Metrics (redesign fixed sizes)
+
+    enum Metrics {
+        static let commandBarSize = CGSize(width: 560, height: 80)
+        static let drawerSize = CGSize(width: 560, height: 332)
+        static let recordingPillSize = CGSize(width: 292, height: 54)
+        static let cameraBubble: CGFloat = 180
+        static let barCornerRadius: CGFloat = 34
+        static let controlSize: CGFloat = 38
+        static let controlCornerRadius: CGFloat = 19
+    }
+
+    // MARK: - Glass
+
+    enum Glass {
+        /// AppKit blur behind floating panels — the "liquid glass" of the redesign.
+        /// `.hudWindow` is the closest system material to the dark floating bar in the macro.
+        struct GlassBackground: NSViewRepresentable {
+            var material: NSVisualEffectView.Material = .hudWindow
+
+            func makeNSView(context: Context) -> NSVisualEffectView {
+                let view = NSVisualEffectView()
+                view.material = material
+                view.blendingMode = .behindWindow
+                view.state = .active
+                return view
+            }
+
+            func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+                nsView.material = material
+            }
         }
     }
 
@@ -194,6 +295,19 @@ enum Theme {
 
         static func cardHover(_ content: some View) -> some View {
             content.shadow(color: .black.opacity(0.12), radius: 12, x: 0, y: 4)
+        }
+
+        /// Floating glass panel shadow from the redesign macro: 0px 22px 27.5px rgba(0,0,0,0.55).
+        static func floatingPanel(_ content: some View) -> some View {
+            content.shadow(color: .black.opacity(0.55), radius: 27.5, x: 0, y: 22)
+        }
+
+        /// Dropdown menu shadow — values carried over from the retired DesignSystem.swift
+        /// (`designShadowDropdown`) so dropdowns keep their exact look.
+        static func dropdown(_ content: some View) -> some View {
+            content
+                .shadow(color: .black.opacity(0.08), radius: 12, x: 0, y: 20)
+                .shadow(color: .black.opacity(0.03), radius: 4, x: 0, y: 8)
         }
     }
 
@@ -232,6 +346,31 @@ struct CardModifier: ViewModifier {
 extension View {
     func cardStyle() -> some View {
         modifier(CardModifier())
+    }
+
+    /// Rounded "liquid glass" surface: system blur behind, clipped to the corner
+    /// radius, with a hairline `glassStroke` border on top.
+    func glassSurface(
+        cornerRadius: CGFloat,
+        material: NSVisualEffectView.Material = .hudWindow
+    ) -> some View {
+        self
+            .background(Theme.Glass.GlassBackground(material: material))
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(Theme.Colors.glassStroke, lineWidth: 1)
+            )
+    }
+
+    /// Floating glass panel shadow (see `Theme.Shadows.floatingPanel`).
+    func floatingPanelShadow() -> some View {
+        Theme.Shadows.floatingPanel(self)
+    }
+
+    /// Dropdown menu shadow (see `Theme.Shadows.dropdown`).
+    func dropdownShadow() -> some View {
+        Theme.Shadows.dropdown(self)
     }
 }
 

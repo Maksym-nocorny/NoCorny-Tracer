@@ -1,0 +1,40 @@
+<meta charset="utf-8">
+<style>
+ body{margin:0;font:14px -apple-system,Inter,sans-serif;background:#fff;color:#14161A;width:1500px}
+ h2{font-size:14px;letter-spacing:.03em;text-transform:uppercase;color:#8A909C;margin:32px 0 12px;font-weight:600}
+ .band{padding:38px 42px;border-radius:16px;display:flex;align-items:center;gap:70px;flex-wrap:wrap}
+ .light{background:#F2F3F6}.dark{background:#15181E}
+ .cap{font-size:11px;color:#8A909C;margin-top:12px}
+ .wrap{padding:38px 44px}
+ img{display:block}
+ .col{display:flex;flex-direction:column;align-items:flex-start}
+ .mb{background:linear-gradient(#F7F7F8,#EBEBED);border:1px solid #D8DADF;border-radius:8px;height:28px;
+     display:flex;align-items:center;padding:0 14px;gap:10px;width:340px}
+ .mb.d{background:linear-gradient(#2B2E35,#22252A);border-color:#3B3F47}
+</style>
+<div class="wrap">
+<h2>Світла тема</h2>
+<div class="band light">
+ <div class="col"><img src="horizontal-light@3x.png" width="343"><div class="cap">горизонтальний</div></div>
+ <div class="col"><img src="compact-light@3x.png" width="326"><div class="cap">компактний</div></div>
+ <div class="col"><img src="stacked-light@3x.png" width="220"><div class="cap">вертикальний</div></div>
+</div>
+<h2>Темна тема</h2>
+<div class="band dark">
+ <div class="col"><img src="horizontal-dark@3x.png" width="343"><div class="cap">горизонтальний</div></div>
+ <div class="col"><img src="compact-dark@3x.png" width="326"><div class="cap">компактний</div></div>
+ <div class="col"><img src="stacked-dark@3x.png" width="220"><div class="cap">вертикальний</div></div>
+</div>
+<h2>Дрібні розміри — компактний тримається там, де повний знак розсипався б</h2>
+<div class="band light">
+ <div class="col"><img src="compact-light@3x.png" width="163"><div class="cap">×0.25</div></div>
+ <div class="col"><img src="compact-light@3x.png" width="122"><div class="cap">×0.19</div></div>
+ <div class="col"><img src="compact-light@3x.png" width="98"><div class="cap">×0.15</div></div>
+ <div class="col"><img src="horizontal-light@3x.png" width="98"><div class="cap">повний знак на тому ж кеглі</div></div>
+</div>
+<h2>У контексті</h2>
+<div class="band light" style="gap:40px">
+ <div class="col"><div class="mb"><img src="compact-light@3x.png" width="120"></div><div class="cap">рядок інтерфейсу, світлий</div></div>
+ <div class="col"><div class="mb d"><img src="compact-dark@3x.png" width="120"></div><div class="cap">рядок інтерфейсу, темний</div></div>
+</div>
+</div>

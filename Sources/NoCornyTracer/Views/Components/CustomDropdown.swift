@@ -178,7 +178,7 @@ struct CustomDropdownOverlay: View {
                     lineWidth: 1
                 )
         )
-        .designShadowDropdown()
+        .dropdownShadow()
         .position(
             x: triggerRect.midX,
             y: Self.menuCenterY(

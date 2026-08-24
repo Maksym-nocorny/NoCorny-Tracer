@@ -1,0 +1,20 @@
+<svg width="333" height="363" viewBox="0 0 333 363" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g id="mark-compact-light">
+<path id="mark" d="M80 80V338L308 209L80 80Z" fill="url(#paint0_linear_192_855)" stroke="url(#paint1_linear_192_855)" stroke-width="50" stroke-linecap="round" stroke-linejoin="round"/>
+<circle id="dot" cx="60" cy="60" r="60" fill="url(#paint2_linear_192_855)"/>
+</g>
+<defs>
+<linearGradient id="paint0_linear_192_855" x1="112.559" y1="115.819" x2="294.742" y2="272.346" gradientUnits="userSpaceOnUse">
+<stop stop-color="#0B5BE0"/>
+<stop offset="1" stop-color="#0846B5"/>
+</linearGradient>
+<linearGradient id="paint1_linear_192_855" x1="112.559" y1="115.819" x2="294.742" y2="272.346" gradientUnits="userSpaceOnUse">
+<stop stop-color="#0B5BE0"/>
+<stop offset="1" stop-color="#0846B5"/>
+</linearGradient>
+<linearGradient id="paint2_linear_192_855" x1="17.1361" y1="16.6601" x2="102.816" y2="99.9603" gradientUnits="userSpaceOnUse">
+<stop stop-color="#F2584F"/>
+<stop offset="1" stop-color="#CE3B33"/>
+</linearGradient>
+</defs>
+</svg>
