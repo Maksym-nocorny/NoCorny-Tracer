@@ -88,6 +88,15 @@ final class AppState {
 
     var selectedMicrophoneID: String?
     var isMicrophoneEnabled: Bool = true
+    /// What the next recording captures, chosen from the command bar's capture-mode menu.
+    /// Only `.entireScreen` actually records in this phase — the engine work for window
+    /// and selected-area capture is phase 6 of the redesign, and the menu keeps those
+    /// two disabled until then.
+    var captureMode: CaptureMode = .entireScreen {
+        didSet {
+            defaults.set(captureMode.rawValue, forKey: "captureMode")
+        }
+    }
     /// When off (default), the mic is captured raw for maximum fidelity. When on, Apple Voice
     /// Processing (Voice Isolation, AGC off) suppresses background noise at the cost of some quality.
     var reduceBackgroundNoise: Bool = false {
@@ -270,6 +279,10 @@ final class AppState {
             self.transcriptionEngine = engine
         }
         self.noiseSuggestionDismissedForever = defaults.bool(forKey: Self.noiseSuggestionDismissedKey)
+        if let modeRaw = defaults.string(forKey: "captureMode"),
+           let mode = CaptureMode(rawValue: modeRaw) {
+            self.captureMode = mode
+        }
         self.isCameraEnabled = defaults.bool(forKey: "isCameraEnabled")
         self.selectedCameraDeviceID = defaults.string(forKey: "selectedCameraDeviceID")
         if let resRaw = defaults.string(forKey: "videoResolution"),

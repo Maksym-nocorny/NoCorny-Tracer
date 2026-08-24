@@ -1,120 +1,154 @@
 import AppKit
-import Carbon
+import Carbon.HIToolbox
 
-/// Manages global keyboard shortcuts for recording control
+/// Manages global keyboard shortcuts for recording control.
+///
+/// Carbon `RegisterEventHotKey` instead of the old `NSEvent` global monitor: the monitor
+/// required the Accessibility permission (with a scary system prompt on first launch) and
+/// silently delivered nothing without it. Carbon hot keys work system-wide with no
+/// permission at all, are delivered once per press (no auto-repeat storm), and reach us
+/// with no app focused on ours — so the old local monitor is gone too.
 final class HotkeyManager {
-    private var globalMonitor: Any?
-    private var localMonitor: Any?
-    private var isStarted = false
+
+    /// What a hot key does. The id→action mapping is pure so the wiring is testable
+    /// without registering anything with the system.
+    enum HotkeyAction: CaseIterable, Equatable {
+        case toggleRecording   // ⌥⇧R — start/stop
+        case togglePause       // ⌥⇧P — pause/resume
+        case abortRecording    // ⌥⇧X — discard
+    }
+
+    struct HotkeyBinding: Equatable {
+        let id: UInt32
+        let keyCode: UInt32
+        let action: HotkeyAction
+    }
+
+    /// ⌥⇧ + R / P / X — the exact combos (and key codes 15/35/7) of the NSEvent
+    /// implementation this replaced.
+    static let bindings: [HotkeyBinding] = [
+        HotkeyBinding(id: 1, keyCode: UInt32(kVK_ANSI_R), action: .toggleRecording),
+        HotkeyBinding(id: 2, keyCode: UInt32(kVK_ANSI_P), action: .togglePause),
+        HotkeyBinding(id: 3, keyCode: UInt32(kVK_ANSI_X), action: .abortRecording),
+    ]
+
+    static func action(forHotKeyID id: UInt32) -> HotkeyAction? {
+        bindings.first { $0.id == id }?.action
+    }
+
+    /// 'NCTR' — marks our registrations in the Carbon callback.
+    private static let signature: OSType = 0x4E435452
+
+    private var hotKeyRefs: [EventHotKeyRef] = []
+    private var eventHandlerRef: EventHandlerRef?
+    private(set) var isStarted = false
     weak var appState: AppState?
 
     init() {}
 
-    /// Start listening for global hotkeys
+    /// Start listening for global hotkeys.
     func start(appState: AppState) {
-        // Prevent multiple registrations
+        // Prevent multiple registrations (a second RegisterEventHotKey for the same
+        // combo fails, but the guard keeps the refs/handler bookkeeping simple).
         guard !isStarted else { return }
         isStarted = true
         self.appState = appState
 
-        // Check and request Accessibility permission
-        let trusted = AXIsProcessTrustedWithOptions(
-            [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
+        var eventType = EventTypeSpec(
+            eventClass: OSType(kEventClassKeyboard),
+            eventKind: UInt32(kEventHotKeyPressed)
+        )
+        // C function pointer — no captures; the manager travels through userData.
+        let callback: EventHandlerUPP = { _, event, userData in
+            guard let event, let userData else { return noErr }
+            var hotKeyID = EventHotKeyID()
+            let status = GetEventParameter(
+                event,
+                EventParamName(kEventParamDirectObject),
+                EventParamType(typeEventHotKeyID),
+                nil,
+                MemoryLayout<EventHotKeyID>.size,
+                nil,
+                &hotKeyID
+            )
+            guard status == noErr, hotKeyID.signature == HotkeyManager.signature else { return status }
+            Unmanaged<HotkeyManager>.fromOpaque(userData)
+                .takeUnretainedValue()
+                .handleHotKey(id: hotKeyID.id)
+            return noErr
+        }
+        InstallEventHandler(
+            GetEventDispatcherTarget(),
+            callback,
+            1,
+            &eventType,
+            Unmanaged.passUnretained(self).toOpaque(),
+            &eventHandlerRef
         )
 
-        if !trusted {
-            print("⌨️ Hotkeys: ⚠️ Accessibility permission required — macOS will show a prompt")
-        }
-
-        // Global monitor: captures key events when OTHER apps are focused
-        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            self?.handleKeyEvent(event)
-        }
-
-        // Local monitor: captures key events when THIS app is focused
-        localMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            if self?.handleKeyEventReturning(event) == true {
-                return nil // Consume the event
+        let modifiers = UInt32(optionKey | shiftKey)
+        for binding in Self.bindings {
+            var ref: EventHotKeyRef?
+            let hotKeyID = EventHotKeyID(signature: Self.signature, id: binding.id)
+            let status = RegisterEventHotKey(
+                binding.keyCode,
+                modifiers,
+                hotKeyID,
+                GetEventDispatcherTarget(),
+                0,
+                &ref
+            )
+            if status == noErr, let ref {
+                hotKeyRefs.append(ref)
+            } else {
+                print("⌨️ Hotkeys: ⚠️ failed to register hot key id \(binding.id) — OSStatus \(status)")
             }
-            return event
         }
 
-        print("⌨️ Hotkeys: Global shortcuts registered")
+        print("⌨️ Hotkeys: Carbon hot keys registered (\(hotKeyRefs.count)/\(Self.bindings.count))")
     }
 
     func stop() {
-        if let monitor = globalMonitor {
-            NSEvent.removeMonitor(monitor)
-            globalMonitor = nil
+        for ref in hotKeyRefs {
+            UnregisterEventHotKey(ref)
         }
-        if let monitor = localMonitor {
-            NSEvent.removeMonitor(monitor)
-            localMonitor = nil
+        hotKeyRefs.removeAll()
+        if let handler = eventHandlerRef {
+            RemoveEventHandler(handler)
+            eventHandlerRef = nil
         }
         isStarted = false
     }
 
-    private func handleKeyEvent(_ event: NSEvent) {
-        _ = handleKeyEventReturning(event)
-    }
+    /// Same actions, 1:1, as the NSEvent implementation this replaced.
+    private func handleHotKey(id: UInt32) {
+        guard let action = Self.action(forHotKeyID: id), let appState else { return }
 
-    /// Returns true if the event was handled
-    private func handleKeyEventReturning(_ event: NSEvent) -> Bool {
-        guard let appState = appState else { return false }
-
-        // Ignore auto-repeat: holding the combo down used to fire the action many
-        // times (e.g. starting several recordings in a row).
-        guard !event.isARepeat else { return false }
-
-        // Subtract Caps Lock so the shortcut still matches when Caps Lock is on
-        // (its flag is part of deviceIndependentFlagsMask and broke the equality check).
-        let flags = event.modifierFlags
-            .intersection(.deviceIndependentFlagsMask)
-            .subtracting(.capsLock)
-
-        switch event.keyCode {
-        case 15: // "R" key
-            // ⌥⇧R → Start/Stop recording
-            if flags == [.option, .shift] {
-                print("⌨️ Hotkeys: ⌥⇧R pressed")
-                Task { @MainActor in
-                    if appState.recordingManager.isRecording {
-                        await appState.stopRecording()
-                    } else {
-                        try? await appState.startRecording()
-                    }
+        switch action {
+        case .toggleRecording:
+            print("⌨️ Hotkeys: ⌥⇧R pressed")
+            Task { @MainActor in
+                if appState.recordingManager.isRecording {
+                    await appState.stopRecording()
+                } else {
+                    try? await appState.startRecording()
                 }
-                return true
             }
-
-        case 35: // "P" key
-            // ⌥⇧P → Pause/Resume
-            if flags == [.option, .shift] {
-                print("⌨️ Hotkeys: ⌥⇧P pressed")
-                Task { @MainActor in
-                    if appState.recordingManager.isRecording {
-                        await appState.recordingManager.togglePause()
-                    }
+        case .togglePause:
+            print("⌨️ Hotkeys: ⌥⇧P pressed")
+            Task { @MainActor in
+                if appState.recordingManager.isRecording {
+                    await appState.recordingManager.togglePause()
                 }
-                return true
             }
-
-        case 7: // "X" key
-            // ⌥⇧X → Abort (discard) recording
-            if flags == [.option, .shift] {
-                print("⌨️ Hotkeys: ⌥⇧X pressed — aborting")
-                Task { @MainActor in
-                    if appState.recordingManager.isRecording {
-                        await appState.abortRecording()
-                    }
+        case .abortRecording:
+            print("⌨️ Hotkeys: ⌥⇧X pressed — aborting")
+            Task { @MainActor in
+                if appState.recordingManager.isRecording {
+                    await appState.abortRecording()
                 }
-                return true
             }
-
-        default:
-            break
         }
-        return false
     }
 
     deinit {

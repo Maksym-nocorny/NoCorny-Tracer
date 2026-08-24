@@ -159,6 +159,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// menu-bar icon after the window has been closed).
     var reopenMainWindow: (() -> Void)?
 
+    /// The floating command bar of the redesign (phase 2). Owned here rather than as
+    /// App @State because it must come up at launch and from the tray menu — neither
+    /// path can rely on the main window's view graph having appeared.
+    @MainActor var commandBarWindowManager: CommandBarWindowManager?
+
     // Preloaded menu bar images
     private var normalImage: NSImage?  // Template image — macOS auto-tints for menubar
     private var recordingLightImage: NSImage?
@@ -210,6 +215,51 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Load menu bar icons and setup status item
         loadMenuBarImages()
         setupStatusItem()
+
+        // Redesign phase-2 scaffolding: show the floating command bar alongside the old
+        // main window (which stays fully functional until phase 7 dismantles it).
+        Task { @MainActor [weak self] in
+            self?.bootstrapCommandBar()
+        }
+    }
+
+    // MARK: - Command Bar (redesign phase 2)
+
+    /// Brings the command bar up and repeats the launch bootstrap that used to live only
+    /// in MainView.onAppear (device refresh, hotkeys, Dropbox sync) — the bar can't rely
+    /// on the old window's view graph once phase 7 removes it. Running both is safe: the
+    /// refreshes are idempotent re-enumerations and hotkeyManager.start has an
+    /// isStarted guard.
+    @MainActor private func bootstrapCommandBar(retriesLeft: Int = 3) {
+        guard let appState = AppState.shared else {
+            // AppState is built in the SwiftUI App's init, which normally runs before
+            // launch finishes — but don't bet the launch path on that ordering.
+            guard retriesLeft > 0 else {
+                LogManager.shared.log("🎛️ Command bar: AppState never appeared — bar not shown", type: .error)
+                return
+            }
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                self?.bootstrapCommandBar(retriesLeft: retriesLeft - 1)
+            }
+            return
+        }
+
+        appState.cameraManager.refreshDevices()
+        appState.recordingManager.audioCaptureManager.refreshDevices()
+        appState.hotkeyManager.start(appState: appState)
+        Task { await appState.syncDropboxState() }
+
+        let manager = commandBarWindowManager ?? CommandBarWindowManager()
+        commandBarWindowManager = manager
+        manager.show(appState: appState)
+    }
+
+    /// Tray-menu entry point (temporary, for manual testing during the redesign).
+    @objc private func openCommandBar() {
+        Task { @MainActor [weak self] in
+            self?.bootstrapCommandBar()
+        }
     }
 
     // MARK: - Menu Bar Images
@@ -369,6 +419,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let openItem = NSMenuItem(title: "Open NoCorny Tracer", action: #selector(showMainWindow), keyEquivalent: "")
         openItem.target = self
         menu.addItem(openItem)
+
+        // Temporary (redesign phase 2): manual way to summon the floating bar.
+        let commandBarItem = NSMenuItem(title: "Open Command Bar", action: #selector(openCommandBar), keyEquivalent: "")
+        commandBarItem.target = self
+        menu.addItem(commandBarItem)
 
         let folderItem = NSMenuItem(title: "Open Recordings on Web", action: #selector(openRecordingsOnWeb), keyEquivalent: "")
         folderItem.target = self
