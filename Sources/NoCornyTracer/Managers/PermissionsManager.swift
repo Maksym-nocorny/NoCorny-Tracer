@@ -6,6 +6,11 @@ import Sparkle
 
 @Observable
 final class PermissionsManager {
+    /// The app's one live instance (created in NoCornyTracerApp.init), reachable from
+    /// AppDelegate for the onboarding doors — same pattern as `AppState.shared`. Weak:
+    /// tests build throwaway instances and the last one must not be kept alive here.
+    static weak var shared: PermissionsManager?
+
     // Current permission status
     var isScreenRecordingGranted = false
     var isCameraGranted = false
@@ -22,6 +27,7 @@ final class PermissionsManager {
 
     init(updaterController: SPUStandardUpdaterController? = nil) {
         self.updaterController = updaterController
+        Self.shared = self
         self.isScreenRecordingGranted = CGPreflightScreenCaptureAccess()
         self.isCameraGranted = AVCaptureDevice.authorizationStatus(for: .video) == .authorized
         self.isMicrophoneGranted = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized

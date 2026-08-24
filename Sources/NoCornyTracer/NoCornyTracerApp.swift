@@ -111,12 +111,19 @@ private struct MainWindowHost: View {
                     toastWindowManager.show(toast: toast, appState: appState)
                 }
 
-                // Route the recording permission gate through openWindow: when a Start is
-                // blocked on a missing permission, bring the app forward and open the
-                // Permissions window so the user can see and grant exactly what's missing.
-                appState.presentPermissionsGate = { _ in
+                // Route the recording permission gate to the onboarding card (phase 5):
+                // a Start blocked on Screen Recording re-opens step 1, which explains
+                // the grant AND the relaunch it needs. Mic/camera can only be missing
+                // here when the user DENIED them earlier (undetermined ones get the
+                // system prompt inside ensureRecordingPermissions) — onboarding can't
+                // help with a denial, so those go straight to System Settings.
+                appState.presentPermissionsGate = { missing in
                     NSApp.activate(ignoringOtherApps: true)
-                    openWindow(id: "permissions")
+                    if missing.contains(.screenRecording) {
+                        appDelegate.presentOnboardingPermissionStep()
+                    } else if let first = missing.first {
+                        PermissionsManager.openSystemSettings(for: first)
+                    }
                 }
 
                 // A start refusal arriving from the hotkey has no window to appear on, and
@@ -151,10 +158,9 @@ extension Notification.Name {
 }
 
 class AppDelegate: NSObject, NSApplicationDelegate {
-    private var statusItem: NSStatusItem?
-    private var recordingStateTimer: Timer?
-    private var lastIsRecording = false
-    private var lastIsDark: Bool?
+    /// The tray (phase 5): status item, icon states, click routing and the menu
+    /// all live in the controller; the delegate only owns and wires it.
+    @MainActor private var statusItemController: StatusItemController?
 
     // Sparkle updater (set from NoCornyTracerApp)
     var updaterController: SPUStandardUpdaterController?
@@ -173,10 +179,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// reason as the bar: uploads resume at launch, before any window appears.
     @MainActor var backgroundPillsWindowManager: BackgroundPillsWindowManager?
 
-    // Preloaded menu bar images
-    private var normalImage: NSImage?  // Template image — macOS auto-tints for menubar
-    private var recordingLightImage: NSImage?
-    private var recordingDarkImage: NSImage?
+    /// The onboarding window (phase 5) — owned here because both of its doors
+    /// (first launch, permission gate) can open with no SwiftUI window anywhere.
+    @MainActor var onboardingWindowManager: OnboardingWindowManager?
 
     /// One-shot guard so the windowless-launch recovery below cannot loop: set before the
     /// recovery relaunch, cleared the moment the window actually presents.
@@ -221,15 +226,71 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             andEventID: AEEventID(kAEGetURL)
         )
 
-        // Load menu bar icons and setup status item
-        loadMenuBarImages()
-        setupStatusItem()
-
         // Redesign phase-2 scaffolding: show the floating command bar alongside the old
         // main window (which stays fully functional until phase 7 dismantles it).
+        // Phase 5 adds the tray controller and the first-launch onboarding check
+        // (which runs AFTER the bar so the card lands on top of it).
         Task { @MainActor [weak self] in
-            self?.bootstrapCommandBar()
+            guard let self else { return }
+            self.setupStatusItemController()
+            self.bootstrapCommandBar()
+            self.presentOnboardingAtLaunchIfNeeded()
         }
+    }
+
+    // MARK: - Tray (redesign phase 5)
+
+    @MainActor private func setupStatusItemController() {
+        let controller = StatusItemController(actions: .init(
+            showCommandBar: { [weak self] in self?.presentCommandBar() },
+            showGallery: { [weak self] in self?.presentCommandBar(drawer: .gallery) },
+            showSettings: { [weak self] in self?.presentCommandBar(drawer: .settings) }
+        ))
+        statusItemController = controller
+        controller.attach()
+    }
+
+    /// Fronts the command bar (creating it if needed) and optionally opens a drawer.
+    /// Mid-take the bar IS the recording pill — the drawer morph is skipped then,
+    /// same invariant as the background-pills click below.
+    @MainActor func presentCommandBar(drawer: CommandBarDrawerTab? = nil) {
+        guard let appState = AppState.shared else { return }
+        let manager = commandBarWindowManager ?? CommandBarWindowManager()
+        commandBarWindowManager = manager
+        manager.show(appState: appState)
+        if let drawer, !appState.recordingManager.isRecording {
+            manager.morph(to: .barWithDrawer(drawer))
+        }
+    }
+
+    // MARK: - Onboarding (redesign phase 5)
+
+    /// First-launch door: shows the step the pure OnboardingFlow picks, or nothing.
+    /// Retries briefly for the same reason bootstrapCommandBar does — AppState is
+    /// built in the SwiftUI App's init, normally before launch finishes.
+    @MainActor private func presentOnboardingAtLaunchIfNeeded(retriesLeft: Int = 3) {
+        guard let appState = AppState.shared,
+              let permissionsManager = PermissionsManager.shared else {
+            guard retriesLeft > 0 else { return }
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                self?.presentOnboardingAtLaunchIfNeeded(retriesLeft: retriesLeft - 1)
+            }
+            return
+        }
+        let manager = onboardingWindowManager ?? OnboardingWindowManager()
+        onboardingWindowManager = manager
+        manager.presentAtLaunchIfNeeded(appState: appState, permissionsManager: permissionsManager)
+    }
+
+    /// Permission-gate door: a recording start was refused because Screen Recording
+    /// is missing — re-open onboarding at step 1, completed or not.
+    @MainActor func presentOnboardingPermissionStep() {
+        guard let appState = AppState.shared,
+              let permissionsManager = PermissionsManager.shared else { return }
+        let manager = onboardingWindowManager ?? OnboardingWindowManager()
+        onboardingWindowManager = manager
+        manager.present(step: .permission, appState: appState, permissionsManager: permissionsManager)
     }
 
     // MARK: - Command Bar (redesign phase 2)
@@ -278,198 +339,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Tray-menu entry point (temporary, for manual testing during the redesign).
-    @objc private func openCommandBar() {
-        Task { @MainActor [weak self] in
-            self?.bootstrapCommandBar()
-        }
-    }
-
-    // MARK: - Menu Bar Images
-
-    private func loadMenuBarImages() {
-        // icon-v2 menubar set: drawn at natural 22×22 pt, shipped as @1x/@2x/@3x PNGs.
-        normalImage = loadMenuBarImage(baseName: "menubar_idle_template", isTemplate: true)
-        recordingLightImage = loadMenuBarImage(baseName: "menubar_rec_light", isTemplate: false)
-        recordingDarkImage = loadMenuBarImage(baseName: "menubar_rec_dark", isTemplate: false)
-    }
-
-    /// Builds one NSImage out of the @1x/@2x/@3x PNG scale set so the menubar
-    /// picks the right representation for the current display.
-    private func loadMenuBarImage(baseName: String, isTemplate: Bool) -> NSImage? {
-        let bundle = Bundle.appResources
-        let pointSize = NSSize(width: 22, height: 22)
-        let image = NSImage(size: pointSize)
-
-        for suffix in ["", "@2x", "@3x"] {
-            let name = baseName + suffix
-            guard let url = bundle.url(forResource: name, withExtension: "png", subdirectory: "Resources")
-                    ?? bundle.url(forResource: name, withExtension: "png"),
-                  let data = try? Data(contentsOf: url),
-                  let rep = NSBitmapImageRep(data: data) else { continue }
-            rep.size = pointSize  // 22 pt regardless of pixel density
-            image.addRepresentation(rep)
-        }
-
-        guard !image.representations.isEmpty else { return nil }
-        image.isTemplate = isTemplate  // template = macOS auto-tints for menubar appearance
-        return image
-    }
-
-    // MARK: - Status Bar Icon
-
-    private func setupStatusItem() {
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-
-        guard let button = statusItem?.button else { return }
-
-        button.action = #selector(statusItemClicked)
-        button.target = self
-        button.sendAction(on: [.leftMouseUp, .rightMouseUp])
-
-        // Set initial icon
-        updateStatusIcon()
-
-        // Poll recording state and appearance to update icon (0.1s to stay in sync with RecordingManager.durationTimer)
-        recordingStateTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-            DispatchQueue.main.async {
-                self?.updateStatusIcon()
-            }
-        }
-
-        // Also listen for appearance changes
-        DistributedNotificationCenter.default().addObserver(
-            self,
-            selector: #selector(appearanceChanged),
-            name: NSNotification.Name("AppleInterfaceThemeChangedNotification"),
-            object: nil
-        )
-    }
-
-    @objc private func appearanceChanged() {
-        DispatchQueue.main.async { [weak self] in
-            self?.lastIsDark = nil // Force refresh
-            self?.updateStatusIcon()
-        }
-    }
-
-    private func updateStatusIcon() {
-        guard let button = statusItem?.button else { return }
-        let isRecording = AppState.shared?.recordingManager.isRecording ?? false
-        // Use system appearance (not NSApp.effectiveAppearance which follows the app's theme)
-        let isDark = UserDefaults.standard.string(forKey: "AppleInterfaceStyle") == "Dark"
-
-        // Always update timer title (changes every second during recording)
-        if isRecording {
-            let duration = AppState.shared?.recordingManager.formattedDuration ?? ""
-            button.title = " \(duration)"
-        } else {
-            button.title = ""
-        }
-
-        // Only swap image when state actually changed
-        guard isRecording != lastIsRecording || isDark != lastIsDark else { return }
-        lastIsRecording = isRecording
-        lastIsDark = isDark
-
-        let image: NSImage?
-        if isRecording {
-            image = isDark ? recordingDarkImage : recordingLightImage
-        } else {
-            image = normalImage
-        }
-
-        if let image = image {
-            button.image = image
-        } else {
-            // Fallback to SF Symbol
-            let fallback = NSImage(
-                systemSymbolName: isRecording ? "record.circle.fill" : "record.circle",
-                accessibilityDescription: "NoCorny Tracer"
-            )
-            fallback?.isTemplate = true
-            button.image = fallback
-        }
-    }
-
-    @objc private func statusItemClicked() {
-        guard let event = NSApp.currentEvent else { return }
-        let isActive = AppState.shared?.recordingManager.isRecording ?? false
-        // During recording/pause: left=menu, right=app
-        // When idle:              left=app,  right=menu
-        let wantsMenu = isActive ? (event.type == .leftMouseUp) : (event.type == .rightMouseUp)
-
-        if wantsMenu {
-            let menu = buildContextMenu()
-            statusItem?.menu = menu
-            statusItem?.button?.performClick(nil)
-            statusItem?.menu = nil
-        } else {
-            showMainWindow()
-        }
-    }
-
-    // MARK: - Context Menu
-
-    private func buildContextMenu() -> NSMenu {
-        let menu = NSMenu()
-        let isRecording = AppState.shared?.recordingManager.isRecording ?? false
-        let isPaused = AppState.shared?.recordingManager.isPaused ?? false
-
-        // Recording controls
-        if isRecording {
-            let stopItem = NSMenuItem(title: "Stop Recording", action: #selector(toggleRecording), keyEquivalent: "")
-            stopItem.target = self
-            menu.addItem(stopItem)
-
-            let pauseTitle = isPaused ? "Resume Recording" : "Pause Recording"
-            let pauseItem = NSMenuItem(title: pauseTitle, action: #selector(togglePause), keyEquivalent: "")
-            pauseItem.target = self
-            menu.addItem(pauseItem)
-
-            let abortItem = NSMenuItem(title: "Abort Recording", action: #selector(abortRecording), keyEquivalent: "")
-            abortItem.target = self
-            menu.addItem(abortItem)
-        } else {
-            let startItem = NSMenuItem(title: "Start Recording", action: #selector(toggleRecording), keyEquivalent: "")
-            startItem.target = self
-            menu.addItem(startItem)
-        }
-
-        menu.addItem(NSMenuItem.separator())
-
-        // Navigation
-        let openItem = NSMenuItem(title: "Open NoCorny Tracer", action: #selector(showMainWindow), keyEquivalent: "")
-        openItem.target = self
-        menu.addItem(openItem)
-
-        // Temporary (redesign phase 2): manual way to summon the floating bar.
-        let commandBarItem = NSMenuItem(title: "Open Command Bar", action: #selector(openCommandBar), keyEquivalent: "")
-        commandBarItem.target = self
-        menu.addItem(commandBarItem)
-
-        let folderItem = NSMenuItem(title: "Open Recordings on Web", action: #selector(openRecordingsOnWeb), keyEquivalent: "")
-        folderItem.target = self
-        menu.addItem(folderItem)
-
-        menu.addItem(NSMenuItem.separator())
-
-        // Updates
-        let updateItem = NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
-        updateItem.target = self
-        menu.addItem(updateItem)
-
-        menu.addItem(NSMenuItem.separator())
-
-        // Quit
-        let quitItem = NSMenuItem(title: "Quit NoCorny Tracer", action: #selector(quitApp), keyEquivalent: "")
-        quitItem.target = self
-        menu.addItem(quitItem)
-
-        return menu
-    }
-
-    // MARK: - Menu Actions
+    // MARK: - Main window
 
     @objc private func showMainWindow() {
         NSApp.activate(ignoringOtherApps: true)
@@ -561,44 +431,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             NSApplication.shared.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater
-    }
-
-    @objc private func toggleRecording() {
-        guard let appState = AppState.shared else { return }
-        Task { @MainActor in
-            if appState.recordingManager.isRecording {
-                await appState.stopRecording()
-            } else {
-                NSApp.windows.first { $0.title == "NoCorny Tracer" }?.orderOut(nil)
-                try? await appState.startRecording()
-            }
-        }
-    }
-
-    @objc private func togglePause() {
-        guard let appState = AppState.shared else { return }
-        Task { @MainActor in
-            await appState.recordingManager.togglePause()
-        }
-    }
-
-    @objc private func abortRecording() {
-        guard let appState = AppState.shared else { return }
-        Task { @MainActor in
-            await appState.abortRecording()
-        }
-    }
-
-    @objc private func openRecordingsOnWeb() {
-        AppState.shared?.openTracerDashboard()
-    }
-
-    @objc private func checkForUpdates() {
-        updaterController?.checkForUpdates(nil)
-    }
-
-    @objc private func quitApp() {
-        NSApplication.shared.terminate(self)
     }
 
     // MARK: - URL Handling

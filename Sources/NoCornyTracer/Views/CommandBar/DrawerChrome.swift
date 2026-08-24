@@ -126,23 +126,34 @@ struct DrawerSectionHeader: View {
 // MARK: - Google sign-in button
 
 /// The 260×40 sign-in button from the signed-out drawer (87:703). White on dark
-/// glass in the macro; inverted to ink-on-light in the light scheme.
+/// glass in the macro; inverted to ink-on-light in the light scheme. The onboarding
+/// card (86:585) reuses it at 300×44 with the "G" glyph — same action, same colors.
 struct DrawerGoogleSignInButton: View {
     @Bindable var appState: AppState
+    var width: CGFloat = 260
+    var height: CGFloat = 40
+    var cornerRadius: CGFloat = 14
+    var showsGlyph: Bool = false
 
     var body: some View {
         Button {
             appState.tracerAPIClient.errorMessage = nil
             appState.tracerAPIClient.startBrowserSignIn()
         } label: {
-            Text("Sign in with Google")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(Color.adaptive(light: .white, dark: Color(hex: 0x101013)))
-                .frame(width: 260, height: 40)
-                .background(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(Color.adaptive(light: Color(hex: 0x0B1220), dark: .white))
-                )
+            HStack(spacing: 9) {
+                if showsGlyph {
+                    Text("G")
+                        .font(.system(size: 15, weight: .bold))
+                }
+                Text("Sign in with Google")
+                    .font(.system(size: 13, weight: .semibold))
+            }
+            .foregroundStyle(Color.adaptive(light: .white, dark: Color(hex: 0x101013)))
+            .frame(width: width, height: height)
+            .background(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(Color.adaptive(light: Color(hex: 0x0B1220), dark: .white))
+            )
         }
         .buttonStyle(.plain)
         .pointerOnHover()

@@ -102,18 +102,10 @@ struct MainView: View {
                 Task { await appState.tracerAPIClient.refreshProfile() }
             }
         }
-        .alert("Start at Login?", isPresented: $appState.showLaunchAtLoginPrompt) {
-            Button("Yes, start at login") {
-                appState.launchAtLogin = true
-                appState.updateLaunchAtLogin()   // apply now; didSet only persisted the pref
-            }
-            Button("No thanks", role: .cancel) {
-                appState.launchAtLogin = false
-                appState.updateLaunchAtLogin()
-            }
-        } message: {
-            Text("Would you like NoCorny Tracer to start automatically when you log in to your Mac?")
-        }
+        // The "Start at Login?" first-launch alert is gone (phase 5): onboarding owns
+        // the first launch now, and Launch at Login lives as a row in the Settings
+        // drawer. `showLaunchAtLoginPrompt` still gets set in AppState — deliberately
+        // unobserved until phase 7 retires it.
         .alert(
             "Recording did not start",
             isPresented: Binding(
