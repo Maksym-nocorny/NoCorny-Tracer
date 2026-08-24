@@ -4,16 +4,32 @@ import AppKit
 // MARK: - Root
 
 /// Content of the floating command-bar panel. Switches between the redesign's
-/// surfaces; the recording pill remains a placeholder until phase 4.
+/// surfaces: bar (with the storage banner under it when the quota runs low),
+/// bar+drawer, and the recording pill.
 struct CommandBarRootView: View {
     @Bindable var appState: AppState
     let manager: CommandBarWindowManager
+
+    /// Same used/allocated the drawer footer reads. `.ok` for a missing/zero
+    /// allocation, so a signed-out bar never grows an amber line.
+    private var storageLevel: StorageAlertLevel {
+        StorageAlert.level(used: appState.dropboxUsedSpace,
+                           allocated: appState.dropboxAllocatedSpace)
+    }
 
     var body: some View {
         Group {
             switch manager.surface {
             case .bar:
-                CommandBarView(appState: appState, manager: manager)
+                VStack(spacing: MorphGeometry.bannerGap) {
+                    CommandBarView(appState: appState, manager: manager)
+                    // Banner on the plain bar ONLY (decision, phase 4): the pill stays
+                    // minimal mid-take; the drawer already shows the quota in its
+                    // Dropbox row. See StorageBannerView.
+                    if storageLevel != .ok {
+                        StorageBannerView(appState: appState, level: storageLevel)
+                    }
+                }
             case .barWithDrawer(let tab):
                 VStack(spacing: MorphGeometry.drawerGap) {
                     CommandBarView(appState: appState, manager: manager)
@@ -25,7 +41,7 @@ struct CommandBarRootView: View {
                     }
                 }
             case .recordingPill:
-                RecordingPillStub()
+                RecordingPillView(appState: appState, manager: manager)
             }
         }
         // The panel is `panelShadowInset` larger than the glass on every side so the
@@ -35,6 +51,18 @@ struct CommandBarRootView: View {
         // Keep the panel's NSAppearance pinned to the in-app theme toggle.
         .onChange(of: appState.appTheme, initial: true) {
             manager.applyPanelAppearance()
+        }
+        // THE morph driver for recording (phase 4): every start door (bar button,
+        // hotkey, tray menu) flips `isRecording`, so observing it here collapses the
+        // bar into the pill no matter who started the take — and brings the bar back
+        // (drawer closed) on stop/abort.
+        .onChange(of: appState.recordingManager.isRecording) { _, isRecording in
+            manager.morph(to: isRecording ? .recordingPill : .bar)
+        }
+        // Keep the panel's frame in sync with the banner: the quota can cross the
+        // threshold mid-session (an upload finishing refreshes used/allocated).
+        .onChange(of: storageLevel != .ok, initial: true) { _, visible in
+            manager.setStorageBannerVisible(visible)
         }
         // Same refresh contract the old MainView tabs had (onChange(selectedTab)):
         // opening the Gallery pulls fresh recording metadata, opening Settings
@@ -386,28 +414,6 @@ enum CommandBarMarkImage {
         guard !image.representations.isEmpty else { return nil }
         cache[dark] = image
         return image
-    }
-}
-
-// MARK: - Phase stubs
-
-/// Placeholder recording pill (phase 4). Nothing morphs to it yet.
-private struct RecordingPillStub: View {
-    var body: some View {
-        HStack(spacing: Theme.Spacing.md) {
-            Circle()
-                .fill(Theme.Colors.recordRed)
-                .frame(width: 10, height: 10)
-            Text("00:00")
-                .font(Theme.Typography.timer(20))
-                .foregroundStyle(Theme.Colors.textPrimary)
-        }
-        .frame(
-            width: Theme.Metrics.recordingPillSize.width,
-            height: Theme.Metrics.recordingPillSize.height
-        )
-        .glassSurface(cornerRadius: Theme.Metrics.recordingPillSize.height / 2)
-        .floatingPanelShadow()
     }
 }
 

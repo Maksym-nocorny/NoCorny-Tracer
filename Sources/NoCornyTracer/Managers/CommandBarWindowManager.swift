@@ -78,6 +78,16 @@ final class CommandBarWindowManager {
     /// The surface currently shown. The SwiftUI root switches on this.
     private(set) var surface: Surface = .bar
 
+    /// Extra logical height under the bar while the storage banner is visible
+    /// (`MorphGeometry.storageBannerExtent`, or 0). Only `.bar` renders the banner;
+    /// the geometry ignores the value on every other surface.
+    private(set) var bannerExtent: CGFloat = 0
+
+    /// Bumped when Esc lands on the recording pill. The pill view observes this and
+    /// opens its inline discard confirmation — a counter (not a Bool) so every press
+    /// registers even while the confirmation is already showing.
+    private(set) var pillEscSignal = 0
+
     private var panel: CommandBarPanel?
     private let panelDelegate = CommandBarPanelDelegate()
     private weak var appState: AppState?
@@ -109,6 +119,15 @@ final class CommandBarWindowManager {
     func show(appState: AppState) {
         self.appState = appState
 
+        // A recording can already be running when the bar comes (back) up — started
+        // from the tray while the panel was closed. Come up as the matching surface,
+        // because the root's isRecording observer only fires on CHANGES.
+        if appState.recordingManager.isRecording {
+            surface = .recordingPill
+        } else if surface == .recordingPill {
+            surface = .bar
+        }
+
         if panel == nil {
             let host = NSHostingController(
                 rootView: CommandBarRootView(appState: appState, manager: self)
@@ -119,17 +138,26 @@ final class CommandBarWindowManager {
             let newPanel = CommandBarPanel(contentRect: .zero)
             newPanel.contentViewController = host
             newPanel.delegate = panelDelegate
-            // Esc closes an open drawer (and does nothing on the bare bar/pill).
+            // Esc closes an open drawer, and on the recording pill opens the inline
+            // discard confirmation (the panel must be key for Esc to arrive at all —
+            // the known nonactivating-panel limit from phase 3). On the bare bar: nothing.
             newPanel.onEsc = { [weak self] in
-                guard let self, case .barWithDrawer = self.surface else { return }
-                self.morph(to: .bar)
+                guard let self else { return }
+                switch self.surface {
+                case .barWithDrawer:
+                    self.morph(to: .bar)
+                case .recordingPill:
+                    self.pillEscSignal += 1
+                case .bar:
+                    break
+                }
             }
             panel = newPanel
         }
         guard let panel else { return }
 
         let visible = currentVisibleFrame()
-        let size = MorphGeometry.size(of: surface)
+        let size = MorphGeometry.size(of: surface, bannerHeight: bannerExtent)
         let anchor: CGPoint
         if let saved = Self.savedAnchor() {
             // targetFrame re-clamps below, so a stale anchor (disconnected display)
@@ -139,7 +167,9 @@ final class CommandBarWindowManager {
             let origin = MorphGeometry.initialOrigin(for: size, visible: visible)
             anchor = CGPoint(x: origin.x, y: origin.y + size.height)
         }
-        let target = MorphGeometry.targetFrame(anchorTopLeft: anchor, surface: surface, visible: visible)
+        let target = MorphGeometry.targetFrame(
+            anchorTopLeft: anchor, surface: surface, bannerHeight: bannerExtent, visible: visible
+        )
         panel.setFrame(MorphGeometry.panelFrame(forLogical: target), display: true)
 
         applyPanelAppearance()
@@ -160,13 +190,29 @@ final class CommandBarWindowManager {
     func morph(to newSurface: Surface) {
         guard surface != newSurface else { return }
         surface = newSurface
-        guard let panel else { return }
+        reframe()
+    }
 
+    /// Shows/hides the storage banner under the bar, resizing the panel in place.
+    /// Called by the SwiftUI root when the quota level crosses the threshold —
+    /// including mid-session, right after an upload refreshes used/allocated.
+    func setStorageBannerVisible(_ visible: Bool) {
+        let newExtent: CGFloat = visible ? MorphGeometry.storageBannerExtent : 0
+        guard newExtent != bannerExtent else { return }
+        bannerExtent = newExtent
+        reframe()
+    }
+
+    /// Re-derives the panel frame for the current surface + banner extent, holding
+    /// the top-left anchor. Shared by morphs and banner visibility flips.
+    private func reframe() {
+        guard let panel else { return }
         let logical = MorphGeometry.logicalFrame(forPanel: panel.frame)
         let anchor = CGPoint(x: logical.minX, y: logical.maxY)
         let target = MorphGeometry.targetFrame(
             anchorTopLeft: anchor,
-            surface: newSurface,
+            surface: surface,
+            bannerHeight: bannerExtent,
             visible: currentVisibleFrame(for: panel)
         )
         panel.setFrame(MorphGeometry.panelFrame(forLogical: target), display: true)

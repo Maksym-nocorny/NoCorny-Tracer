@@ -38,15 +38,34 @@ enum MorphGeometry {
     /// bar at y=70 with height 80, drawer at y=166 → 166 − 150 = 16.
     static let drawerGap: CGFloat = 16
 
+    /// Height of the amber storage banner under the bar (macro 87:1851: 560×38).
+    static let storageBannerHeight: CGFloat = 38
+
+    /// Gap between the bar's bottom edge and the storage banner. Measured on macro
+    /// frame 87:1810: bar at y=70 with height 80, banner at y=162 → 162 − 150 = 12.
+    static let bannerGap: CGFloat = 12
+
+    /// The extra logical height the visible storage banner adds under the bar
+    /// (gap + banner). This is the value callers pass as `bannerHeight`.
+    static var storageBannerExtent: CGFloat { bannerGap + storageBannerHeight }
+
     /// Transparent margin around the logical surface inside the panel, reserved for
     /// the SwiftUI shadow. 60pt comfortably covers radius 27.5 + y-offset 22.
     static let panelShadowInset: CGFloat = 60
 
     /// Logical (visible-glass) size of a surface.
-    static func size(of surface: CommandBarSurface) -> CGSize {
+    ///
+    /// `bannerHeight` is the extra height of the storage banner (`storageBannerExtent`,
+    /// or 0 when hidden). It applies ONLY to `.bar`: the recording pill stays minimal
+    /// mid-take and the drawer's Dropbox row already shows the quota, so neither
+    /// surface carries the banner — a deliberate phase-4 decision, not an omission.
+    static func size(of surface: CommandBarSurface, bannerHeight: CGFloat = 0) -> CGSize {
         switch surface {
         case .bar:
-            return Theme.Metrics.commandBarSize
+            return CGSize(
+                width: Theme.Metrics.commandBarSize.width,
+                height: Theme.Metrics.commandBarSize.height + bannerHeight
+            )
         case .barWithDrawer:
             return CGSize(
                 width: Theme.Metrics.commandBarSize.width,
@@ -63,8 +82,13 @@ enum MorphGeometry {
     ///   anchor becomes the bottom-left corner.
     /// - Fits in neither direction: slides vertically into the visible bounds.
     /// - Doesn't fit to the right: slides left (and never past the left edge).
-    static func targetFrame(anchorTopLeft: CGPoint, surface: CommandBarSurface, visible: CGRect) -> CGRect {
-        let size = size(of: surface)
+    static func targetFrame(
+        anchorTopLeft: CGPoint,
+        surface: CommandBarSurface,
+        bannerHeight: CGFloat = 0,
+        visible: CGRect
+    ) -> CGRect {
+        let size = size(of: surface, bannerHeight: bannerHeight)
 
         var x = anchorTopLeft.x
         if x + size.width > visible.maxX { x = visible.maxX - size.width }

@@ -107,6 +107,46 @@ final class MorphGeometryTests: XCTestCase {
         XCTAssertEqual(backFrame, barFrame)
     }
 
+    // MARK: Storage banner
+
+    func testBannerExtentIsGapPlusBanner() {
+        XCTAssertEqual(MorphGeometry.storageBannerExtent, 12 + 38,
+                       "macro 87:1810: 12pt gap under the bar + 38pt banner")
+    }
+
+    func testBannerExtendsOnlyTheBar() {
+        let extent = MorphGeometry.storageBannerExtent
+        XCTAssertEqual(
+            MorphGeometry.size(of: .bar, bannerHeight: extent),
+            CGSize(width: 560, height: 80 + 50)
+        )
+        XCTAssertEqual(
+            MorphGeometry.size(of: .barWithDrawer(.gallery), bannerHeight: extent),
+            MorphGeometry.size(of: .barWithDrawer(.gallery)),
+            "the drawer surface ignores the banner (its Dropbox row shows the quota)"
+        )
+        XCTAssertEqual(
+            MorphGeometry.size(of: .recordingPill, bannerHeight: extent),
+            MorphGeometry.size(of: .recordingPill),
+            "the recording pill ignores the banner"
+        )
+    }
+
+    func testBannerGrowsDownwardHoldingTheAnchor() {
+        let anchor = CGPoint(x: 400, y: 700)
+        let bare = MorphGeometry.targetFrame(
+            anchorTopLeft: anchor, surface: .bar, visible: visible
+        )
+        let withBanner = MorphGeometry.targetFrame(
+            anchorTopLeft: anchor, surface: .bar,
+            bannerHeight: MorphGeometry.storageBannerExtent, visible: visible
+        )
+        XCTAssertEqual(withBanner.maxY, bare.maxY, "the top-left anchor must hold")
+        XCTAssertEqual(withBanner.minX, bare.minX)
+        XCTAssertEqual(withBanner.height, bare.height + MorphGeometry.storageBannerExtent,
+                       "the banner grows the surface downward")
+    }
+
     // MARK: Defaults and insets
 
     func testInitialOriginCentersAndHangsFromTheTop() {

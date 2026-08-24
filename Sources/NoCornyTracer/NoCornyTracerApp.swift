@@ -8,7 +8,7 @@ struct NoCornyTracerApp: App {
 
     @State private var appState = AppState()
     @State private var cameraWindowManager = CameraWindowManager()
-    @State private var noiseSuggestionWindowManager = NoiseSuggestionWindowManager()
+    @State private var toastWindowManager = ToastWindowManager()
     @State private var permissionsManager: PermissionsManager
 
     // Sparkle auto-updater
@@ -46,7 +46,7 @@ struct NoCornyTracerApp: App {
                 updaterController: updaterController,
                 permissionsManager: permissionsManager,
                 cameraWindowManager: cameraWindowManager,
-                noiseSuggestionWindowManager: noiseSuggestionWindowManager,
+                toastWindowManager: toastWindowManager,
                 appDelegate: appDelegate
             )
                 .preferredColorScheme(appState.appTheme.colorScheme)
@@ -87,7 +87,7 @@ private struct MainWindowHost: View {
     let updaterController: SPUStandardUpdaterController
     @Bindable var permissionsManager: PermissionsManager
     let cameraWindowManager: CameraWindowManager
-    let noiseSuggestionWindowManager: NoiseSuggestionWindowManager
+    let toastWindowManager: ToastWindowManager
     let appDelegate: AppDelegate
 
     @Environment(\.openWindow) private var openWindow
@@ -101,9 +101,14 @@ private struct MainWindowHost: View {
                 UserDefaults.standard.removeObject(forKey: AppDelegate.windowBootstrapKey)
                 cameraWindowManager.updateVisibility(isEnabled: appState.isCameraEnabled, appState: appState)
                 // Route toast presentation through a closure so it works while the main window is
-                // hidden during recording (see AppState.presentNoiseSuggestion).
+                // hidden during recording (see AppState.presentNoiseSuggestion). Both the
+                // noise suggestion and the phase-4 info toasts ("Uploaded — link copied",
+                // "Upload failed — Dropbox full") share the one ToastWindowManager.
                 appState.presentNoiseSuggestion = { show in
-                    noiseSuggestionWindowManager.update(show: show, appState: appState)
+                    toastWindowManager.updateNoiseSuggestion(show: show, appState: appState)
+                }
+                appState.presentToast = { toast in
+                    toastWindowManager.show(toast: toast, appState: appState)
                 }
 
                 // Route the recording permission gate through openWindow: when a Start is
@@ -163,6 +168,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// App @State because it must come up at launch and from the tray menu — neither
     /// path can rely on the main window's view graph having appeared.
     @MainActor var commandBarWindowManager: CommandBarWindowManager?
+
+    /// The background-activity pills panel (phase 4) — owned here for the same
+    /// reason as the bar: uploads resume at launch, before any window appears.
+    @MainActor var backgroundPillsWindowManager: BackgroundPillsWindowManager?
 
     // Preloaded menu bar images
     private var normalImage: NSImage?  // Template image — macOS auto-tints for menubar
@@ -253,6 +262,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let manager = commandBarWindowManager ?? CommandBarWindowManager()
         commandBarWindowManager = manager
         manager.show(appState: appState)
+
+        // Phase 4: the background-activity pills ride alongside the bar. A click on
+        // any pill is a shortcut to the details — the bar's Gallery drawer.
+        let pills = backgroundPillsWindowManager ?? BackgroundPillsWindowManager()
+        backgroundPillsWindowManager = pills
+        pills.attach(appState: appState) { [weak self] in
+            guard let self, let appState = AppState.shared,
+                  let bar = self.commandBarWindowManager else { return }
+            // Mid-take the bar IS the recording pill — expanding it into a drawer
+            // would break the "recording → pill" invariant, so the click waits.
+            guard !appState.recordingManager.isRecording else { return }
+            bar.show(appState: appState)
+            bar.morph(to: .barWithDrawer(.gallery))
+        }
     }
 
     /// Tray-menu entry point (temporary, for manual testing during the redesign).

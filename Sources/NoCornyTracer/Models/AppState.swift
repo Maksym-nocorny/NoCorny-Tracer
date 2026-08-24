@@ -243,6 +243,11 @@ final class AppState {
     /// Same shape and reason as the two above: the failure can land while every window is
     /// closed, and an alert on a closed window is silence with extra steps.
     var presentUploadFailure: (() -> Void)?
+    /// Shows a transient info toast ("Uploaded — link copied", "Upload failed — Dropbox
+    /// full") through ToastWindowManager. Closure-shaped like its neighbors and for the
+    /// same reason: toasts fire from the pipeline, with every window possibly closed.
+    @ObservationIgnored
+    var presentToast: ((ToastContent) -> Void)?
 
     /// Polls Tracer for the current Dropbox connection state. Lets the macOS app
     /// notice within ~60s when the user disconnects (or switches accounts) on the
@@ -887,6 +892,26 @@ final class AppState {
                 }
                 didUploadVideo = true
 
+                // Phase 4: hand the link over the moment it exists — auto-copy the share
+                // URL (tracer page when the slug resolved, else the raw Dropbox link) and
+                // toast it. The pure decision lives in UploadCompletionNotice; a recording
+                // that somehow has no URL gets a plain "Uploaded" with nothing copied.
+                let notice = UploadCompletionNotice.decision(
+                    shareURL: recordings.first(where: { $0.id == id })?.shareURL
+                )
+                await MainActor.run {
+                    if let copyText = notice.copyText {
+                        let pasteboard = NSPasteboard.general
+                        pasteboard.clearContents()
+                        pasteboard.setString(copyText, forType: .string)
+                    }
+                    presentToast?(ToastContent(
+                        icon: "link",
+                        iconColor: Theme.Colors.statusGreen,
+                        message: notice.message
+                    ))
+                }
+
                 // Step 2.5: Tell the server the bytes have landed. AI is still
                 // running so processingStatus stays "processing" until step 5.
                 await tracerAPIClient.updateVideo(
@@ -904,11 +929,19 @@ final class AppState {
                     $0.uploadError = error.localizedDescription
                 }
                 if case DropboxUploadManager.DropboxError.outOfSpace = error {
-                    // Interrupt for this one: it is the only upload failure the user can fix,
-                    // and it used to fail in complete silence - the row went grey while the
-                    // person waited for a share link that was never coming.
-                    uploadFailureNotice = error.localizedDescription
-                    presentUploadFailure?()
+                    // Phase 4: a toast + the amber storage banner replace the old modal
+                    // alert here. The quota refresh below flips the banner on by itself
+                    // (the bar's root observes used/allocated), the toast says why the
+                    // row went grey, and the clip stays .failed with its Retry.
+                    // `uploadFailureNotice`/`presentUploadFailure` stay wired for the old
+                    // window until phase 7 — this branch just stops using them.
+                    await MainActor.run {
+                        presentToast?(ToastContent(
+                            icon: "exclamationmark.triangle.fill",
+                            iconColor: Theme.Colors.pausedAmber,
+                            message: "Upload failed — Dropbox full"
+                        ))
+                    }
                     // The cached quota is what just lied to the user ("300 MB free" against
                     // Dropbox's own insufficient_space), so pull the truth while we are here.
                     await reloadRecordingsFromTracer()
