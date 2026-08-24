@@ -159,12 +159,23 @@ struct CommandBarView: View {
 
     // MARK: Capture mode
 
+    /// Tooltip for the capture-mode capsule: the mode, plus the remembered window when
+    /// there is one — so "Window" answers "which window?" without opening the menu.
+    private var captureModeHelp: String {
+        if appState.captureMode == .window,
+           let title = appState.captureSelection.windowTitle, !title.isEmpty {
+            return "\(appState.captureMode.displayName) - \(title)"
+        }
+        return appState.captureMode.displayName
+    }
+
     private var captureModeButton: some View {
         Button {
             showCaptureMenu.toggle()
         } label: {
             HStack(spacing: 5) {
-                Image(systemName: "display")
+                // The icon is the mode indicator: display / macwindow / viewfinder.
+                Image(systemName: appState.captureMode.symbolName)
                     .font(.system(size: 15, weight: .medium))
                 Image(systemName: "chevron.down")
                     .font(.system(size: 8, weight: .semibold))
@@ -181,7 +192,7 @@ struct CommandBarView: View {
             .contentShape(RoundedRectangle(cornerRadius: Theme.Metrics.controlCornerRadius, style: .continuous))
         }
         .buttonStyle(.plain)
-        .help("What to record")
+        .help(captureModeHelp)
         .pointingHandOnHover()
         .popover(isPresented: $showCaptureMenu, arrowEdge: .bottom) {
             CaptureModeMenu(appState: appState)
@@ -253,9 +264,15 @@ struct CommandBarView: View {
 
 // MARK: - Capture mode menu
 
-/// The capture-target picker, per macro frame 72:137 (224 wide). Window and
-/// selected-area capture ship in phase 6, so those rows are disabled — more honest
-/// than a selection that silently records the whole screen anyway.
+/// The capture-target picker, per macro frame 72:137 (224 wide). Selected-area waits
+/// for its overlay (phase 6b), so that row stays disabled — more honest than a
+/// selection that silently records the whole screen anyway.
+///
+/// The Window row's click contract (decision, phase 6a): it ALWAYS opens the system
+/// window picker, and picking a window starts recording immediately. The remembered
+/// window (shown as the row's subtitle) is what the record BUTTON reuses without a
+/// picker. One row, one behaviour — no separate "Choose Window…" item, no guessing
+/// whether a click switches the mode or re-picks.
 private struct CaptureModeMenu: View {
     @Bindable var appState: AppState
     @Environment(\.dismiss) private var dismiss
@@ -264,15 +281,28 @@ private struct CaptureModeMenu: View {
         VStack(alignment: .leading, spacing: 2) {
             ForEach(CaptureMode.allCases, id: \.self) { mode in
                 Button {
-                    appState.captureMode = mode
                     dismiss()
+                    if mode == .window {
+                        appState.chooseWindowForCapture()
+                    } else {
+                        appState.captureMode = mode
+                    }
                 } label: {
                     HStack(spacing: 8) {
                         Image(systemName: mode.symbolName)
                             .font(.system(size: 13))
                             .frame(width: 18)
-                        Text(mode.displayName)
-                            .font(Theme.Typography.body(13))
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(mode.displayName)
+                                .font(Theme.Typography.body(13))
+                            if mode == .window,
+                               let title = appState.captureSelection.windowTitle, !title.isEmpty {
+                                Text(title)
+                                    .font(Theme.Typography.body(10))
+                                    .foregroundStyle(Theme.Colors.timerDimmed)
+                                    .lineLimit(1)
+                            }
+                        }
                         Spacer(minLength: 12)
                         if appState.captureMode == mode {
                             Image(systemName: "checkmark")
@@ -287,7 +317,7 @@ private struct CaptureModeMenu: View {
                 .buttonStyle(.plain)
                 .disabled(!mode.isAvailable)
                 .opacity(mode.isAvailable ? 1 : 0.4)
-                .help(mode.isAvailable ? "" : "Coming in this update")
+                .help(mode.isAvailable ? "" : "Coming next")
             }
         }
         .padding(8)

@@ -2,6 +2,7 @@ import Foundation
 import SwiftUI
 import Combine
 import ServiceManagement
+import ScreenCaptureKit
 
 /// Central app state managing all sub-managers and user preferences
 @Observable
@@ -89,12 +90,29 @@ final class AppState {
     var selectedMicrophoneID: String?
     var isMicrophoneEnabled: Bool = true
     /// What the next recording captures, chosen from the command bar's capture-mode menu.
-    /// Only `.entireScreen` actually records in this phase — the engine work for window
-    /// and selected-area capture is phase 6 of the redesign, and the menu keeps those
-    /// two disabled until then.
+    /// Entire-screen and window record today; selected-area waits for its overlay
+    /// (phase 6b), and the menu keeps that row disabled until then.
+    ///
+    /// This is the menu's lightweight handle; the full choice — WHICH window, WHICH area —
+    /// lives in `captureSelection` below, and the two are kept in sync both ways.
     var captureMode: CaptureMode = .entireScreen {
         didSet {
             defaults.set(captureMode.rawValue, forKey: "captureMode")
+            if captureSelection.mode != captureMode {
+                captureSelection.mode = captureMode
+            }
+        }
+    }
+    /// The remembered capture choice: mode plus the window / area it points at, persisted
+    /// as JSON ("captureSelection") so the next recording is one click — pick a window
+    /// once, and the record button reuses it until the window closes. Liveness is checked
+    /// at start (see `startRecording`), not stored.
+    var captureSelection = CaptureSelection() {
+        didSet {
+            captureSelection.save(to: defaults)
+            if captureMode != captureSelection.mode {
+                captureMode = captureSelection.mode
+            }
         }
     }
     /// When off (default), the mic is captured raw for maximum fidelity. When on, Apple Voice
@@ -287,6 +305,13 @@ final class AppState {
         if let modeRaw = defaults.string(forKey: "captureMode"),
            let mode = CaptureMode(rawValue: modeRaw) {
             self.captureMode = mode
+        }
+        // The full selection wins over the legacy bare mode when both exist: it is the
+        // newer write path and carries the mode inside it. Both assignments are explicit
+        // so the sync does not depend on didSet firing during init.
+        if let savedSelection = CaptureSelection.load(from: defaults) {
+            self.captureSelection = savedSelection
+            self.captureMode = savedSelection.mode
         }
         self.isCameraEnabled = defaults.bool(forKey: "isCameraEnabled")
         self.selectedCameraDeviceID = defaults.string(forKey: "selectedCameraDeviceID")
@@ -580,6 +605,28 @@ final class AppState {
             return
         }
 
+        // A remembered window can close between takes. Check it is still on screen BEFORE
+        // the start sound: a dead selection re-opens the picker — the honest version of
+        // "one-click next recording" — instead of silently recording the whole screen or
+        // playing a chime and starting nothing (decision, phase 6a). The recorder repeats
+        // this check authoritatively at capture start; this early copy exists so the
+        // failure path is a picker, not an error alert.
+        if captureMode == .window {
+            var liveWindowIDs: Set<CGWindowID> = []
+            if let content = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true) {
+                liveWindowIDs = Set(content.windows.map(\.windowID))
+            }
+            if !captureSelection.isSatisfiable(liveWindowIDs: liveWindowIDs, liveDisplayIDs: []) {
+                LogManager.shared.log("Capture: remembered window \"\(captureSelection.windowTitle ?? "?")\" is gone - asking for a new pick", type: .info)
+                var cleared = captureSelection
+                cleared.windowID = nil
+                cleared.windowTitle = nil
+                captureSelection = cleared
+                await chooseWindowForCapture()
+                return
+            }
+        }
+
         startRecordingFailure = nil
 
         // Play start sound immediately on button click.
@@ -597,7 +644,8 @@ final class AppState {
                 videoWidth: videoResolution.width,
                 videoHeight: videoResolution.height,
                 fps: videoFrameRate.rawValue,
-                startMaskDelay: Self.startSoundMaskDelay
+                startMaskDelay: Self.startSoundMaskDelay,
+                selection: captureSelection
             )
         } catch {
             // Said out loud here rather than left to the callers, all of which discard it.
@@ -621,7 +669,35 @@ final class AppState {
         if let audio = error as? AudioCaptureError, audio == .deviceVanished {
             return "The selected microphone is no longer available. Pick another one in Settings, or turn the microphone off, and start again."
         }
+        // A vanished capture target is actionable: pick the window / area again. These
+        // are already written for people (ScreenRecorderError is LocalizedError).
+        if let screen = error as? ScreenRecorderError {
+            switch screen {
+            case .windowUnavailable, .areaDisplayUnavailable:
+                return screen.errorDescription ?? "The recording could not be started. The log in Settings has the details."
+            default:
+                break
+            }
+        }
         return "The recording could not be started. The log in Settings has the details."
+    }
+
+    /// The command bar's "Window" row lands here. Decision (phase 6a): the row ALWAYS
+    /// opens the system picker, and picking a window saves it AND starts recording
+    /// immediately — pick = record. The record button is what reuses the remembered
+    /// window without a picker (see the liveness check in `startRecording`). Cancel
+    /// changes nothing: mode and the previously remembered window stay as they were.
+    @MainActor
+    func chooseWindowForCapture() {
+        WindowPickerCoordinator.shared.pickWindow { [weak self] window in
+            guard let self else { return }
+            var selection = self.captureSelection
+            selection.mode = .window
+            selection.windowID = window.windowID
+            selection.windowTitle = window.title
+            self.captureSelection = selection
+            Task { try? await self.startRecording() }
+        }
     }
 
     /// Abort recording: stops and discards the file without saving or uploading

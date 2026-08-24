@@ -76,7 +76,7 @@ final class ScreenRecorder: NSObject {
 
     @MainActor
     @discardableResult
-    func startCapture(width: Int = 1920, height: Int = 1080, fps: Int = 30, captureSystemAudio: Bool = false) async throws -> (width: Int, height: Int) {
+    func startCapture(width: Int = 1920, height: Int = 1080, fps: Int = 30, captureSystemAudio: Bool = false, selection: CaptureSelection = CaptureSelection()) async throws -> (width: Int, height: Int) {
         // Refuse to start a second capture over a live one — that used to overwrite
         // `stream`/`streamOutput` and leak the first still-running SCStream.
         guard !isCapturing, stream == nil else {
@@ -86,20 +86,83 @@ final class ScreenRecorder: NSObject {
             throw ScreenRecorderError.noDisplaySelected
         }
 
-        // Content filter for full display capture
-        let filter = SCContentFilter(display: display, excludingWindows: [])
+        // Filter + output geometry per capture mode. The sizing formulas live in
+        // CaptureGeometry (pure, tested); this switch only resolves live SCK objects.
+        //
+        // Our own panels (command bar, pills, toasts) need no exclusion anywhere: they
+        // carry `sharingType = .none`, which keeps them out of a full-display filter, and
+        // a desktopIndependentWindow filter captures one window by definition.
+        let filter: SCContentFilter
+        let out: CaptureGeometry.Output
 
-        // Match the display's aspect ratio so the output isn't letterboxed.
-        // Target the requested height; scale width proportionally and round to even pixels (H.264 requirement).
-        let displayAspect = Double(display.width) / Double(display.height)
-        let outHeight = height
-        var outWidth = Int((Double(outHeight) * displayAspect).rounded())
-        if outWidth % 2 != 0 { outWidth += 1 }
+        switch selection.mode {
+        case .entireScreen:
+            filter = SCContentFilter(display: display, excludingWindows: [])
+            out = CaptureGeometry.outputConfig(
+                mode: .entireScreen,
+                displayBounds: CGRect(x: 0, y: 0, width: display.width, height: display.height),
+                areaRect: nil,
+                windowFrame: nil,
+                scaleFactor: 1,  // entire-screen output is sized by the resolution setting, not the panel scale
+                requestedHeight: height
+            )
+
+        case .window:
+            // Look the remembered window up fresh: it can close between being picked and
+            // the record button being pressed (or between the caller's own liveness check
+            // and this line). A vanished window is a refusal with a reason, not a silent
+            // fall-back to full-screen.
+            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+            guard let windowID = selection.windowID,
+                  let scWindow = content.windows.first(where: { $0.windowID == windowID }) else {
+                throw ScreenRecorderError.windowUnavailable(title: selection.windowTitle)
+            }
+            // desktopIndependentWindow: captures this one window wherever it goes —
+            // moved, resized, covered by other windows — and nothing else.
+            let windowFilter = SCContentFilter(desktopIndependentWindow: scWindow)
+            filter = windowFilter
+            out = CaptureGeometry.outputConfig(
+                mode: .window,
+                displayBounds: CGRect(x: 0, y: 0, width: display.width, height: display.height),
+                areaRect: nil,
+                windowFrame: scWindow.frame,
+                scaleFactor: CGFloat(windowFilter.pointPixelScale),
+                requestedHeight: height
+            )
+
+        case .selectedArea:
+            // Same full-display filter as entireScreen; the crop is config.sourceRect,
+            // which SCStream.h documents as POINTS in the display's logical coordinate
+            // system — CaptureGeometry therefore hands the rect through unscaled and
+            // multiplies only the output surface by pointPixelScale.
+            let areaDisplay: SCDisplay
+            if let displayID = selection.areaDisplayID {
+                guard let match = availableDisplays.first(where: { $0.displayID == displayID }) else {
+                    throw ScreenRecorderError.areaDisplayUnavailable
+                }
+                areaDisplay = match
+            } else {
+                areaDisplay = display
+            }
+            let displayFilter = SCContentFilter(display: areaDisplay, excludingWindows: [])
+            filter = displayFilter
+            out = CaptureGeometry.outputConfig(
+                mode: .selectedArea,
+                displayBounds: CGRect(x: 0, y: 0, width: areaDisplay.width, height: areaDisplay.height),
+                areaRect: selection.areaRect,
+                windowFrame: nil,
+                scaleFactor: CGFloat(displayFilter.pointPixelScale),
+                requestedHeight: height
+            )
+        }
 
         // Configure stream
         let config = SCStreamConfiguration()
-        config.width = outWidth
-        config.height = outHeight
+        config.width = out.width
+        config.height = out.height
+        if let sourceRect = out.sourceRect {
+            config.sourceRect = sourceRect
+        }
         config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(fps))
         config.showsCursor = true
         config.pixelFormat = kCVPixelFormatType_32BGRA
@@ -150,7 +213,7 @@ final class ScreenRecorder: NSObject {
         stream = captureStream
         isCapturing = true
         isCapturingSystemAudio = systemAudioAttached
-        return (outWidth, outHeight)
+        return (out.width, out.height)
     }
 
     @MainActor
@@ -174,12 +237,24 @@ enum ScreenRecorderError: LocalizedError {
     case noDisplaySelected
     case permissionDenied
     case captureAlreadyRunning
+    /// The remembered window closed between being picked and the capture starting.
+    /// Carries the remembered title so the refusal can name what disappeared.
+    case windowUnavailable(title: String?)
+    /// The display the selected area lives on is no longer connected.
+    case areaDisplayUnavailable
 
     var errorDescription: String? {
         switch self {
         case .noDisplaySelected: return "No display selected for recording"
         case .permissionDenied: return "Screen recording permission was denied"
         case .captureAlreadyRunning: return "A capture session is already running"
+        case .windowUnavailable(let title):
+            if let title, !title.isEmpty {
+                return "The window \"\(title)\" is no longer open. Pick another window and start again."
+            }
+            return "The selected window is no longer open. Pick another window and start again."
+        case .areaDisplayUnavailable:
+            return "The display the selected area was on is no longer connected. Pick the area again."
         }
     }
 }

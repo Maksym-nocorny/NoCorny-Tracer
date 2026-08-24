@@ -79,7 +79,8 @@ final class RecordingManager {
         videoWidth: Int = 1920,
         videoHeight: Int = 1080,
         fps: Int = 30,
-        startMaskDelay: UInt64 = 0
+        startMaskDelay: UInt64 = 0,
+        selection: CaptureSelection = CaptureSelection()
     ) async throws {
         // Reentrancy guard: isRecording is only set true after several awaits, so a
         // double trigger within that window used to start two concurrent captures +
@@ -108,7 +109,8 @@ final class RecordingManager {
                 width: videoWidth,
                 height: videoHeight,
                 fps: fps,
-                captureSystemAudio: recordSystemAudio
+                captureSystemAudio: recordSystemAudio,
+                selection: selection
             )
 
             // Create video writer sized to the capture output so frames aren't letterboxed.
