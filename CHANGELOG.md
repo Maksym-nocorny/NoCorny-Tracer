@@ -1,5 +1,27 @@
 # Changelog
 
+## [4.0.0] - 2026-08-25
+### Changed
+- **Tracer is now a command bar, not a window.** The old 380-pixel window with tabs is gone. Everything lives in a floating glass bar: record button, timer, capture mode, mic and camera toggles, and two drawers - Recent recordings and Settings. The drawer opens upward when the bar sits in the lower half of the screen. On macOS 26 the bar is drawn with the system's native Liquid Glass.
+- **Recording turns the bar into a pill.** On start the bar flies to the top of the screen and becomes a compact pill: stop, timer, pause, discard (with a proper confirmation), mic and camera toggles, and a hide button - hide it and the recording keeps going with the timer in the menu bar. Drag the pill anywhere; it remembers your spot. The pill never appears in the recording itself.
+- **The close button no longer quits.** It hides the bar; Tracer stays in the menu bar. Quit lives in the tray menu.
+- **The tray now tells the truth at a glance:** brand mark at rest, red dot with a live timer while recording (click = stop), an upload arrow with a counter while work happens in the background.
+- **Global shortcuts no longer need the Accessibility permission.** Same keys, new plumbing.
+- New app icon and menu bar icons.
+
+### Added
+- **Record a window or an area, not just the whole screen.** The capture menu in the bar offers Entire Screen, Window (system picker) and Selected Area (drag a frame with live pixel size, Enter to start). Your choice is remembered for one-click next recordings.
+- **Transcription progress you can see, and retry when it fails.** Background pills show uploads and transcriptions with live percentages without blocking a new recording. A failed transcription now says so on the row and offers Retry - the local file is kept until the transcript is safe. This state survives restarting the app, and syncs honestly with the web library.
+- **The Recent drawer works harder.** Click a thumbnail (with its new play badge) to open the recording page in the browser; click the row or the link button to copy the share link; right-click for Open on web, Retry, Speakers and Delete. After every upload the link is copied for you and a toast says so.
+- **A two-step onboarding** replaces the permissions window: grant Screen Recording, sign in with Google - or skip and record locally.
+- **Dropbox running low is announced before you record**, with an amber banner under the bar and a direct Manage link; a full Dropbox no longer buries the recording - it stays local with a Retry.
+
+### Fixed
+- **The camera toggle actually asks for camera access.** It used to fail silently when permission had never been granted; now it prompts, and if access is denied it says so with a button to System Settings.
+- Critical warnings (like the microphone dying mid-recording) can no longer be pushed off screen by routine notifications.
+- The upload progress bar no longer freezes after Dropbox refreshes its token mid-upload.
+- The app no longer tells the server a transcript is ready when it is not.
+
 ## [3.17.3] - 2026-08-24
 ### Changed
 - The transcription picker no longer lists Cloud (Groq). It was shown padlocked while it is not available to anyone; it will come back the day it is actually offered.
