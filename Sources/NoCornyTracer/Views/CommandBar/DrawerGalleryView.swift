@@ -365,25 +365,46 @@ private struct DrawerRecordingRow: View {
 
     // MARK: Thumbnail (62×42, r9)
 
+    /// Round 4: the thumbnail is the row's second door — the play badge already
+    /// invites a click, and now it honestly opens the recording's WEB PAGE
+    /// (`tracerPageURL`, the same door as the context menu's "Open on web"). The
+    /// Dropbox share link is deliberately NOT a fallback here: it is a file link,
+    /// not the player page — unlike the row click's copy, which keeps `shareURL`'s
+    /// full priority chain. No page yet → the thumbnail is inert, arrow cursor.
+    ///
+    /// Being a Button INSIDE a row whose copy runs on `.onTapGesture` is what
+    /// gives the thumbnail click priority over the row click — the exact
+    /// mechanism the retry and link buttons of this row already rely on (child
+    /// gestures beat the parent's onTapGesture), so a thumbnail click never
+    /// double-fires the copy.
     private var thumbnail: some View {
-        ZStack {
-            if let path = recording.dropboxPath {
-                DropboxThumbnailView(path: path, appState: appState)
-            } else {
-                RoundedRectangle(cornerRadius: DrawerStyle.thumbCornerRadius, style: .continuous)
-                    .fill(DrawerStyle.thumbFill)
+        Button {
+            if let url = tracerPageURL { NSWorkspace.shared.open(url) }
+        } label: {
+            ZStack {
+                if let path = recording.dropboxPath {
+                    DropboxThumbnailView(path: path, appState: appState)
+                } else {
+                    RoundedRectangle(cornerRadius: DrawerStyle.thumbCornerRadius, style: .continuous)
+                        .fill(DrawerStyle.thumbFill)
+                }
+                // The brand play mark (round 3): the shrunken RecordRingMark on a dark
+                // backing disc, centered — replaces the generic play.fill the empty
+                // placeholder used to carry, and rides on real thumbnails too.
+                ThumbnailPlayBadge()
             }
-            // The brand play mark (round 3): the shrunken RecordRingMark on a dark
-            // backing disc, centered — replaces the generic play.fill the empty
-            // placeholder used to carry, and rides on real thumbnails too.
-            ThumbnailPlayBadge()
+            .frame(width: 62, height: 42)
+            .clipShape(RoundedRectangle(cornerRadius: DrawerStyle.thumbCornerRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: DrawerStyle.thumbCornerRadius, style: .continuous)
+                    .strokeBorder(DrawerStyle.ink(0.1), lineWidth: 1)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: DrawerStyle.thumbCornerRadius, style: .continuous))
         }
-        .frame(width: 62, height: 42)
-        .clipShape(RoundedRectangle(cornerRadius: DrawerStyle.thumbCornerRadius, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: DrawerStyle.thumbCornerRadius, style: .continuous)
-                .strokeBorder(DrawerStyle.ink(0.1), lineWidth: 1)
-        )
+        .buttonStyle(.plain)
+        .disabled(tracerPageURL == nil)
+        .pointerOnHover(tracerPageURL != nil)
+        .help(tracerPageURL != nil ? "Open on web" : "No web page yet — the recording hasn't uploaded")
     }
 
     // MARK: Meta line ("612 MB · 41:05 · Today, 11:20")

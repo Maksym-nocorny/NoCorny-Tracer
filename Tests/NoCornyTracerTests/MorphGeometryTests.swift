@@ -178,9 +178,9 @@ final class MorphGeometryTests: XCTestCase {
 
     // MARK: Dynamic pill width (round 3: base 341 is the canon, extras grow right)
 
-    /// Transient pill content the mockup doesn't draw (armed "Discard?", a 100+
-    /// minute timer) widens ONLY the pill, to the RIGHT of the held top-left
-    /// anchor — the stop button at the leading edge must not move.
+    /// Transient pill content the mockup doesn't draw (a 100+ minute timer
+    /// outgrowing its 57-pt slot) widens ONLY the pill, to the RIGHT of the held
+    /// top-left anchor — the stop button at the leading edge must not move.
     func testPillExtraWidthGrowsRightFromTheHeldAnchor() {
         let anchor = CGPoint(x: 400, y: 700)
         let base = MorphGeometry.targetFrame(

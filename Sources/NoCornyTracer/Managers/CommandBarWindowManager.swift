@@ -109,14 +109,14 @@ final class CommandBarWindowManager {
     private(set) var bannerExtent: CGFloat = 0
 
     /// Bumped when Esc lands on the recording pill. The pill view observes this and
-    /// opens its inline discard confirmation — a counter (not a Bool) so every press
-    /// registers even while the confirmation is already showing.
+    /// opens its discard-confirmation popover (round 4) — a counter (not a Bool) so
+    /// every press registers regardless of the previous value.
     private(set) var pillEscSignal = 0
 
     /// Extra logical width of the recording pill past its 341-pt base (round 3):
     /// the pill panel resizes DYNAMICALLY to its SwiftUI content — like the toast —
-    /// for the transient states the mockup doesn't draw (armed "Discard?", a
-    /// 100+ minute timer). Reported by the pill view via
+    /// for transient content the mockup doesn't draw (a 100+ minute timer wider
+    /// than its 57-pt slot). Reported by the pill view via
     /// `setRecordingPillContentWidth`; only `.recordingPill` frames consume it.
     private(set) var pillExtraWidth: CGFloat = 0
 
@@ -323,7 +323,7 @@ final class CommandBarWindowManager {
         if newSurface == .recordingPill {
             // A fresh take starts at the base width; the mounted pill re-reports
             // its actual width immediately (a stale extra from the previous take's
-            // armed "Discard?" must not flash on the new pill).
+            // long timer must not flash on the new pill).
             pillExtraWidth = 0
         }
         if case .barWithDrawer = newSurface {

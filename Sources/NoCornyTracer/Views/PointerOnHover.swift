@@ -15,8 +15,8 @@ extension View {
     ///
     /// macOS 15+: the native `.pointerStyle(.link)` — AppKit owns the cursor for
     /// exactly as long as the pointer is over the view, so a control that vanishes
-    /// mid-hover (the trash button swapping into "Discard?") can't strand a hand
-    /// cursor. Fallback (macOS 14): NSCursor push/pop with the push/pop balance
+    /// mid-hover (a gallery row's status cluster swapping to "Copied") can't
+    /// strand a hand cursor. Fallback (macOS 14): NSCursor push/pop with the push/pop balance
     /// tracked explicitly — `onHover(false)` after a never-pushed enter, or a view
     /// disappearing while hovered, must not pop someone else's cursor or leak ours.
     func pointerOnHover(_ enabled: Bool = true) -> some View {
@@ -49,7 +49,7 @@ private struct PointerOnHoverModifier: ViewModifier {
                 }
                 .onDisappear {
                     // The hovered control can be removed from the hierarchy without a
-                    // final onHover(false) — e.g. the pill's trash → "Discard?" swap.
+                    // final onHover(false) — e.g. a row's status cluster → "Copied" swap.
                     if pushed {
                         NSCursor.pop()
                         pushed = false

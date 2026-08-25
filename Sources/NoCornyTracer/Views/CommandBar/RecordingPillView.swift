@@ -10,21 +10,20 @@ import AppKit
 /// actions at pill scale; the hide chevron sends the panel away while the take
 /// keeps recording.
 ///
-/// Transient states the mockup doesn't draw — the armed "Discard?" capsule, a
-/// timer wider than its 57-pt slot on 100+ minute takes — are NOT baked into the
-/// base: the content hugs, reports its laid-out width to the manager
-/// (`setRecordingPillContentWidth`), and the PANEL grows dynamically to the right
-/// of the held top-left anchor, toast-style.
+/// Transient states the mockup doesn't draw — a timer wider than its 57-pt slot
+/// on 100+ minute takes — are NOT baked into the base: the content hugs, reports
+/// its laid-out width to the manager (`setRecordingPillContentWidth`), and the
+/// PANEL grows dynamically to the right of the held top-left anchor, toast-style.
 struct RecordingPillView: View {
     @Bindable var appState: AppState
     let manager: CommandBarWindowManager
 
-    /// First trash click (or Esc) arms this; the trash button becomes a red
-    /// "Discard?" capsule for 3 seconds, and only a second click actually aborts.
-    /// An NSAlert can't sit on a borderless nonactivating panel without stealing
-    /// the recording's focus, hence the inline treatment.
-    @State private var confirmingDiscard = false
-    @State private var confirmExpiry: Task<Void, Never>?
+    /// Trash click (or Esc on the panel) opens the discard-confirmation popover
+    /// (round 4 — the old inline red "Discard?" morph read as «незрозуміле
+    /// підтвердження»). An NSAlert still can't sit on a borderless nonactivating
+    /// panel without stealing the recording's focus; the anchored popover is the
+    /// same pattern the capture menu already proved on this panel.
+    @State private var showDiscardConfirm = false
 
     private var recordingManager: RecordingManager { appState.recordingManager }
 
@@ -84,9 +83,12 @@ struct RecordingPillView: View {
             manager.setRecordingPillContentWidth(width)
         }
         .floatingPanelShadow()
-        // Esc on the (key) panel routes here via the manager — same confirm as a click.
+        // Esc on the (key) panel routes here via the manager — same confirmation
+        // popover as a trash click. With the popover already up, Esc lands on the
+        // POPOVER's key window and dismisses it (= Cancel), so the signal never
+        // double-fires.
         .onChange(of: manager.pillEscSignal) {
-            armDiscardConfirm()
+            showDiscardConfirm = true
         }
     }
 
@@ -168,56 +170,38 @@ struct RecordingPillView: View {
         .pointerOnHover()
     }
 
-    // MARK: Discard (inline two-step confirm)
+    // MARK: Discard (popover confirm, round 4)
 
-    @ViewBuilder
+    /// The trash button opens a small glass confirmation popover anchored to it.
+    /// The trash carries NO hover scale, so the popover's anchor rect never moves —
+    /// the round-3 capture-menu lesson («застосунок трясе»), honored here by
+    /// construction rather than by a freeze flag. The transient popover makes
+    /// Esc and any click past it a Cancel on its own.
     private var discardControl: some View {
-        if confirmingDiscard {
-            Button {
-                confirmExpiry?.cancel()
+        Button {
+            showDiscardConfirm = true
+        } label: {
+            ZStack {
+                Circle().fill(Theme.Colors.glassControlFillSubtle)
+                Circle().strokeBorder(Theme.Colors.glassStrokeSubtle, lineWidth: 1)
+                Image(systemName: "trash")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Theme.Colors.textPrimary)
+            }
+            .frame(width: 28, height: 28)
+        }
+        .buttonStyle(.plain)
+        .help("Discard recording")
+        .pointerOnHover()
+        .popover(isPresented: $showDiscardConfirm, arrowEdge: .bottom) {
+            DiscardConfirmPopover {
                 #if DEBUG
                 if let preview { preview.endPill(); return }
                 #endif
                 Task { await appState.abortRecording() }
                 // No morph here: abort drops isRecording, and the root's onChange
                 // brings the bar back through the one shared path.
-            } label: {
-                Text("Discard?")
-                    .font(Theme.Typography.body(11, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 10)
-                    .frame(height: 28)
-                    .background(Capsule().fill(Theme.Colors.recordRed))
             }
-            .buttonStyle(.plain)
-            .help("Click again to discard this recording")
-            .pointerOnHover()
-        } else {
-            Button {
-                armDiscardConfirm()
-            } label: {
-                ZStack {
-                    Circle().fill(Theme.Colors.glassControlFillSubtle)
-                    Circle().strokeBorder(Theme.Colors.glassStrokeSubtle, lineWidth: 1)
-                    Image(systemName: "trash")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(Theme.Colors.textPrimary)
-                }
-                .frame(width: 28, height: 28)
-            }
-            .buttonStyle(.plain)
-            .help("Discard recording")
-            .pointerOnHover()
-        }
-    }
-
-    private func armDiscardConfirm() {
-        withAnimation(Theme.Anim.standard) { confirmingDiscard = true }
-        confirmExpiry?.cancel()
-        confirmExpiry = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 3_000_000_000)
-            guard !Task.isCancelled else { return }
-            withAnimation(Theme.Anim.standard) { confirmingDiscard = false }
         }
     }
 
@@ -310,6 +294,66 @@ struct RecordingPillView: View {
         light: Color(hex: 0x0B1220, opacity: 0.13),
         dark: Color(hex: 0xFFFFFF, opacity: 0.13)
     )
+}
+
+// MARK: - Discard confirmation popover (round 4)
+
+/// The discard confirmation, in the drawers' visual language (ink text, popUp
+/// capsule for the neutral action): title, one-line consequence, and two EXPLICIT
+/// label buttons — Cancel and a recordRed destructive Discard. Esc and clicking
+/// past the popover cancel (transient NSPopover behaviour); only the red button
+/// aborts.
+private struct DiscardConfirmPopover: View {
+    let onDiscard: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text("Discard this recording?")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(DrawerStyle.ink(0.92))
+
+            Text("The clip will be deleted. Nothing is uploaded.")
+                .font(.system(size: 10.5))
+                .foregroundStyle(DrawerStyle.ink(0.5))
+
+            HStack(spacing: 8) {
+                Spacer(minLength: 0)
+
+                Button {
+                    dismiss()
+                } label: {
+                    Text("Cancel")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(DrawerStyle.ink(0.85))
+                        .padding(.horizontal, 12)
+                        .frame(height: 24)
+                        .background(Capsule().fill(DrawerStyle.popUpFill))
+                        .overlay(Capsule().strokeBorder(DrawerStyle.popUpStroke, lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                .pointerOnHover()
+
+                Button {
+                    dismiss()
+                    onDiscard()
+                } label: {
+                    Text("Discard")
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 12)
+                        .frame(height: 24)
+                        .background(Capsule().fill(Theme.Colors.recordRed))
+                }
+                .buttonStyle(.plain)
+                .pointerOnHover()
+            }
+            .padding(.top, 8)
+        }
+        .padding(12)
+        .frame(width: 236)
+    }
 }
 
 // MARK: - Pill toggle button (round 3, metrics per the v2 mockup)

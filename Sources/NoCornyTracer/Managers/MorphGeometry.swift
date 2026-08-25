@@ -62,8 +62,8 @@ enum MorphGeometry {
     /// surface carries the banner — a deliberate phase-4 decision, not an omission.
     ///
     /// `pillExtraWidth` (round 3) is the pill's counterpart: extra width past the
-    /// designer's 341-pt base for transient content the mockup doesn't draw — the
-    /// armed "Discard?" capsule, a 100+ minute timer. It applies ONLY to
+    /// designer's 341-pt base for transient content the mockup doesn't draw — a
+    /// 100+ minute timer outgrowing its 57-pt slot. It applies ONLY to
     /// `.recordingPill`; anchors and the perch flight stay computed from the base.
     static func size(
         of surface: CommandBarSurface,
@@ -118,7 +118,7 @@ enum MorphGeometry {
     ///   RIGHT of the held top-left anchor — chosen over symmetric growth because
     ///   the stop button sits at the leading edge, and the leading edge holding
     ///   still is what keeps that button under an approaching cursor. Symmetric
-    ///   growth would shift it left by half the extra every time "Discard?" arms.
+    ///   growth would shift it left by half the extra whenever the timer widens.
     /// - `.barWithDrawer`: direction per `drawerOpensUpward` — downward keeps the
     ///   anchor as the surface's top-left; upward keeps the BAR in place (surface
     ///   bottom = the bar's bottom edge) and the drawer unfolds above it.

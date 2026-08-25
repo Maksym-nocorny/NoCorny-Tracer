@@ -269,9 +269,9 @@ enum Theme {
         static let drawerSize = CGSize(width: 560, height: 332)
         /// The pill's BASE size — the designer's canon (round 3 mockup): 341×54 =
         /// 10 + stop 38 + timer 57 + pause 28 + discard 28 + divider 1 + mic 30 +
-        /// cam 30 + divider 1 + hide 28 + 10, gaps of 10. Transient states the
-        /// mockup doesn't draw (armed "Discard?", a 100+ minute timer) grow the
-        /// panel DYNAMICALLY past this base — see CommandBarWindowManager's
+        /// cam 30 + divider 1 + hide 28 + 10, gaps of 10. Transient content the
+        /// mockup doesn't draw (a 100+ minute timer outgrowing its 57-pt slot)
+        /// grows the panel DYNAMICALLY past this base — see CommandBarWindowManager's
         /// `setRecordingPillContentWidth`; anchors and the perch flight are always
         /// computed from the base.
         static let recordingPillSize = CGSize(width: 341, height: 54)
