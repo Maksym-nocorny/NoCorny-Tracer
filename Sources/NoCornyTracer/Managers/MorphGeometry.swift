@@ -16,7 +16,7 @@ enum CommandBarSurface: Equatable {
     case bar
     /// The bar with a 560×332 drawer hanging under it (gap `MorphGeometry.drawerGap`).
     case barWithDrawer(CommandBarDrawerTab)
-    /// The 400×54 pill the bar collapses into while recording (phase 4; grown
+    /// The 341×54 pill the bar collapses into while recording (phase 4; grown
     /// from 292 in round 3 for the mic/cam toggles and the hide button).
     case recordingPill
 }
