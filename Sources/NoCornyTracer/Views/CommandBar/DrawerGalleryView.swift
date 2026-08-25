@@ -167,6 +167,10 @@ private struct DrawerRecordingRow: View {
                 transcriptionStatus
                 uploadStatus
             }
+
+            // Round 3: the visible affordance for the link — the row click stays
+            // the fast path, the button is the SIGN that a link is there at all.
+            copyLinkButton
         }
         .padding(.leading, 9)
         .padding(.trailing, 12)
@@ -183,16 +187,38 @@ private struct DrawerRecordingRow: View {
         // A gesture rather than wrapping the row in a Button: the retry controls on the
         // right are buttons of their own, and nesting them inside one would swallow them.
         .onTapGesture { copyLink() }
-        .onHover { hovering in
-            isHovered = hovering
-            if hovering && recording.canCopyLink {
-                NSCursor.pointingHand.push()
-            } else {
-                NSCursor.pop()
-            }
-        }
+        .onHover { isHovered = $0 }
+        .pointerOnHover(recording.canCopyLink)
         .help(recording.canCopyLink ? "Click to copy the share link" : "No link yet — the recording hasn't uploaded")
         .contextMenu { rowContextMenu }
+    }
+
+    // MARK: Copy-link button (round 3 — visible affordance; retry-button styling)
+
+    /// 24pt round `link` button after the status cluster: same action as the row
+    /// click (`copyLink`), same 24×24/8%/14% recipe as the transcription cluster's
+    /// retry button, checkmark micro-feedback riding the row's existing 1.5s
+    /// `showCopied` window. Disabled (dimmed, arrow cursor) while there is no
+    /// share URL yet — the gate `copyLink` itself enforces.
+    @State private var linkHovered = false
+
+    private var copyLinkButton: some View {
+        Button {
+            copyLink()
+        } label: {
+            Image(systemName: showCopied ? "checkmark" : "link")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(showCopied ? Theme.Colors.statusGreen : DrawerStyle.ink(0.75))
+                .frame(width: 24, height: 24)
+                .background(Circle().fill(DrawerStyle.ink(linkHovered && recording.canCopyLink ? 0.14 : 0.08)))
+                .overlay(Circle().strokeBorder(DrawerStyle.ink(0.14), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .disabled(!recording.canCopyLink)
+        .opacity(recording.canCopyLink ? 1 : 0.4)
+        .onHover { linkHovered = $0 }
+        .pointerOnHover(recording.canCopyLink)
+        .help(recording.canCopyLink ? "Copy the share link" : "No link yet — the recording hasn't uploaded")
     }
 
     // MARK: Context menu (phase 6b — system menu, no macro)
@@ -346,10 +372,11 @@ private struct DrawerRecordingRow: View {
             } else {
                 RoundedRectangle(cornerRadius: DrawerStyle.thumbCornerRadius, style: .continuous)
                     .fill(DrawerStyle.thumbFill)
-                Image(systemName: "play.fill")
-                    .font(.system(size: 11))
-                    .foregroundStyle(DrawerStyle.ink(0.5))
             }
+            // The brand play mark (round 3): the shrunken RecordRingMark on a dark
+            // backing disc, centered — replaces the generic play.fill the empty
+            // placeholder used to carry, and rides on real thumbnails too.
+            ThumbnailPlayBadge()
         }
         .frame(width: 62, height: 42)
         .clipShape(RoundedRectangle(cornerRadius: DrawerStyle.thumbCornerRadius, style: .continuous))

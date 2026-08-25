@@ -58,14 +58,44 @@ final class StatusItemController: NSObject {
         }
     }
 
+    /// What a plain left click on the tray icon does. Pure for the same reason as
+    /// `state(...)`/`render(...)` — the routing is testable without a status bar.
+    ///
+    /// Round 3: mid-recording the answer depends on whether the pill panel is on
+    /// screen. The pill grew a "hide" button, and a hidden pill's first tray click
+    /// brings it BACK; only a click with the pill visible stops the take. Стоп зі
+    /// схованою пігулкою — два кліки: чесний компроміс, бо один і той самий клік
+    /// не може означати і «покажи», і «зупини», а зупинка наосліп гірша за зайвий
+    /// клік. (The tray menu's Stop still stops in one go from anywhere.)
+    enum LeftClickAction: Equatable {
+        case stopRecording
+        case showRecordingPill
+        case showGallery
+        case showCommandBar
+    }
+
+    static func leftClickAction(state: TrayState, isCommandBarVisible: Bool) -> LeftClickAction {
+        switch state {
+        case .recording:
+            return isCommandBarVisible ? .stopRecording : .showRecordingPill
+        case .background:
+            return .showGallery
+        case .idle:
+            return .showCommandBar
+        }
+    }
+
     // MARK: - Wiring
 
     /// Command-bar entry points, injected by AppDelegate so the controller never
     /// reaches into the window managers directly.
     struct Actions {
-        var showCommandBar: () -> Void      // idle left click + "Open Tracer"
+        var showCommandBar: () -> Void      // idle left click + "Open Tracer" (+ hidden pill's way back)
         var showGallery: () -> Void         // background left click → bar + gallery drawer
         var showSettings: () -> Void        // "Settings…" → bar + settings drawer
+        /// Whether the command-bar panel (bar or pill) is on screen right now —
+        /// feeds `leftClickAction` (round 3: hidden pill vs stop).
+        var isCommandBarVisible: () -> Bool
     }
 
     private let actions: Actions
@@ -255,15 +285,17 @@ final class StatusItemController: NSObject {
         let isRecording = appState?.recordingManager.isRecording ?? false
         let backgroundCount = appState.map { BackgroundActivity.totalBackgroundCount(recordings: $0.recordings) } ?? 0
 
-        switch Self.state(isRecording: isRecording, formattedDuration: nil, backgroundCount: backgroundCount) {
-        case .recording:
+        let state = Self.state(isRecording: isRecording, formattedDuration: nil, backgroundCount: backgroundCount)
+        switch Self.leftClickAction(state: state, isCommandBarVisible: actions.isCommandBarVisible()) {
+        case .stopRecording:
             Task { @MainActor in
                 await AppState.shared?.stopRecording()
             }
-        case .background:
-            actions.showGallery()
-        case .idle:
+        case .showRecordingPill, .showCommandBar:
+            // Same door: `show()` comes up as the pill whenever a take is live.
             actions.showCommandBar()
+        case .showGallery:
+            actions.showGallery()
         }
     }
 
@@ -285,6 +317,19 @@ final class StatusItemController: NSObject {
         // Recording controls on top, mid-take only (the old menu's functionality;
         // the macro's menu is drawn in the idle state).
         if isRecording {
+            // Round 3: a pill hidden via its chevron gets an explicit way back in
+            // the menu, above the take controls (a left tray click does the same).
+            if !actions.isCommandBarVisible() {
+                let showPillItem = NSMenuItem(
+                    title: "Show recording pill",
+                    action: #selector(showRecordingPill),
+                    keyEquivalent: ""
+                )
+                showPillItem.target = self
+                menu.addItem(showPillItem)
+                menu.addItem(NSMenuItem.separator())
+            }
+
             let stopItem = NSMenuItem(title: "Stop", action: #selector(stopRecording), keyEquivalent: "r")
             stopItem.keyEquivalentModifierMask = [.option, .shift]
             stopItem.target = self
@@ -356,6 +401,12 @@ final class StatusItemController: NSObject {
         Task { @MainActor in
             await AppState.shared?.stopRecording()
         }
+    }
+
+    /// "Show recording pill" (round 3): the pill was hidden mid-take — bring the
+    /// panel back; `show()` restores the pill surface for a live recording.
+    @objc private func showRecordingPill() {
+        actions.showCommandBar()
     }
 
     @objc private func togglePause() {

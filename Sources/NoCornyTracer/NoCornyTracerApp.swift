@@ -138,7 +138,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let controller = StatusItemController(actions: .init(
             showCommandBar: { [weak self] in self?.presentCommandBar() },
             showGallery: { [weak self] in self?.presentCommandBar(drawer: .gallery) },
-            showSettings: { [weak self] in self?.presentCommandBar(drawer: .settings) }
+            showSettings: { [weak self] in self?.presentCommandBar(drawer: .settings) },
+            // Round 3: the tray tells "stop the take" from "bring the hidden pill
+            // back" by whether the panel is on screen.
+            isCommandBarVisible: { [weak self] in self?.commandBarWindowManager?.isPanelVisible ?? false }
         ))
         statusItemController = controller
         controller.attach()
@@ -270,7 +273,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // A start refusal used to be an alert on the main window; phase 7 makes it
         // a toast — the message is already written for people (startFailureMessage).
-        appState.presentStartFailure = { [weak toasts] in
+        // Round 3: the toast now comes WITH the command bar. A start can be refused
+        // right after the area overlay closed (Enter → engine says no) or from a
+        // hotkey with the bar hidden — a toast that fades over an empty desk left
+        // the user with no surface at all («минулого разу викинуло»). Re-showing
+        // an already-visible bar is a harmless re-front.
+        appState.presentStartFailure = { [weak self, weak toasts] in
             guard let appState = AppState.shared else { return }
             toasts?.show(toast: ToastContent(
                 icon: "exclamationmark.triangle.fill",
@@ -278,6 +286,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 message: appState.startRecordingFailure ?? "The recording could not be started",
                 duration: 6
             ), appState: appState)
+            Task { @MainActor [weak self] in
+                self?.presentCommandBar()
+            }
         }
 
         // Nothing sets uploadFailureNotice today (out-of-space became toast+banner in

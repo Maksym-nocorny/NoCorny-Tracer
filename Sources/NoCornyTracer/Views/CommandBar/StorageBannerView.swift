@@ -45,9 +45,7 @@ struct StorageBannerView: View {
             .buttonStyle(.plain)
             .font(.system(size: 11.5, weight: .semibold))
             .foregroundStyle(Theme.Colors.pausedAmber)
-            .onHover { inside in
-                if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
-            }
+            .pointerOnHover()
             .help("Manage Dropbox storage")
         }
         .padding(.horizontal, 16)

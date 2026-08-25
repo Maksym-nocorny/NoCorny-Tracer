@@ -254,9 +254,7 @@ private struct BackgroundPillsView: View {
         }
         .buttonStyle(.plain)
         .help("Show recordings")
-        .onHover { inside in
-            if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
-        }
+        .pointerOnHover()
         // Macro pill shadow: drop-shadow(0 14px 18px rgba(0,0,0,0.5)).
         .shadow(color: .black.opacity(0.5), radius: 18, x: 0, y: 14)
     }

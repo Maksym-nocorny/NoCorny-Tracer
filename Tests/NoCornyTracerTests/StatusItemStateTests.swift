@@ -45,6 +45,39 @@ final class StatusItemStateTests: XCTestCase {
         )
     }
 
+    // MARK: - Left-click routing (round 3: hidden pill vs stop)
+
+    /// A left click mid-recording STOPS only while the pill panel is visible;
+    /// with the pill hidden (its round-3 chevron), the first click brings the
+    /// pill back — the documented two-clicks-to-stop compromise.
+    @MainActor
+    func testRecordingClickStopsOnlyWhileThePillIsVisible() {
+        XCTAssertEqual(
+            StatusItemController.leftClickAction(state: .recording(timer: "12:47"), isCommandBarVisible: true),
+            .stopRecording
+        )
+        XCTAssertEqual(
+            StatusItemController.leftClickAction(state: .recording(timer: "12:47"), isCommandBarVisible: false),
+            .showRecordingPill
+        )
+    }
+
+    /// Panel visibility only matters mid-recording — idle and background keep
+    /// their historical routes either way.
+    @MainActor
+    func testIdleAndBackgroundRoutesIgnorePanelVisibility() {
+        for visible in [true, false] {
+            XCTAssertEqual(
+                StatusItemController.leftClickAction(state: .idle, isCommandBarVisible: visible),
+                .showCommandBar
+            )
+            XCTAssertEqual(
+                StatusItemController.leftClickAction(state: .background(count: 2), isCommandBarVisible: visible),
+                .showGallery
+            )
+        }
+    }
+
     // MARK: - Render descriptors
 
     @MainActor

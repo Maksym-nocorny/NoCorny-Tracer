@@ -257,6 +257,7 @@ private struct InfoToastView: View {
                     .buttonStyle(.plain)
                     .font(.system(size: 11.5, weight: .semibold))
                     .foregroundStyle(Theme.Colors.textPrimary.opacity(0.7))
+                    .pointerOnHover()
             }
         }
         .padding(.leading, 14)
@@ -322,12 +323,14 @@ private struct NoiseSuggestionToastView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
+                    .pointerOnHover()
 
                     Button("Not now") {
                         appState.dismissNoiseSuggestion(forever: false)
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
+                    .pointerOnHover()
 
                     Button("Don't suggest again") {
                         appState.dismissNoiseSuggestion(forever: true)
@@ -336,6 +339,7 @@ private struct NoiseSuggestionToastView: View {
                     .controlSize(.small)
                     .font(Theme.Typography.body(10, weight: .light))
                     .foregroundStyle(.secondary)
+                    .pointerOnHover()
                 }
                 .padding(.top, Theme.Spacing.xs)
             }

@@ -772,13 +772,44 @@ final class AppState {
         return "The recording could not be started. The log in Settings has the details."
     }
 
+    /// Screen-permission gate for BOTH capture pickers (round 3, «минулого разу
+    /// викинуло»). Without it, a build with no Screen Recording grant walked the
+    /// user through the WHOLE picking ritual — fullscreen dim, drag, Enter — and
+    /// only then `startRecording`'s gate fired, by which point the overlay had
+    /// already closed: the user landed on an empty desktop with an onboarding
+    /// card appearing a beat later, which read as "the app threw me out".
+    /// Pre-checking here means the gate (onboarding step 1) opens INSTEAD of the
+    /// picker, with the bar still on screen — no dim, no dead-end ritual.
+    ///
+    /// Only Screen Recording is pre-checked: it is the one permission every
+    /// capture needs and the one whose grant needs a relaunch. Mic/camera stay
+    /// with `ensureRecordingPermissions` at start time (they can inline-prompt).
+    @MainActor
+    private func ensureScreenPermissionForPicker() -> Bool {
+        guard !CGPreflightScreenCaptureAccess() else { return true }
+        LogManager.shared.log("🔒 Capture picker blocked — Screen Recording permission is missing", type: .error)
+        if let present = presentPermissionsGate {
+            present([.screenRecording])
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+            PermissionsManager.openSystemSettings(for: .screenRecording)
+        }
+        return false
+    }
+
     /// The command bar's "Window" row lands here. Decision (phase 6a): the row ALWAYS
     /// opens the system picker, and picking a window saves it AND starts recording
     /// immediately — pick = record. The record button is what reuses the remembered
     /// window without a picker (see the liveness check in `startRecording`). Cancel
     /// changes nothing: mode and the previously remembered window stay as they were.
+    ///
+    /// Round 3: the picker only opens once Screen Recording is granted — same
+    /// pre-gate as the area overlay (`ensureScreenPermissionForPicker`). No
+    /// double-gating on the re-pick path out of `startRecording`: that call site
+    /// only runs after the full permission gate has already passed.
     @MainActor
     func chooseWindowForCapture() {
+        guard ensureScreenPermissionForPicker() else { return }
         WindowPickerCoordinator.shared.pickWindow { [weak self] window in
             guard let self else { return }
             var selection = self.captureSelection
@@ -796,8 +827,17 @@ final class AppState {
     /// record button is what reuses the remembered area without the overlay (see the
     /// liveness check in `startRecording`). Esc changes nothing: mode and the
     /// previously remembered area stay as they were.
+    ///
+    /// Round 3: the overlay only opens once Screen Recording is granted — the
+    /// missing-permission path goes STRAIGHT to the gate, never through the
+    /// fullscreen dim (see `ensureScreenPermissionForPicker`). The commit path's
+    /// ordering is already safe: AreaSelectionWindowManager.commit() closes the
+    /// overlay BEFORE invoking this handler, so anything `startRecording` surfaces
+    /// (system mic prompt, failure toast + bar) lands on a clean screen, never
+    /// under the .screenSaver-level overlay.
     @MainActor
     func chooseAreaForCapture() {
+        guard ensureScreenPermissionForPicker() else { return }
         AreaSelectionWindowManager.shared.present(current: captureSelection) { [weak self] rect, displayID in
             guard let self else { return }
             var selection = self.captureSelection

@@ -16,7 +16,8 @@ enum CommandBarSurface: Equatable {
     case bar
     /// The bar with a 560×332 drawer hanging under it (gap `MorphGeometry.drawerGap`).
     case barWithDrawer(CommandBarDrawerTab)
-    /// The 292×54 pill the bar collapses into while recording (phase 4).
+    /// The 400×54 pill the bar collapses into while recording (phase 4; grown
+    /// from 292 in round 3 for the mic/cam toggles and the hide button).
     case recordingPill
 }
 
@@ -59,7 +60,16 @@ enum MorphGeometry {
     /// or 0 when hidden). It applies ONLY to `.bar`: the recording pill stays minimal
     /// mid-take and the drawer's Dropbox row already shows the quota, so neither
     /// surface carries the banner — a deliberate phase-4 decision, not an omission.
-    static func size(of surface: CommandBarSurface, bannerHeight: CGFloat = 0) -> CGSize {
+    ///
+    /// `pillExtraWidth` (round 3) is the pill's counterpart: extra width past the
+    /// designer's 341-pt base for transient content the mockup doesn't draw — the
+    /// armed "Discard?" capsule, a 100+ minute timer. It applies ONLY to
+    /// `.recordingPill`; anchors and the perch flight stay computed from the base.
+    static func size(
+        of surface: CommandBarSurface,
+        bannerHeight: CGFloat = 0,
+        pillExtraWidth: CGFloat = 0
+    ) -> CGSize {
         switch surface {
         case .bar:
             return CGSize(
@@ -72,7 +82,10 @@ enum MorphGeometry {
                 height: Theme.Metrics.commandBarSize.height + drawerGap + Theme.Metrics.drawerSize.height
             )
         case .recordingPill:
-            return Theme.Metrics.recordingPillSize
+            return CGSize(
+                width: Theme.Metrics.recordingPillSize.width + max(0, pillExtraWidth),
+                height: Theme.Metrics.recordingPillSize.height
+            )
         }
     }
 
@@ -101,6 +114,11 @@ enum MorphGeometry {
     ///
     /// - `.bar` / `.recordingPill`: the surface hangs from the anchor (the banner
     ///   grows downward under the bar).
+    /// - `.recordingPill` with `pillExtraWidth` (round 3): the surface grows to the
+    ///   RIGHT of the held top-left anchor — chosen over symmetric growth because
+    ///   the stop button sits at the leading edge, and the leading edge holding
+    ///   still is what keeps that button under an approaching cursor. Symmetric
+    ///   growth would shift it left by half the extra every time "Discard?" arms.
     /// - `.barWithDrawer`: direction per `drawerOpensUpward` — downward keeps the
     ///   anchor as the surface's top-left; upward keeps the BAR in place (surface
     ///   bottom = the bar's bottom edge) and the drawer unfolds above it.
@@ -110,9 +128,10 @@ enum MorphGeometry {
         anchorTopLeft: CGPoint,
         surface: CommandBarSurface,
         bannerHeight: CGFloat = 0,
+        pillExtraWidth: CGFloat = 0,
         visible: CGRect
     ) -> CGRect {
-        let size = size(of: surface, bannerHeight: bannerHeight)
+        let size = size(of: surface, bannerHeight: bannerHeight, pillExtraWidth: pillExtraWidth)
 
         var x = anchorTopLeft.x
         if x + size.width > visible.maxX { x = visible.maxX - size.width }

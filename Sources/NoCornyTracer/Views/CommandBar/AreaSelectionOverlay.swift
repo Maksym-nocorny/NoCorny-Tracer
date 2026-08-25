@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 // MARK: - Geometry (pure, covered by AreaSelectionGeometryTests)
 
@@ -199,7 +200,50 @@ struct AreaSelectionOverlayView: View {
         .frame(width: model.bounds.width, height: model.bounds.height)
         .contentShape(Rectangle())
         .gesture(dragGesture)
+        // Round 3: the cursor narrates what a drag would do — per-handle resize
+        // arrows (macOS 15+; the frameResize cursors don't exist below), an open
+        // hand inside the selection (drag = move), crosshair everywhere else
+        // (drag = fresh marquee). `set()` layers over the crosshair the manager
+        // pushed for the overlay's lifetime, so its push/pop balance is untouched.
+        .onContinuousHover(coordinateSpace: .local) { phase in
+            switch phase {
+            case .active(let location):
+                Self.cursor(at: location, selection: model.rect).set()
+            case .ended:
+                NSCursor.crosshair.set()
+            }
+        }
         .ignoresSafeArea()
+    }
+
+    /// Which cursor belongs at a point — mirrors `mode(forDragStartingAt:)`, so
+    /// what the cursor promises is exactly what the drag will do.
+    static func cursor(at point: CGPoint, selection: CGRect?) -> NSCursor {
+        guard let selection else { return .crosshair }
+        if let handle = AreaSelectionGeometry.handle(at: point, in: selection) {
+            if #available(macOS 15.0, *) {
+                return .frameResize(position: Self.resizePosition(for: handle), directions: .all)
+            }
+            return .crosshair
+        }
+        if selection.contains(point) { return .openHand }
+        return .crosshair
+    }
+
+    @available(macOS 15.0, *)
+    private static func resizePosition(
+        for handle: AreaSelectionGeometry.Handle
+    ) -> NSCursor.FrameResizePosition {
+        switch handle {
+        case .topLeft: return .topLeft
+        case .top: return .top
+        case .topRight: return .topRight
+        case .right: return .right
+        case .bottomRight: return .bottomRight
+        case .bottom: return .bottom
+        case .bottomLeft: return .bottomLeft
+        case .left: return .left
+        }
     }
 
     // MARK: Dimming (black 62%, four plates around the selection)

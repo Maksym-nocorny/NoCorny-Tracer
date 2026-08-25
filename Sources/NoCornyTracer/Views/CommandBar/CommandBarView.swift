@@ -189,7 +189,7 @@ struct CommandBarView: View {
         .animation(Theme.Anim.hover, value: recordHovering)
         .onHover { recordHovering = $0 }
         .help(isRecording ? "Stop recording" : "Start recording")
-        .pointingHandOnHover()
+        .pointerOnHover()
     }
 
     // MARK: Timer
@@ -262,11 +262,20 @@ struct CommandBarView: View {
             .contentShape(RoundedRectangle(cornerRadius: Theme.Metrics.controlCornerRadius, style: .continuous))
         }
         .buttonStyle(.plain)
-        .scaleEffect(captureHovering ? 1.03 : 1)
+        // Round 3, «застосунок трясе коли відкривається меню»: the hover scale is
+        // FROZEN at 1 while the popover is up. The button is the popover's anchor,
+        // and NSPopover repositions itself (animated) every time its positioning
+        // view's frame changes — so the 1.03↔1.0 hover animation that fires the
+        // moment the cursor leaves the button for the menu made the freshly opened
+        // popover chase a moving anchor. Harness-verified that the popover itself
+        // never moves the panel (frame logging + pixel diffs, scratchpad round 3);
+        // the moving part was the anchor. The un-scale on open is deliberately NOT
+        // animated: the popover must get its final anchor rect immediately.
+        .scaleEffect(captureHovering && !showCaptureMenu ? 1.03 : 1)
         .animation(Theme.Anim.hover, value: captureHovering)
         .onHover { captureHovering = $0 }
         .help(captureModeHelp)
-        .pointingHandOnHover()
+        .pointerOnHover()
         .popover(isPresented: $showCaptureMenu, arrowEdge: .bottom) {
             CaptureModeMenu(appState: appState)
         }
@@ -451,7 +460,7 @@ private struct CommandToggleButton: View {
         .animation(Theme.Anim.hover, value: isHovering)
         .onHover { isHovering = $0 }
         .help(help)
-        .pointingHandOnHover()
+        .pointerOnHover()
     }
 }
 
@@ -493,110 +502,9 @@ private struct CommandGlassButton: View {
         .animation(Theme.Anim.hover, value: isHovering)
         .onHover { isHovering = $0 }
         .help(help)
-        .pointingHandOnHover()
+        .pointerOnHover()
     }
 }
 
-// MARK: - Record mark (native, verdict 24.08)
-
-/// The record mark drawn natively: a round dashed blue ring around a blue-gradient
-/// play triangle over a faint dark well — the sec1-bar.png reference at 52pt.
-/// Replaces the commandbar_mark* PNGs (which stay in Resources untouched); native
-/// drawing is what makes the hover spin/scale and any future morphs animatable.
-///
-/// Every metric scales with `diameter`, and the dash period divides the ring's
-/// circumference exactly (10 periods at any size), so the dashes always meet
-/// cleanly instead of leaving a seam.
-struct RecordRingMark: View {
-    var diameter: CGFloat = 52
-    /// Marching-ants spin of the dashed ring. TASTE DECISION: the spin is
-    /// hover-only, NOT always-on — the bar floats over the user's work all day,
-    /// and a perpetually crawling selection frame in peripheral vision is
-    /// distraction (plus a permanent animation in a floating panel costs battery
-    /// on a machine that is busy recording). The ring wakes up when aimed at.
-    var isSpinning: Bool = false
-
-    @State private var spinAngle: Double = 0
-
-    static let ringBlue = Color(hex: 0x3E90FF)
-
-    private static let triangleGradient = LinearGradient(
-        colors: [Color(hex: 0x0B5BE0), Color(hex: 0x0846B5)],
-        startPoint: .top,
-        endPoint: .bottom
-    )
-
-    /// The faint disc behind the triangle (the reference shows the ring's inside
-    /// a notch darker than the bar glass).
-    private static let wellFill = Color.adaptive(
-        light: Color(hex: 0x0B1220, opacity: 0.05),
-        dark: Color(hex: 0x000000, opacity: 0.25)
-    )
-
-    private var scale: CGFloat { diameter / 52 }
-    private var lineWidth: CGFloat { 2.5 * scale }
-
-    var body: some View {
-        ZStack {
-            Circle()
-                .inset(by: lineWidth)
-                .fill(Self.wellFill)
-            Circle()
-                .inset(by: lineWidth / 2)
-                .stroke(Self.ringBlue, style: StrokeStyle(
-                    lineWidth: lineWidth,
-                    lineCap: .round,
-                    // 10 exact periods around the centerline circumference.
-                    dash: [9.7 * scale, 5.85 * scale]
-                ))
-                .rotationEffect(.degrees(spinAngle))
-            RoundedTrianglePlay(cornerRadius: 2.5 * scale)
-                .fill(Self.triangleGradient)
-                .frame(width: diameter * 0.34, height: diameter * 0.38)
-                .offset(x: diameter * 0.035)  // optical centering of the triangle
-        }
-        .frame(width: diameter, height: diameter)
-        .onChange(of: isSpinning) { _, spinning in
-            if spinning {
-                withAnimation(.linear(duration: 8).repeatForever(autoreverses: false)) {
-                    spinAngle += 360
-                }
-            } else {
-                // The ants settle back to rest rather than freezing mid-crawl.
-                withAnimation(.easeOut(duration: 0.35)) {
-                    spinAngle = 0
-                }
-            }
-        }
-    }
-}
-
-/// A right-pointing play triangle with softly rounded corners (the reference's
-/// triangle is not razor-sharp).
-struct RoundedTrianglePlay: Shape {
-    var cornerRadius: CGFloat = 2.5
-
-    func path(in rect: CGRect) -> Path {
-        let top = CGPoint(x: rect.minX, y: rect.minY)
-        let tip = CGPoint(x: rect.maxX, y: rect.midY)
-        let bottom = CGPoint(x: rect.minX, y: rect.maxY)
-
-        var path = Path()
-        path.move(to: CGPoint(x: rect.minX, y: rect.minY + cornerRadius))
-        path.addArc(tangent1End: top, tangent2End: tip, radius: cornerRadius)
-        path.addArc(tangent1End: tip, tangent2End: bottom, radius: cornerRadius)
-        path.addArc(tangent1End: bottom, tangent2End: top, radius: cornerRadius)
-        path.closeSubpath()
-        return path
-    }
-}
-
-// MARK: - Hover cursor
-
-private extension View {
-    func pointingHandOnHover() -> some View {
-        onHover { inside in
-            if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
-        }
-    }
-}
+// The record mark (RecordRingMark / RoundedTrianglePlay) moved to RecordMark.swift
+// in round 3 — the Gallery empty state and the thumbnail play badge share it now.

@@ -186,13 +186,5 @@ struct DrawerGoogleSignInButton: View {
     }
 }
 
-// MARK: - Hover cursor
-
-extension View {
-    /// Pointing-hand cursor on hover (drawer counterpart of the bar's private helper).
-    func pointerOnHover() -> some View {
-        onHover { inside in
-            if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
-        }
-    }
-}
+// pointerOnHover() moved to Views/PointerOnHover.swift in round 3 — one modifier
+// for the whole app (native .pointerStyle on macOS 15+, balanced push/pop below).

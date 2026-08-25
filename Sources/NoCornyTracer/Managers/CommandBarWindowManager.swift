@@ -113,6 +113,13 @@ final class CommandBarWindowManager {
     /// registers even while the confirmation is already showing.
     private(set) var pillEscSignal = 0
 
+    /// Extra logical width of the recording pill past its 341-pt base (round 3):
+    /// the pill panel resizes DYNAMICALLY to its SwiftUI content — like the toast —
+    /// for the transient states the mockup doesn't draw (armed "Discard?", a
+    /// 100+ minute timer). Reported by the pill view via
+    /// `setRecordingPillContentWidth`; only `.recordingPill` frames consume it.
+    private(set) var pillExtraWidth: CGFloat = 0
+
     /// Whether the currently open (or closing) drawer unfolds ABOVE the bar
     /// (verdict 25.08: bar in the lower half of the screen → drawer opens up).
     /// The SwiftUI root reads this to flip the stack order and the pin edge.
@@ -251,7 +258,8 @@ final class CommandBarWindowManager {
         }
         let anchor = anchorForCurrentSurface(visible: visible)
         let target = MorphGeometry.targetFrame(
-            anchorTopLeft: anchor, surface: surface, bannerHeight: bannerExtent, visible: visible
+            anchorTopLeft: anchor, surface: surface, bannerHeight: bannerExtent,
+            pillExtraWidth: pillExtraWidth, visible: visible
         )
         panel.setFrame(MorphGeometry.panelFrame(forLogical: target), display: true)
 
@@ -261,9 +269,31 @@ final class CommandBarWindowManager {
 
     /// Hides the bar — the app keeps running in the menu bar (verdict 25.08: the
     /// close button hides, it does NOT quit). A no-op mid-recording: the pill is
-    /// the only control surface of a live take and has no close button anyway.
+    /// the only control surface of a live take and has no close button anyway —
+    /// its OWN way out is `hideRecordingPill()` below.
     func hide() {
         guard appState?.recordingManager.isRecording != true else { return }
+        dismissPanel()
+    }
+
+    /// The recording pill's "hide" button (round 3): sends the panel away while
+    /// the take KEEPS recording — deliberately bypassing `hide()`'s mid-recording
+    /// guard, which exists to stop the bar's close door, not this one. The tray
+    /// keeps the red-dot timer; a left tray click (or the tray menu's "Show
+    /// recording pill") brings the pill back — `show()` comes up as the pill
+    /// surface whenever a recording is live.
+    func hideRecordingPill() {
+        guard surface == .recordingPill else { return }
+        dismissPanel()
+    }
+
+    /// Whether the panel is currently on screen — the tray's click routing needs
+    /// this to tell "stop the take" from "bring the hidden pill back".
+    var isPanelVisible: Bool { panel?.isVisible ?? false }
+
+    /// Shared teardown of `hide()` / `hideRecordingPill()`: persist the anchor of
+    /// whatever surface is up, then drop the panel (a later `show()` rebuilds it).
+    private func dismissPanel() {
         if let panel {
             let logical = MorphGeometry.logicalFrame(forPanel: panel.frame)
             persistAnchor(forLogicalFrame: logical)
@@ -272,11 +302,30 @@ final class CommandBarWindowManager {
         panel = nil
     }
 
+    /// The pill view reports its laid-out width here (round 3): anything past the
+    /// 341-pt base becomes `pillExtraWidth` and the panel grows to the RIGHT of
+    /// the pill's held top-left anchor (the stop button at the leading edge must
+    /// not move under an approaching cursor — see `MorphGeometry.targetFrame`).
+    /// Idempotent per width, so the resize→relayout→report cycle settles.
+    func setRecordingPillContentWidth(_ width: CGFloat) {
+        let extra = max(0, width - Theme.Metrics.recordingPillSize.width)
+        guard extra != pillExtraWidth else { return }
+        pillExtraWidth = extra
+        guard surface == .recordingPill else { return }
+        reframe()
+    }
+
     /// Switches the panel to another surface. The BAR anchor stays the stable
     /// reference: the pill flies to its own perch and back, and an upward drawer
     /// grows above the stationary bar (see `MorphGeometry.targetFrame`).
     func morph(to newSurface: Surface) {
         guard surface != newSurface else { return }
+        if newSurface == .recordingPill {
+            // A fresh take starts at the base width; the mounted pill re-reports
+            // its actual width immediately (a stale extra from the previous take's
+            // armed "Discard?" must not flash on the new pill).
+            pillExtraWidth = 0
+        }
         if case .barWithDrawer = newSurface {
             // Drawers only ever open from the bar (the pill has none), so the
             // bar anchor is the reference for the direction rule.
@@ -329,6 +378,7 @@ final class CommandBarWindowManager {
             anchorTopLeft: anchor,
             surface: surface,
             bannerHeight: bannerExtent,
+            pillExtraWidth: pillExtraWidth,
             visible: visible
         )
         let panelFrame = MorphGeometry.panelFrame(forLogical: target)

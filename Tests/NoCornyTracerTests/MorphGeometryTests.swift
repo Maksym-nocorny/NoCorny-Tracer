@@ -22,7 +22,7 @@ final class MorphGeometryTests: XCTestCase {
             MorphGeometry.size(of: .barWithDrawer(.gallery)),
             "both drawers share one drawer size"
         )
-        XCTAssertEqual(MorphGeometry.size(of: .recordingPill), CGSize(width: 292, height: 54))
+        XCTAssertEqual(MorphGeometry.size(of: .recordingPill), CGSize(width: 341, height: 54))
     }
 
     // MARK: Anchored morphs
@@ -131,7 +131,7 @@ final class MorphGeometryTests: XCTestCase {
         )
         XCTAssertEqual(frame.minX, 400)
         XCTAssertEqual(frame.maxY, 700)
-        XCTAssertEqual(frame.size, CGSize(width: 292, height: 54))
+        XCTAssertEqual(frame.size, CGSize(width: 341, height: 54))
     }
 
     /// The round trip the bar actually performs: open a drawer mid-screen, close it —
@@ -176,18 +176,70 @@ final class MorphGeometryTests: XCTestCase {
         XCTAssertEqual(backFrame, barFrame)
     }
 
+    // MARK: Dynamic pill width (round 3: base 341 is the canon, extras grow right)
+
+    /// Transient pill content the mockup doesn't draw (armed "Discard?", a 100+
+    /// minute timer) widens ONLY the pill, to the RIGHT of the held top-left
+    /// anchor — the stop button at the leading edge must not move.
+    func testPillExtraWidthGrowsRightFromTheHeldAnchor() {
+        let anchor = CGPoint(x: 400, y: 700)
+        let base = MorphGeometry.targetFrame(
+            anchorTopLeft: anchor, surface: .recordingPill, visible: visible
+        )
+        let wide = MorphGeometry.targetFrame(
+            anchorTopLeft: anchor, surface: .recordingPill, pillExtraWidth: 38, visible: visible
+        )
+        XCTAssertEqual(wide.minX, base.minX, "the leading edge (stop button) holds")
+        XCTAssertEqual(wide.maxY, base.maxY, "the top edge holds")
+        XCTAssertEqual(wide.width, base.width + 38, "all growth goes right")
+        XCTAssertEqual(wide.height, base.height)
+    }
+
+    func testPillExtraWidthTouchesNoOtherSurfaceAndNeverShrinks() {
+        XCTAssertEqual(
+            MorphGeometry.size(of: .bar, pillExtraWidth: 38),
+            MorphGeometry.size(of: .bar),
+            "the bar ignores the pill's extra width"
+        )
+        XCTAssertEqual(
+            MorphGeometry.size(of: .barWithDrawer(.gallery), pillExtraWidth: 38),
+            MorphGeometry.size(of: .barWithDrawer(.gallery)),
+            "drawers ignore it too"
+        )
+        XCTAssertEqual(
+            MorphGeometry.size(of: .recordingPill, pillExtraWidth: -20),
+            MorphGeometry.size(of: .recordingPill),
+            "a negative report clamps to the 341-pt base, never below it"
+        )
+    }
+
+    /// The existing right-edge clamp covers the widened pill: growth that would
+    /// leave the screen slides the whole surface left instead.
+    func testWidePillStillClampsToTheRightEdge() {
+        let anchor = CGPoint(x: 1080, y: 700)   // base 1080+341=1421 fits in 1440
+        let base = MorphGeometry.targetFrame(
+            anchorTopLeft: anchor, surface: .recordingPill, visible: visible
+        )
+        XCTAssertEqual(base.minX, 1080, "the base pill fits unmoved")
+        let wide = MorphGeometry.targetFrame(
+            anchorTopLeft: anchor, surface: .recordingPill, pillExtraWidth: 38, visible: visible
+        )
+        XCTAssertEqual(wide.maxX, visible.maxX, "the widened pill slid to the edge")
+        XCTAssertEqual(wide.width, 341 + 38)
+    }
+
     // MARK: Recording pill perch (verdict 25.08: default = top-center)
 
     func testRecordingPillDefaultPerchIsTopCenter() {
         let topLeft = MorphGeometry.recordingPillTopLeft(visible: visible)
-        XCTAssertEqual(topLeft.x, visible.midX - 292 / 2, "centered horizontally")
+        XCTAssertEqual(topLeft.x, visible.midX - 341 / 2, "centered horizontally")
         XCTAssertEqual(topLeft.y, visible.maxY - 64, "64pt below the top of the visible frame")
 
         let frame = MorphGeometry.targetFrame(
             anchorTopLeft: topLeft, surface: .recordingPill, visible: visible
         )
         XCTAssertEqual(frame.maxY, visible.maxY - 64)
-        XCTAssertEqual(frame.size, CGSize(width: 292, height: 54))
+        XCTAssertEqual(frame.size, CGSize(width: 341, height: 54))
         XCTAssertEqual(frame.midX, visible.midX)
     }
 

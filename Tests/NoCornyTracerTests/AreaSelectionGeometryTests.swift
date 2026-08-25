@@ -1,5 +1,6 @@
 import XCTest
 import CoreGraphics
+import AppKit
 @testable import NoCornyTracer
 
 /// The math behind the area-selection overlay (phase 6b). Everything here runs in the
@@ -172,5 +173,40 @@ final class AreaSelectionGeometryTests: XCTestCase {
     func testOverlayMinimumMatchesTheEncoderMinimum() {
         XCTAssertEqual(AreaSelectionGeometry.minimumSide, CaptureGeometry.minimumSide,
                        "the overlay must never hand the engine a rect it would refuse")
+    }
+
+    // MARK: - Hover cursor narration (round 3)
+
+    /// The cursor must promise exactly what a drag would do — the mapping mirrors
+    /// `mode(forDragStartingAt:)`: handle → resize arrows, interior → open hand
+    /// (move), everywhere else (and before the first drag) → crosshair (marquee).
+    @MainActor
+    func testCursorMirrorsTheDragModes() {
+        let selection = CGRect(x: 200, y: 200, width: 400, height: 300)
+
+        // No selection yet: crosshair everywhere.
+        XCTAssertEqual(
+            AreaSelectionOverlayView.cursor(at: CGPoint(x: 400, y: 350), selection: nil),
+            NSCursor.crosshair
+        )
+        // Inside the selection: the move hand.
+        XCTAssertEqual(
+            AreaSelectionOverlayView.cursor(at: CGPoint(x: 400, y: 350), selection: selection),
+            NSCursor.openHand
+        )
+        // Outside the selection: crosshair (a drag would start a fresh marquee).
+        XCTAssertEqual(
+            AreaSelectionOverlayView.cursor(at: CGPoint(x: 50, y: 50), selection: selection),
+            NSCursor.crosshair
+        )
+        // On a handle: a resize cursor (macOS 15+ frameResize; the pre-15 fallback
+        // stays crosshair because the per-edge cursors don't exist there). Either
+        // way it must NOT read as "move".
+        let onCorner = AreaSelectionOverlayView.cursor(at: CGPoint(x: 200, y: 200), selection: selection)
+        XCTAssertNotEqual(onCorner, NSCursor.openHand)
+        if #available(macOS 15.0, *) {
+            XCTAssertNotEqual(onCorner, NSCursor.crosshair,
+                              "corner handles get real resize arrows on macOS 15+")
+        }
     }
 }

@@ -267,7 +267,14 @@ enum Theme {
     enum Metrics {
         static let commandBarSize = CGSize(width: 560, height: 80)
         static let drawerSize = CGSize(width: 560, height: 332)
-        static let recordingPillSize = CGSize(width: 292, height: 54)
+        /// The pill's BASE size — the designer's canon (round 3 mockup): 341×54 =
+        /// 10 + stop 38 + timer 57 + pause 28 + discard 28 + divider 1 + mic 30 +
+        /// cam 30 + divider 1 + hide 28 + 10, gaps of 10. Transient states the
+        /// mockup doesn't draw (armed "Discard?", a 100+ minute timer) grow the
+        /// panel DYNAMICALLY past this base — see CommandBarWindowManager's
+        /// `setRecordingPillContentWidth`; anchors and the perch flight are always
+        /// computed from the base.
+        static let recordingPillSize = CGSize(width: 341, height: 54)
         static let cameraBubble: CGFloat = 180
         static let barCornerRadius: CGFloat = 34
         static let controlSize: CGFloat = 38
