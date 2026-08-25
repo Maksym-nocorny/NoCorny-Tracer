@@ -1,5 +1,14 @@
 # Changelog
 
+## [4.1.0] - 2026-08-25
+### Added
+- **The bar can now match its background by itself.** Appearance has a new Auto mode: Tracer glances at what is behind the panel and picks light or dark glass so the text always stays readable - white page behind you, the bar goes light; dark video, it goes dark. It switches smoothly and never flickers on the boundary. Fresh installs start on Auto; if you had picked Light or Dark yourself, your choice is kept.
+
+### Fixed
+- **The bar no longer twitches when a drawer opens.** Opening Recent or Settings used to animate the whole plate; now the bar stands perfectly still and the drawer simply appears.
+- **Dark glass stays readable over white.** On a bright background the dark bar could wash out to near-invisibility; the glass now keeps its depth on any backdrop, with a hairline edge so the panel always reads as a panel.
+
+
 ## [4.0.0] - 2026-08-25
 ### Changed
 - **Tracer is now a command bar, not a window.** The old 380-pixel window with tabs is gone. Everything lives in a floating glass bar: record button, timer, capture mode, mic and camera toggles, and two drawers - Recent recordings and Settings. The drawer opens upward when the bar sits in the lower half of the screen. On macOS 26 the bar is drawn with the system's native Liquid Glass.
