@@ -28,7 +28,7 @@ final class MorphGeometryTests: XCTestCase {
     // MARK: Anchored morphs
 
     func testDrawerOpensDownwardWhenItFits() {
-        let anchor = CGPoint(x: 400, y: 700)  // bar top-left, mid-screen
+        let anchor = CGPoint(x: 400, y: 700)  // bar top-left, upper half (center 660 > 467.5)
         let frame = MorphGeometry.targetFrame(
             anchorTopLeft: anchor, surface: .barWithDrawer(.gallery), visible: visible
         )
@@ -38,19 +38,64 @@ final class MorphGeometryTests: XCTestCase {
     }
 
     func testDrawerOpensUpwardNearTheBottom() {
-        // Down would need origin.y = 200 − 428 = −228, below visible.minY = 60.
+        // Bar center 160 is deep in the lower half — the drawer unfolds ABOVE the
+        // stationary bar: the surface's bottom edge stays the bar's bottom edge.
         let anchor = CGPoint(x: 400, y: 200)
         let frame = MorphGeometry.targetFrame(
             anchorTopLeft: anchor, surface: .barWithDrawer(.gallery), visible: visible
         )
-        XCTAssertEqual(frame.minY, 200, "the anchor becomes the bottom-left corner")
-        XCTAssertEqual(frame.maxY, 200 + 428)
+        XCTAssertEqual(frame.minY, 200 - 80, "the bar did not move — its bottom edge holds")
+        XCTAssertEqual(frame.maxY, 200 - 80 + 428, "the drawer grew upward past the bar")
         XCTAssertLessThanOrEqual(frame.maxY, visible.maxY, "and the result stays on screen")
     }
 
+    // MARK: Half-screen rule (verdict 25.08): direction follows the half, not just fit
+
+    /// A tall display where BOTH directions fit — the lower half still wins upward.
+    private let tall = CGRect(x: 0, y: 0, width: 1440, height: 1000)
+
+    func testLowerHalfOpensUpwardEvenWhenDownwardFits() {
+        let anchor = CGPoint(x: 400, y: 460)  // bar center 420 < midY 500
+        XCTAssertTrue(MorphGeometry.drawerOpensUpward(anchorTopLeft: anchor, visible: tall))
+        let frame = MorphGeometry.targetFrame(
+            anchorTopLeft: anchor, surface: .barWithDrawer(.settings), visible: tall
+        )
+        XCTAssertEqual(frame.minY, 460 - 80)
+        XCTAssertEqual(frame.maxY, 460 - 80 + 428)
+    }
+
+    func testUpperHalfOpensDownwardEvenWhenUpwardFits() {
+        let anchor = CGPoint(x: 400, y: 560)  // bar center 520 > midY 500
+        XCTAssertFalse(MorphGeometry.drawerOpensUpward(anchorTopLeft: anchor, visible: tall))
+        let frame = MorphGeometry.targetFrame(
+            anchorTopLeft: anchor, surface: .barWithDrawer(.settings), visible: tall
+        )
+        XCTAssertEqual(frame.maxY, 560, "anchor held — the drawer hangs under the bar")
+        XCTAssertEqual(frame.minY, 560 - 428)
+    }
+
+    func testDeadCenterOpensDownward() {
+        let anchor = CGPoint(x: 400, y: 540)  // bar center 500 == midY 500
+        XCTAssertFalse(
+            MorphGeometry.drawerOpensUpward(anchorTopLeft: anchor, visible: tall),
+            "a tie goes downward"
+        )
+    }
+
+    /// The half-screen rule applies ONLY to drawers — the banner still grows down.
+    func testBarSurfaceIgnoresTheHalfScreenRule() {
+        let anchor = CGPoint(x: 400, y: 300)  // lower half
+        let frame = MorphGeometry.targetFrame(
+            anchorTopLeft: anchor, surface: .bar,
+            bannerHeight: MorphGeometry.storageBannerExtent, visible: visible
+        )
+        XCTAssertEqual(frame.maxY, 300, "the bar's anchor holds; the banner hangs below")
+    }
+
     func testDrawerSlidesIntoBoundsWhenNeitherDirectionFits() {
-        // 500pt of visible height holds a 428pt surface, but from this anchor neither
-        // straight down (250 − 428 < 0) nor straight up (250 + 428 > 500) fits.
+        // 500pt of visible height holds a 428pt surface, but from this anchor
+        // neither direction fits: up needs maxY 250 − 80 + 428 = 598 > 500,
+        // down needs minY 250 − 428 = −178 < 0.
         let short = CGRect(x: 0, y: 0, width: 1440, height: 500)
         let anchor = CGPoint(x: 100, y: 250)
         let frame = MorphGeometry.targetFrame(
@@ -59,7 +104,7 @@ final class MorphGeometryTests: XCTestCase {
         XCTAssertEqual(frame.minX, 100)
         XCTAssertGreaterThanOrEqual(frame.minY, short.minY)
         XCTAssertLessThanOrEqual(frame.maxY, short.maxY)
-        XCTAssertEqual(frame.minY, 0, "slid down to the bottom edge of the visible frame")
+        XCTAssertEqual(frame.minY, 0, "slid to the bottom edge of the visible frame")
     }
 
     func testRightEdgePushesTheSurfaceLeft() {
@@ -95,16 +140,55 @@ final class MorphGeometryTests: XCTestCase {
         let anchor = CGPoint(x: 400, y: 700)
         let barFrame = MorphGeometry.targetFrame(anchorTopLeft: anchor, surface: .bar, visible: visible)
         let drawerFrame = MorphGeometry.targetFrame(
-            anchorTopLeft: CGPoint(x: barFrame.minX, y: barFrame.maxY),
+            anchorTopLeft: MorphGeometry.barAnchor(
+                forSurfaceFrame: barFrame, surface: .bar, opensUp: false
+            ),
             surface: .barWithDrawer(.gallery),
             visible: visible
         )
         let backFrame = MorphGeometry.targetFrame(
-            anchorTopLeft: CGPoint(x: drawerFrame.minX, y: drawerFrame.maxY),
+            anchorTopLeft: MorphGeometry.barAnchor(
+                forSurfaceFrame: drawerFrame, surface: .barWithDrawer(.gallery), opensUp: false
+            ),
             surface: .bar,
             visible: visible
         )
         XCTAssertEqual(backFrame, barFrame)
+    }
+
+    /// Same round trip for an UPWARD drawer: the bar anchor is recovered from the
+    /// surface's BOTTOM (the bar sits at the bottom of an upward surface).
+    func testUpwardDrawerRoundTripReturnsTheBarFrame() {
+        let anchor = CGPoint(x: 400, y: 300)  // lower half of `visible`
+        let barFrame = MorphGeometry.targetFrame(anchorTopLeft: anchor, surface: .bar, visible: visible)
+        let drawerSurface = CommandBarSurface.barWithDrawer(.settings)
+        XCTAssertTrue(MorphGeometry.drawerOpensUpward(anchorTopLeft: anchor, visible: visible))
+        let drawerFrame = MorphGeometry.targetFrame(
+            anchorTopLeft: anchor, surface: drawerSurface, visible: visible
+        )
+        let recovered = MorphGeometry.barAnchor(
+            forSurfaceFrame: drawerFrame, surface: drawerSurface, opensUp: true
+        )
+        XCTAssertEqual(recovered, anchor, "the bar anchor survives the upward morph")
+        let backFrame = MorphGeometry.targetFrame(
+            anchorTopLeft: recovered, surface: .bar, visible: visible
+        )
+        XCTAssertEqual(backFrame, barFrame)
+    }
+
+    // MARK: Recording pill perch (verdict 25.08: default = top-center)
+
+    func testRecordingPillDefaultPerchIsTopCenter() {
+        let topLeft = MorphGeometry.recordingPillTopLeft(visible: visible)
+        XCTAssertEqual(topLeft.x, visible.midX - 292 / 2, "centered horizontally")
+        XCTAssertEqual(topLeft.y, visible.maxY - 64, "64pt below the top of the visible frame")
+
+        let frame = MorphGeometry.targetFrame(
+            anchorTopLeft: topLeft, surface: .recordingPill, visible: visible
+        )
+        XCTAssertEqual(frame.maxY, visible.maxY - 64)
+        XCTAssertEqual(frame.size, CGSize(width: 292, height: 54))
+        XCTAssertEqual(frame.midX, visible.midX)
     }
 
     // MARK: Storage banner

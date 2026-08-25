@@ -426,6 +426,18 @@ final class StatusItemController: NSObject {
         add("Storage banner: low", #selector(previewBannerLow))
         add("Storage banner: full", #selector(previewBannerFull))
         submenu.addItem(.separator())
+        // Design-review escape hatch (verdict 25.08: the demo could not be
+        // screenshotted — every panel ships sharingType = .none). Checked = the
+        // registered panels are .readOnly and screenshots capture them.
+        let capturable = NSMenuItem(
+            title: "Capturable panels (design review)",
+            action: #selector(previewToggleCapturablePanels),
+            keyEquivalent: ""
+        )
+        capturable.target = self
+        capturable.state = CapturablePanels.isEnabled ? .on : .off
+        submenu.addItem(capturable)
+        submenu.addItem(.separator())
         add("Reset preview", #selector(previewReset))
 
         let root = NSMenuItem(title: "UI Preview", action: nil, keyEquivalent: "")
@@ -485,6 +497,10 @@ final class StatusItemController: NSObject {
 
     @objc private func previewReset() {
         UIPreviewState.shared.reset()
+    }
+
+    @objc private func previewToggleCapturablePanels() {
+        CapturablePanels.setEnabled(!CapturablePanels.isEnabled)
     }
     #endif
 }

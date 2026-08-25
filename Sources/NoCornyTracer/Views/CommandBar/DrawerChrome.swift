@@ -47,6 +47,32 @@ enum DrawerStyle {
         light: Color(hex: 0xE4E7EE),
         dark: Color(hex: 0x222834)
     )
+
+    // MARK: Drawer controls (macro "Pop-Up Button" Medium / "Toggles - Switches")
+    // Dark values measured on the 61:66 macro pixels (capsule #272727 over glass
+    // #1A1A1D ≈ white 8%); light derives from the ink base like everything above.
+
+    /// Fill of the pop-up capsule.
+    static let popUpFill = Color.adaptive(
+        light: Color(hex: 0x0B1220, opacity: 0.05),
+        dark: Color(hex: 0xFFFFFF, opacity: 0.08)
+    )
+    /// Hover/open fill — one step brighter.
+    static let popUpFillHover = Color.adaptive(
+        light: Color(hex: 0x0B1220, opacity: 0.09),
+        dark: Color(hex: 0xFFFFFF, opacity: 0.13)
+    )
+    /// Hairline border of the pop-up capsule.
+    static let popUpStroke = Color.adaptive(
+        light: Color(hex: 0x0B1220, opacity: 0.10),
+        dark: Color(hex: 0xFFFFFF, opacity: 0.12)
+    )
+    /// Track of a switched-off toggle (ON is `Theme.Colors.statusGreen`, as the
+    /// macro paints it).
+    static let toggleOffTrack = Color.adaptive(
+        light: Color(hex: 0x0B1220, opacity: 0.12),
+        dark: Color(hex: 0xFFFFFF, opacity: 0.14)
+    )
 }
 
 // MARK: - Footer

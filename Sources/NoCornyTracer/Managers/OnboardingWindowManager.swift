@@ -128,6 +128,9 @@ final class OnboardingWindowManager {
             // Same rule as every other floating panel of the redesign: the app's own
             // chrome never joins a screen capture.
             window.sharingType = .none
+            #if DEBUG
+            CapturablePanels.register(window)
+            #endif
             self.window = window
         }
 

@@ -184,6 +184,9 @@ final class ToastWindowManager {
             panel.hidesOnDeactivate = false
             panel.sharingType = .none
             panel.isReleasedWhenClosed = false
+            #if DEBUG
+            CapturablePanels.register(panel)
+            #endif
             window = panel
         }
 

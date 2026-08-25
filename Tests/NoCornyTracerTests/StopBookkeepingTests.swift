@@ -56,62 +56,6 @@ final class StopBookkeepingTests: XCTestCase {
     }
 }
 
-/// The Speakers menu has seven options and lives on rows near the bottom of a list. Opening
-/// downwards always put its last options past the window edge, where they cannot be clicked.
-final class DropdownPlacementTests: XCTestCase {
-
-    private let window: CGFloat = 540
-    private let menu: CGFloat = 196   // seven rows at 28pt
-
-    func testAMenuWithRoomBelowStillOpensDownwards() {
-        let trigger = CGRect(x: 0, y: 100, width: 120, height: 24)
-        let centre = CustomDropdownOverlay.menuCenterY(triggerRect: trigger, menuHeight: menu, availableHeight: window)
-        XCTAssertGreaterThan(centre, trigger.maxY, "a menu with room below moved somewhere else")
-        XCTAssertLessThanOrEqual(centre + menu / 2, window)
-    }
-
-    func testAMenuWithoutRoomBelowOpensUpwards() {
-        let trigger = CGRect(x: 0, y: 470, width: 120, height: 24)
-        let centre = CustomDropdownOverlay.menuCenterY(triggerRect: trigger, menuHeight: menu, availableHeight: window)
-        // The BOTTOM of the menu has to clear the TOP of the trigger. Asserting only that the
-        // centre sits above the trigger passes just as happily when the menu stayed below and
-        // was merely clamped back inside the window - which leaves it covering the row it
-        // belongs to, and was exactly what this test did at first.
-        XCTAssertLessThanOrEqual(centre + menu / 2, trigger.minY,
-                                 "the menu did not flip above the trigger; it was only clamped inside the window")
-        XCTAssertGreaterThanOrEqual(centre - menu / 2, 0, "flipping up pushed it off the top instead")
-    }
-
-    /// Every option has to be inside the window, whichever way it opened.
-    func testEveryOptionStaysInsideTheWindow() {
-        for top in stride(from: CGFloat(0), through: window - 24, by: 20) {
-            let trigger = CGRect(x: 0, y: top, width: 120, height: 24)
-            let centre = CustomDropdownOverlay.menuCenterY(triggerRect: trigger, menuHeight: menu, availableHeight: window)
-            XCTAssertGreaterThanOrEqual(centre - menu / 2, -0.001, "clipped at the top for a trigger at \(top)")
-            XCTAssertLessThanOrEqual(centre + menu / 2, window + 0.001, "clipped at the bottom for a trigger at \(top)")
-        }
-    }
-
-    /// Neither side has room, but the menu would still fit somewhere in the window. This is
-    /// the case the clamp exists for, and with seven 28pt rows it is unreachable - so it went
-    /// untested until a mutant removed the clamp and nothing noticed.
-    func testAMenuThatFitsNowhereIsStillKeptInsideTheWindow() {
-        let tall: CGFloat = 400
-        let trigger = CGRect(x: 0, y: 200, width: 120, height: 24)
-        let centre = CustomDropdownOverlay.menuCenterY(triggerRect: trigger, menuHeight: tall, availableHeight: window)
-        XCTAssertGreaterThanOrEqual(centre - tall / 2, -0.001, "ran off the top")
-        XCTAssertLessThanOrEqual(centre + tall / 2, window + 0.001, "ran off the bottom")
-    }
-
-    /// A menu taller than the window cannot fit either way; centring beats pinning it to an
-    /// edge it overflows in one direction.
-    func testAMenuTallerThanTheWindowIsCentred() {
-        let trigger = CGRect(x: 0, y: 100, width: 120, height: 24)
-        let centre = CustomDropdownOverlay.menuCenterY(triggerRect: trigger, menuHeight: 900, availableHeight: window)
-        XCTAssertEqual(centre, window / 2)
-    }
-}
-
 /// The server's title column is NOT NULL and the API substitutes a placeholder when a
 /// recording has no generated name yet. So the line that assigned it could never see "nothing"
 /// and be careful about it - it saw a plausible string and wrote it over the real name.

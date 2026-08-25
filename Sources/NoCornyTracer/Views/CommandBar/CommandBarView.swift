@@ -31,9 +31,17 @@ struct CommandBarRootView: View {
                 RecordingPillView(appState: appState, manager: manager)
                     .transition(.scale(scale: 0.92, anchor: .topLeading).combined(with: .opacity))
             } else {
+                // The drawer sits UNDER the bar by default; when the bar lives in
+                // the lower half of the screen it unfolds ABOVE it instead
+                // (verdict 25.08) — same components, mirrored stack.
                 VStack(spacing: 0) {
+                    if manager.drawerOpensUp, case .barWithDrawer(let tab) = manager.surface {
+                        drawerContent(tab)
+                            .padding(.bottom, MorphGeometry.drawerGap)
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
                     CommandBarView(appState: appState, manager: manager)
-                    if case .barWithDrawer(let tab) = manager.surface {
+                    if !manager.drawerOpensUp, case .barWithDrawer(let tab) = manager.surface {
                         drawerContent(tab)
                             .padding(.top, MorphGeometry.drawerGap)
                             .transition(.move(edge: .top).combined(with: .opacity))
@@ -51,11 +59,19 @@ struct CommandBarRootView: View {
             }
         }
         .animation(Theme.Anim.surface, value: manager.surface)
+        .animation(Theme.Anim.surface, value: manager.drawerOpensUp)
         .animation(Theme.Anim.surface, value: storageLevel)
         // The panel is `panelShadowInset` larger than the glass on every side so the
         // SwiftUI shadow has room to draw (the panel's own shadow is off).
         .padding(MorphGeometry.panelShadowInset)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        // Pin to whichever edge of the animating panel stays put on screen: the
+        // TOP edge for downward growth, the BOTTOM edge while an upward drawer is
+        // open/closing — that is what keeps the bar visually stationary while the
+        // panel frame animates around it.
+        .frame(
+            maxWidth: .infinity, maxHeight: .infinity,
+            alignment: manager.drawerOpensUp ? .bottomLeading : .topLeading
+        )
         // Keep the panel's NSAppearance pinned to the in-app theme toggle.
         .onChange(of: appState.appTheme, initial: true) {
             manager.applyPanelAppearance()
@@ -266,7 +282,9 @@ struct CommandBarView: View {
                 ? "The microphone can only be changed before a recording starts"
                 : "Record the microphone"
         ) {
-            appState.isMicrophoneEnabled.toggle()
+            // Through the permission gate (verdict 25.08): undetermined prompts,
+            // denied stays off and explains itself in a toast.
+            appState.requestMicrophoneEnabled(!appState.isMicrophoneEnabled)
         }
         // Same rule as the old window: the capture device is fixed once recording starts.
         .disabled(isRecording)
@@ -278,8 +296,11 @@ struct CommandBarView: View {
             isOn: appState.isCameraEnabled,
             help: "Show the camera bubble"
         ) {
-            // The camera bubble itself rises via the existing onChange in NoCornyTracerApp.
-            appState.isCameraEnabled.toggle()
+            // Through the permission gate (verdict 25.08, «камера не вмикалась»):
+            // undetermined shows the system prompt, denied keeps the toggle off and
+            // points at System Settings. The bubble itself rises via the existing
+            // isCameraEnabled didSet once the grant is real.
+            appState.requestCameraEnabled(!appState.isCameraEnabled)
         }
     }
 
@@ -312,9 +333,14 @@ struct CommandBarView: View {
     // MARK: Close
 
     private var closeButton: some View {
-        CommandGlassButton(systemName: "xmark", help: "Quit NoCorny Tracer") {
-            // The existing quit chain (applicationShouldTerminate) finalizes a live take.
-            NSApp.terminate(nil)
+        CommandGlassButton(
+            systemName: "xmark",
+            help: "Close (Tracer keeps running in the menu bar)"
+        ) {
+            // Hide, don't quit (verdict 25.08 — overrides the macro map's
+            // "close = quit"): the app lives on in the tray/Dock, a click there
+            // brings the bar back. Quit stays in the tray menu (⌘Q).
+            manager.hide()
         }
     }
 }
@@ -410,9 +436,12 @@ private struct CommandToggleButton: View {
             .frame(width: Theme.Metrics.controlSize, height: Theme.Metrics.controlSize)
             .overlay(alignment: .topTrailing) {
                 if isOn {
+                    // 6pt and one notch deeper than the macro green, no glow
+                    // (verdict 25.08: the 8pt raw #32D74B dots read as acid on
+                    // the bar) — see Theme.Colors.statusGreenDot.
                     Circle()
-                        .fill(Theme.Colors.statusGreen)
-                        .frame(width: 8, height: 8)
+                        .fill(Theme.Colors.statusGreenDot)
+                        .frame(width: 6, height: 6)
                         .offset(x: 1, y: -1)
                 }
             }

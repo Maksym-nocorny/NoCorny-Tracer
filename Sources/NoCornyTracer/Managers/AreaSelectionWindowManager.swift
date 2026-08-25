@@ -50,6 +50,9 @@ final class AreaSelectionPanel: NSPanel {
         hidesOnDeactivate = false
         isReleasedWhenClosed = false
         isMovableByWindowBackground = false
+        #if DEBUG
+        CapturablePanels.register(self)
+        #endif
     }
 }
 

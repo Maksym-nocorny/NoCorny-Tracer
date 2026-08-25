@@ -18,6 +18,9 @@ final class CommandBarPanel: NSPanel {
     /// SwiftUI hierarchy consumed the key (`.onExitCommand` needs focus inside the
     /// drawer, which a nonactivating panel often doesn't have). Set by the manager.
     var onEsc: (() -> Void)?
+    /// ⌘, toggles the Settings drawer (the hint the drawer header shows). Only
+    /// works while the panel is key — same reach as Esc above.
+    var onCmdComma: (() -> Void)?
 
     override func cancelOperation(_ sender: Any?) {
         if let onEsc { onEsc() } else { super.cancelOperation(sender) }
@@ -29,6 +32,20 @@ final class CommandBarPanel: NSPanel {
             return
         }
         super.keyDown(with: event)
+    }
+
+    // ⌘-shortcuts never reach keyDown — AppKit routes them through the key
+    // window's performKeyEquivalent BEFORE the main menu. Intercepting here is
+    // also what stops ⌘, from opening the empty placeholder Settings scene
+    // (the documented phase-7 compromise) while the bar is key.
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if event.modifierFlags.contains(.command),
+           event.charactersIgnoringModifiers == ",",
+           let onCmdComma {
+            onCmdComma()
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
     }
 
     init(contentRect: NSRect) {
@@ -55,13 +72,21 @@ final class CommandBarPanel: NSPanel {
 
 // MARK: - Delegate
 
-/// Persists the bar's position as the user drags it (the panel is
-/// `isMovableByWindowBackground`, so moves happen without any code of ours running).
+/// Persists the panel's position as the user drags it (the panel is
+/// `isMovableByWindowBackground`, so moves happen without any code of ours
+/// running). WHICH anchor a drag updates depends on the current surface — a
+/// dragged recording pill must not clobber the bar's saved spot — so the
+/// decision lives on the manager.
 private final class CommandBarPanelDelegate: NSObject, NSWindowDelegate {
+    weak var manager: CommandBarWindowManager?
+
     func windowDidMove(_ notification: Notification) {
         guard let window = notification.object as? NSWindow else { return }
         let logical = MorphGeometry.logicalFrame(forPanel: window.frame)
-        CommandBarWindowManager.saveAnchor(CGPoint(x: logical.minX, y: logical.maxY))
+        // NSWindowDelegate callbacks arrive on the main thread.
+        MainActor.assumeIsolated {
+            manager?.panelWasDragged(toLogicalFrame: logical)
+        }
     }
 }
 
@@ -88,17 +113,34 @@ final class CommandBarWindowManager {
     /// registers even while the confirmation is already showing.
     private(set) var pillEscSignal = 0
 
+    /// Whether the currently open (or closing) drawer unfolds ABOVE the bar
+    /// (verdict 25.08: bar in the lower half of the screen → drawer opens up).
+    /// The SwiftUI root reads this to flip the stack order and the pin edge.
+    /// Sticky through the close animation — see the reset in `morph(to:)`.
+    private(set) var drawerOpensUp = false
+
     private var panel: CommandBarPanel?
     private let panelDelegate = CommandBarPanelDelegate()
     private weak var appState: AppState?
 
-    // MARK: Persisted position
+    /// Logical TOP-LEFT of the BAR — the stable anchor every morph is computed
+    /// from. Tracked explicitly (not re-derived from the panel frame) because an
+    /// upward-opened drawer and the recording pill both put the panel somewhere
+    /// the bar is NOT, and the bar must come back to exactly this point.
+    private var barAnchor: CGPoint?
 
-    // The stored point is the LOGICAL TOP-LEFT anchor of the surface (AppKit screen
-    // coordinates, so top-left = (minX, maxY)) — the anchor `MorphGeometry.targetFrame`
-    // holds across morphs. NSPoint isn't UserDefaults-storable; x/y are two Doubles.
+    // MARK: Persisted positions
+
+    // The stored points are LOGICAL TOP-LEFT anchors (AppKit screen coordinates,
+    // so top-left = (minX, maxY)). NSPoint isn't UserDefaults-storable; x/y are
+    // two Doubles. The bar and the recording pill persist separately: the pill
+    // has its own perch (top-center by default, wherever the user dragged it
+    // afterwards — the camera bubble's contract), and neither position may
+    // clobber the other.
     private static let anchorXKey = "commandBarOriginX"
     private static let anchorYKey = "commandBarOriginY"
+    private static let pillAnchorXKey = "recordingPillOriginX"
+    private static let pillAnchorYKey = "recordingPillOriginY"
 
     nonisolated static func saveAnchor(_ anchor: CGPoint) {
         let defaults = UserDefaults.standard
@@ -112,6 +154,34 @@ final class CommandBarWindowManager {
               defaults.object(forKey: anchorYKey) != nil else { return nil }
         return CGPoint(x: defaults.double(forKey: anchorXKey),
                        y: defaults.double(forKey: anchorYKey))
+    }
+
+    nonisolated static func savePillAnchor(_ anchor: CGPoint) {
+        let defaults = UserDefaults.standard
+        defaults.set(Double(anchor.x), forKey: pillAnchorXKey)
+        defaults.set(Double(anchor.y), forKey: pillAnchorYKey)
+    }
+
+    nonisolated static func savedPillAnchor() -> CGPoint? {
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: pillAnchorXKey) != nil,
+              defaults.object(forKey: pillAnchorYKey) != nil else { return nil }
+        return CGPoint(x: defaults.double(forKey: pillAnchorXKey),
+                       y: defaults.double(forKey: pillAnchorYKey))
+    }
+
+    /// The anchor the CURRENT surface should be framed from: the pill has its own
+    /// perch; everything else hangs off the bar anchor.
+    private func anchorForCurrentSurface(visible: CGRect) -> CGPoint {
+        if surface == .recordingPill {
+            return Self.savedPillAnchor() ?? MorphGeometry.recordingPillTopLeft(visible: visible)
+        }
+        if let barAnchor { return barAnchor }
+        let size = MorphGeometry.size(of: .bar, bannerHeight: bannerExtent)
+        let origin = MorphGeometry.initialOrigin(for: size, visible: visible)
+        let anchor = CGPoint(x: origin.x, y: origin.y + size.height)
+        barAnchor = anchor
+        return anchor
     }
 
     // MARK: Lifecycle
@@ -137,6 +207,7 @@ final class CommandBarWindowManager {
 
             let newPanel = CommandBarPanel(contentRect: .zero)
             newPanel.contentViewController = host
+            panelDelegate.manager = self
             newPanel.delegate = panelDelegate
             // Esc closes an open drawer, and on the recording pill opens the inline
             // discard confirmation (the panel must be key for Esc to arrive at all —
@@ -152,21 +223,33 @@ final class CommandBarWindowManager {
                     break
                 }
             }
+            // ⌘, — the shortcut the Settings drawer's header advertises. Toggles
+            // the drawer; inert mid-recording (the pill has no drawers).
+            newPanel.onCmdComma = { [weak self] in
+                guard let self else { return }
+                switch self.surface {
+                case .barWithDrawer(.settings):
+                    self.morph(to: .bar)
+                case .bar, .barWithDrawer:
+                    self.morph(to: .barWithDrawer(.settings))
+                case .recordingPill:
+                    break
+                }
+            }
+            #if DEBUG
+            CapturablePanels.register(newPanel)
+            #endif
             panel = newPanel
         }
         guard let panel else { return }
 
         let visible = currentVisibleFrame()
-        let size = MorphGeometry.size(of: surface, bannerHeight: bannerExtent)
-        let anchor: CGPoint
-        if let saved = Self.savedAnchor() {
-            // targetFrame re-clamps below, so a stale anchor (disconnected display)
-            // self-corrects instead of landing off-screen.
-            anchor = saved
-        } else {
-            let origin = MorphGeometry.initialOrigin(for: size, visible: visible)
-            anchor = CGPoint(x: origin.x, y: origin.y + size.height)
+        if barAnchor == nil {
+            // savedAnchor may be stale (disconnected display) — targetFrame
+            // re-clamps below, so it self-corrects instead of landing off-screen.
+            barAnchor = Self.savedAnchor()
         }
+        let anchor = anchorForCurrentSurface(visible: visible)
         let target = MorphGeometry.targetFrame(
             anchorTopLeft: anchor, surface: surface, bannerHeight: bannerExtent, visible: visible
         )
@@ -176,21 +259,44 @@ final class CommandBarWindowManager {
         panel.orderFrontRegardless()
     }
 
+    /// Hides the bar — the app keeps running in the menu bar (verdict 25.08: the
+    /// close button hides, it does NOT quit). A no-op mid-recording: the pill is
+    /// the only control surface of a live take and has no close button anyway.
     func hide() {
+        guard appState?.recordingManager.isRecording != true else { return }
         if let panel {
             let logical = MorphGeometry.logicalFrame(forPanel: panel.frame)
-            Self.saveAnchor(CGPoint(x: logical.minX, y: logical.maxY))
+            persistAnchor(forLogicalFrame: logical)
             panel.orderOut(nil)
         }
         panel = nil
     }
 
-    /// Switches the panel to another surface, holding the top-left anchor
-    /// (see `MorphGeometry.targetFrame` for the doesn't-fit fallbacks).
+    /// Switches the panel to another surface. The BAR anchor stays the stable
+    /// reference: the pill flies to its own perch and back, and an upward drawer
+    /// grows above the stationary bar (see `MorphGeometry.targetFrame`).
     func morph(to newSurface: Surface) {
         guard surface != newSurface else { return }
+        if case .barWithDrawer = newSurface {
+            // Drawers only ever open from the bar (the pill has none), so the
+            // bar anchor is the reference for the direction rule.
+            let visible = currentVisibleFrame(for: panel)
+            var anchor = anchorForCurrentSurface(visible: visible)
+            if surface == .recordingPill { anchor = barAnchor ?? anchor }
+            drawerOpensUp = MorphGeometry.drawerOpensUpward(anchorTopLeft: anchor, visible: visible)
+        }
         surface = newSurface
         reframe()
+        if newSurface == .bar, drawerOpensUp {
+            // Keep the bottom-pin through the close animation (the bar must stay
+            // put while the drawer folds up), then return to the default top-pin —
+            // invisible at rest, but the banner's grow-down animation needs it.
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(Self.morphDuration * 1_500_000_000))
+                guard let self, self.surface == .bar else { return }
+                self.drawerOpensUp = false
+            }
+        }
     }
 
     /// Shows/hides the storage banner under the bar, resizing the panel in place.
@@ -207,8 +313,9 @@ final class CommandBarWindowManager {
     /// together with the SwiftUI content transitions (`Theme.Anim.surface`).
     private static let morphDuration: TimeInterval = 0.28
 
-    /// Re-derives the panel frame for the current surface + banner extent, holding
-    /// the top-left anchor. Shared by morphs and banner visibility flips.
+    /// Re-derives the panel frame for the current surface + banner extent from the
+    /// surface's anchor (bar anchor, or the pill's own perch). Shared by morphs
+    /// and banner visibility flips.
     ///
     /// The frame ANIMATES (verdict 24.08: the morph used to jump): an explicit
     /// NSAnimationContext with easeInOut rather than `setFrame(_:display:animate:)`,
@@ -216,25 +323,57 @@ final class CommandBarWindowManager {
     /// while the panel is off screen — animating an invisible window only delays it.
     private func reframe() {
         guard let panel else { return }
-        let logical = MorphGeometry.logicalFrame(forPanel: panel.frame)
-        let anchor = CGPoint(x: logical.minX, y: logical.maxY)
+        let visible = currentVisibleFrame(for: panel)
+        let anchor = anchorForCurrentSurface(visible: visible)
         let target = MorphGeometry.targetFrame(
             anchorTopLeft: anchor,
             surface: surface,
             bannerHeight: bannerExtent,
-            visible: currentVisibleFrame(for: panel)
+            visible: visible
         )
         let panelFrame = MorphGeometry.panelFrame(forLogical: target)
         if panel.isVisible {
-            NSAnimationContext.runAnimationGroup { context in
+            isAnimatingReframe = true
+            NSAnimationContext.runAnimationGroup({ context in
                 context.duration = Self.morphDuration
                 context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
                 panel.animator().setFrame(panelFrame, display: true)
-            }
+            }, completionHandler: { [weak self] in
+                // Runs on the main thread, like every AppKit animation callback.
+                MainActor.assumeIsolated { self?.isAnimatingReframe = false }
+            })
         } else {
             panel.setFrame(panelFrame, display: true)
         }
-        Self.saveAnchor(CGPoint(x: target.minX, y: target.maxY))
+        persistAnchor(forLogicalFrame: target)
+    }
+
+    /// True while an animated reframe is in flight — its intermediate frames also
+    /// fire `windowDidMove`, and persisting those would poison the anchors with
+    /// mid-animation garbage. `reframe()` already persists the END frame itself.
+    private var isAnimatingReframe = false
+
+    /// A user drag moved the panel — update whichever anchor the current surface
+    /// owns. Called by the window delegate on `windowDidMove`.
+    func panelWasDragged(toLogicalFrame logical: CGRect) {
+        guard !isAnimatingReframe else { return }
+        persistAnchor(forLogicalFrame: logical)
+    }
+
+    /// Writes the anchor a logical surface frame implies. A dragged/reframed pill
+    /// updates ONLY its own perch (used by this and future takes); every other
+    /// surface updates the bar anchor — recovered through `MorphGeometry.barAnchor`
+    /// because an upward drawer's frame has the bar at its bottom.
+    private func persistAnchor(forLogicalFrame logical: CGRect) {
+        if surface == .recordingPill {
+            Self.savePillAnchor(CGPoint(x: logical.minX, y: logical.maxY))
+            return
+        }
+        let anchor = MorphGeometry.barAnchor(
+            forSurfaceFrame: logical, surface: surface, opensUp: drawerOpensUp
+        )
+        barAnchor = anchor
+        Self.saveAnchor(anchor)
     }
 
     // MARK: Theme

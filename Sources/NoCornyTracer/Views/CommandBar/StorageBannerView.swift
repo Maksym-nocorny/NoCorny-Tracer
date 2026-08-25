@@ -63,12 +63,17 @@ struct StorageBannerView: View {
     }
 }
 
-/// The banner's glass, same split as `glassSurface` but amber-washed: native
-/// Liquid Glass tinted amber on macOS 26+, the fallback blur + deep tint + amber
-/// wash below. The amber stroke stays on both (it is the banner's identity, not
-/// a glass border).
+/// The banner's glass, same split (and the same 25.08 grey-frost fix) as
+/// `glassSurface`, but amber-washed. macOS 26+ dark rides the `.clear` variant
+/// with the deep navy tint — `.regular`'s frost turned the faint amber tint into
+/// the same grey plate the bar had — with the amber wash layered over it; light
+/// keeps the airy `.regular` frost tinted amber. The fallback stacks blur + deep
+/// tint + wash as before. The amber stroke stays on all paths (it is the
+/// banner's identity, not a glass border).
 private struct BannerGlass: ViewModifier {
     let isFull: Bool
+
+    @Environment(\.colorScheme) private var colorScheme
 
     private var wash: Color {
         Theme.Colors.pausedAmber.opacity(isFull ? 0.16 : 0.10)
@@ -78,9 +83,16 @@ private struct BannerGlass: ViewModifier {
     func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
         if #available(macOS 26.0, *) {
-            content
-                .clipShape(shape)
-                .glassEffect(.regular.tint(wash), in: shape)
+            if colorScheme == .dark {
+                content
+                    .background(shape.fill(wash))
+                    .clipShape(shape)
+                    .glassEffect(.clear.tint(Theme.Colors.liquidGlassTint), in: shape)
+            } else {
+                content
+                    .clipShape(shape)
+                    .glassEffect(.regular.tint(wash), in: shape)
+            }
         } else {
             content
                 .background(

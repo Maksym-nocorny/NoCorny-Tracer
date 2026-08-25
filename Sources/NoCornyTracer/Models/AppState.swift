@@ -3,6 +3,7 @@ import SwiftUI
 import Combine
 import ServiceManagement
 import ScreenCaptureKit
+import AVFoundation
 
 /// Central app state managing all sub-managers and user preferences
 @Observable
@@ -542,6 +543,75 @@ final class AppState {
 
         // Phase 7: the bubble's show/hide used to be the main window's .onChange.
         presentCameraOverlay?(isCameraEnabled)
+    }
+
+    // MARK: - Capture toggles (permission-gated)
+
+    /// The camera toggle's real entry point (verdict 25.08, «камера не вмикалась»):
+    /// turning ON goes through the TCC status FIRST. The old path set
+    /// `isCameraEnabled` blindly, and `CameraManager.startSession` swallowed a
+    /// denial — a lit toggle over a camera that never came up, `.notDetermined`
+    /// never got the system prompt from the toggle's perspective, and denied got
+    /// no feedback at all. Turning OFF is always allowed.
+    func requestCameraEnabled(_ on: Bool) {
+        guard on else {
+            isCameraEnabled = false
+            return
+        }
+        switch CaptureToggleDecision.forTurningOn(status: AVCaptureDevice.authorizationStatus(for: .video)) {
+        case .enable:
+            isCameraEnabled = true
+        case .requestAccess:
+            Task { @MainActor in
+                if await AVCaptureDevice.requestAccess(for: .video) {
+                    self.isCameraEnabled = true
+                } else {
+                    self.presentCaptureDenied(.camera)
+                }
+            }
+        case .deniedFeedback:
+            presentCaptureDenied(.camera)
+        }
+    }
+
+    /// The mic toggle, through the same gate. The mic was NOT the same bug —
+    /// nothing captures until a recording starts, and `ensureRecordingPermissions`
+    /// prompts at start — but a lit mic toggle over a denied microphone still
+    /// promises audio that will never be recorded, so the toggle now says so
+    /// up front instead of at record time.
+    func requestMicrophoneEnabled(_ on: Bool) {
+        guard on else {
+            isMicrophoneEnabled = false
+            return
+        }
+        switch CaptureToggleDecision.forTurningOn(status: AVCaptureDevice.authorizationStatus(for: .audio)) {
+        case .enable:
+            isMicrophoneEnabled = true
+        case .requestAccess:
+            Task { @MainActor in
+                if await AVCaptureDevice.requestAccess(for: .audio) {
+                    self.isMicrophoneEnabled = true
+                } else {
+                    self.presentCaptureDenied(.microphone)
+                }
+            }
+        case .deniedFeedback:
+            presentCaptureDenied(.microphone)
+        }
+    }
+
+    /// The "access denied" toast for a capture toggle: names the device, keeps the
+    /// toggle off, and carries the one useful action — the System Settings pane
+    /// where the denial can actually be reversed.
+    private func presentCaptureDenied(_ permission: PermissionsManager.RecordingPermission) {
+        presentToast?(ToastContent(
+            icon: permission == .camera ? "video.slash" : "mic.slash",
+            iconColor: Theme.Colors.recordRed,
+            message: "\(permission.title) access denied",
+            buttonTitle: "Open System Settings",
+            buttonAction: { PermissionsManager.openSystemSettings(for: permission) },
+            duration: 6
+        ))
     }
 
     // MARK: - Noise Suggestion

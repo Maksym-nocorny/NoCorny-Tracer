@@ -64,8 +64,17 @@ enum Theme {
             light: Color(hex: 0xCE3B33),
             dark: Color(hex: 0xF2584F)
         )
-        /// Status dots on mic/camera toggles. Same value in both schemes (from the macro).
+        /// Macro green (#32D74B): toggles, quota bar, "Ready" dots, uploaded checks —
+        /// surfaces the macro itself paints in this exact value.
         static let statusGreen = Color(hex: 0x32D74B)
+        /// The mic/cam status dots on the BAR specifically (verdict 25.08: "салатові
+        /// кислотні"). The bar floats over the wallpaper all day, and the raw macro
+        /// green at 8pt read as acid there — one notch deeper, no glow, drawn at 6pt.
+        /// Drawer/toast greens stay on `statusGreen`, which the macro shows verbatim.
+        static let statusGreenDot = Color.adaptive(
+            light: Color(hex: 0x1F9C3D),
+            dark: Color(hex: 0x2DB84C)
+        )
         /// Pause ring / storage banner amber. Dark measured (#F0B24A);
         /// light is a same-hue darkened derivative — verify against light frames in phase 2.
         static let pausedAmber = Color.adaptive(
@@ -109,12 +118,16 @@ enum Theme {
             light: Color(hex: 0xFFFFFF, opacity: 0.22),
             dark: Color(hex: 0x05080F, opacity: 0.52)
         )
-        /// Minimal tint handed to native Liquid Glass (macOS 26+): dark leans the
-        /// glass toward the macro's deep navy, light keeps it airy. Deliberately
-        /// faint — the material itself carries the look.
+        /// Tint handed to native Liquid Glass (macOS 26+). DARK IS DELIBERATELY DEEP
+        /// (verdict 25.08 "скло досі сіре"): `.regular` glass in dark appearance is a
+        /// grey frost that a faint 30% tint could not fight — the surface read as a
+        /// light-grey plate on light wallpapers. Dark now rides the `.clear` glass
+        /// variant (see `glassSurface`) where this 62% navy IS the tone of the
+        /// surface; the wallpaper glows through the remaining 38%. Light keeps the
+        /// airy `.regular` frost with a whisper of white.
         static let liquidGlassTint = Color.adaptive(
             light: Color(hex: 0xFFFFFF, opacity: 0.10),
-            dark: Color(hex: 0x0B1220, opacity: 0.30)
+            dark: Color(hex: 0x0B1220, opacity: 0.62)
         )
         /// 1pt divider inside the command bar.
         static let glassDivider = Color.adaptive(
@@ -324,14 +337,6 @@ enum Theme {
         static func floatingPanel(_ content: some View) -> some View {
             content.shadow(color: .black.opacity(0.55), radius: 27.5, x: 0, y: 22)
         }
-
-        /// Dropdown menu shadow — values carried over from the retired DesignSystem.swift
-        /// (`designShadowDropdown`) so dropdowns keep their exact look.
-        static func dropdown(_ content: some View) -> some View {
-            content
-                .shadow(color: .black.opacity(0.08), radius: 12, x: 0, y: 20)
-                .shadow(color: .black.opacity(0.03), radius: 4, x: 0, y: 8)
-        }
     }
 
     // MARK: - Animation
@@ -381,25 +386,50 @@ extension View {
     /// Rounded "liquid glass" surface.
     ///
     /// macOS 26+: REAL Liquid Glass via SwiftUI's `glassEffect(_:in:)` (the SwiftUI
-    /// face of AppKit's `NSGlassEffectView`, both macOS 26.0+ in the SDK), with the
-    /// minimal `liquidGlassTint` and no hairline stroke — the material draws its own
-    /// rim highlight, and a stroke on top reads as a double border.
+    /// face of AppKit's `NSGlassEffectView`, both macOS 26.0+ in the SDK), no
+    /// hairline stroke — the material draws its own rim highlight, and a stroke on
+    /// top reads as a double border. The glass VARIANT is scheme-dependent (verdict
+    /// 25.08 "скло досі сіре"): in dark, `.regular`'s frost is a grey wash that
+    /// swallowed any faint tint, so dark rides `.clear` — no frost, the deep 62%
+    /// navy `liquidGlassTint` IS the tone and the wallpaper glows through the rest,
+    /// which is exactly the sec1-bar reference. Light keeps the airy `.regular`.
     ///
     /// macOS < 26 fallback: `NSVisualEffectView` blur (`.popover` — cleaner than the
     /// retired `.hudWindow` and its grey wash) under a deep `glassBackdropTint`,
     /// clipped to the shape, with the hairline `glassStroke` border as before.
-    @ViewBuilder
     func glassSurface(
         cornerRadius: CGFloat,
         material: NSVisualEffectView.Material = .popover
     ) -> some View {
+        modifier(GlassSurfaceModifier(cornerRadius: cornerRadius, material: material))
+    }
+
+    /// Floating glass panel shadow (see `Theme.Shadows.floatingPanel`).
+    func floatingPanelShadow() -> some View {
+        Theme.Shadows.floatingPanel(self)
+    }
+}
+
+/// Implementation of `glassSurface` — a ViewModifier so the glass variant can read
+/// the resolved color scheme (the panel pins its NSAppearance, so this follows the
+/// in-app theme, not the system one).
+struct GlassSurfaceModifier: ViewModifier {
+    let cornerRadius: CGFloat
+    var material: NSVisualEffectView.Material = .popover
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         if #available(macOS 26.0, *) {
-            self
+            let glass: Glass = colorScheme == .dark
+                ? .clear.tint(Theme.Colors.liquidGlassTint)
+                : .regular.tint(Theme.Colors.liquidGlassTint)
+            content
                 .clipShape(shape)
-                .glassEffect(.regular.tint(Theme.Colors.liquidGlassTint), in: shape)
+                .glassEffect(glass, in: shape)
         } else {
-            self
+            content
                 .background(
                     ZStack {
                         Theme.Glass.GlassBackground(material: material)
@@ -409,16 +439,6 @@ extension View {
                 .clipShape(shape)
                 .overlay(shape.strokeBorder(Theme.Colors.glassStroke, lineWidth: 1))
         }
-    }
-
-    /// Floating glass panel shadow (see `Theme.Shadows.floatingPanel`).
-    func floatingPanelShadow() -> some View {
-        Theme.Shadows.floatingPanel(self)
-    }
-
-    /// Dropdown menu shadow (see `Theme.Shadows.dropdown`).
-    func dropdownShadow() -> some View {
-        Theme.Shadows.dropdown(self)
     }
 }
 

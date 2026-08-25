@@ -76,10 +76,34 @@ enum MorphGeometry {
         }
     }
 
-    /// Where a surface should sit, holding the current TOP-LEFT anchor when possible.
+    /// Which way a drawer opens from a bar whose TOP-LEFT sits at `anchorTopLeft`
+    /// (verdict 25.08: direction follows the HALF of the screen, not just fit).
+    /// Bar center in the LOWER half of the visible frame → the drawer unfolds
+    /// UPWARD (above the stationary bar); upper half or dead center → downward.
+    /// Fit still overrides preference: a direction with no room yields to the
+    /// other. The bar itself never moves in either direction — only the surface
+    /// grows past it (the slide-into-bounds fallback is the sole exception).
+    static func drawerOpensUpward(anchorTopLeft: CGPoint, visible: CGRect) -> Bool {
+        let barHeight = Theme.Metrics.commandBarSize.height
+        let barCenterY = anchorTopLeft.y - barHeight / 2
+        let prefersUp = barCenterY < visible.midY
+
+        let drawerSize = size(of: .barWithDrawer(.gallery))
+        let upFits = anchorTopLeft.y - barHeight + drawerSize.height <= visible.maxY
+        let downFits = anchorTopLeft.y - drawerSize.height >= visible.minY
+
+        if prefersUp { return upFits || !downFits }
+        return !downFits && upFits
+    }
+
+    /// Where a surface should sit. `anchorTopLeft` is ALWAYS the top-left of the
+    /// BAR — the stable point every morph is computed from.
     ///
-    /// - Doesn't fit downward (a drawer opening near the Dock): opens UPWARD — the
-    ///   anchor becomes the bottom-left corner.
+    /// - `.bar` / `.recordingPill`: the surface hangs from the anchor (the banner
+    ///   grows downward under the bar).
+    /// - `.barWithDrawer`: direction per `drawerOpensUpward` — downward keeps the
+    ///   anchor as the surface's top-left; upward keeps the BAR in place (surface
+    ///   bottom = the bar's bottom edge) and the drawer unfolds above it.
     /// - Fits in neither direction: slides vertically into the visible bounds.
     /// - Doesn't fit to the right: slides left (and never past the left edge).
     static func targetFrame(
@@ -96,18 +120,41 @@ enum MorphGeometry {
 
         // AppKit y grows upward: growing DOWN from the anchor lowers the origin.
         let downwardOriginY = anchorTopLeft.y - size.height
-        let y: CGFloat
-        if downwardOriginY >= visible.minY {
-            y = downwardOriginY
-        } else if anchorTopLeft.y + size.height <= visible.maxY {
-            // Open upward: the anchor point becomes the bottom-left corner.
-            y = anchorTopLeft.y
+        // Growing UP holds the bar's bottom edge as the surface's bottom edge.
+        let upwardOriginY = anchorTopLeft.y - Theme.Metrics.commandBarSize.height
+
+        let opensUp: Bool
+        if case .barWithDrawer = surface {
+            opensUp = drawerOpensUpward(anchorTopLeft: anchorTopLeft, visible: visible)
         } else {
-            // Neither direction fits cleanly — slide into bounds.
+            opensUp = false
+        }
+
+        let y: CGFloat
+        if opensUp, upwardOriginY + size.height <= visible.maxY, upwardOriginY >= visible.minY {
+            y = upwardOriginY
+        } else if !opensUp, downwardOriginY >= visible.minY {
+            y = downwardOriginY
+        } else {
+            // The chosen direction has no room — slide into bounds.
             y = min(max(downwardOriginY, visible.minY), visible.maxY - size.height)
         }
 
         return CGRect(x: x, y: y, width: size.width, height: size.height)
+    }
+
+    /// The bar's top-left anchor recovered from a surface frame — the inverse of
+    /// `targetFrame` for the non-slide cases. Needed because an upward-opened
+    /// drawer's frame has the bar at its BOTTOM, not its top.
+    static func barAnchor(
+        forSurfaceFrame frame: CGRect,
+        surface: CommandBarSurface,
+        opensUp: Bool
+    ) -> CGPoint {
+        if case .barWithDrawer = surface, opensUp {
+            return CGPoint(x: frame.minX, y: frame.minY + Theme.Metrics.commandBarSize.height)
+        }
+        return CGPoint(x: frame.minX, y: frame.maxY)
     }
 
     /// Default position for a fresh install (no persisted origin): centered
@@ -117,6 +164,21 @@ enum MorphGeometry {
         CGPoint(
             x: visible.midX - size.width / 2,
             y: visible.maxY - 120 - size.height
+        )
+    }
+
+    /// Top inset of the recording pill's default perch (verdict 25.08: the pill
+    /// flies to a tidy spot on record-start instead of collapsing in place).
+    /// 64pt below the top of the VISIBLE frame — i.e. under the menu bar.
+    static let recordingPillTopInset: CGFloat = 64
+
+    /// The pill's default TOP-LEFT: centered horizontally, 64pt down from the top
+    /// of the visible frame. A pill the user dragged mid-take overrides this via
+    /// its own persisted anchor (mirroring the camera bubble's behaviour).
+    static func recordingPillTopLeft(visible: CGRect) -> CGPoint {
+        CGPoint(
+            x: visible.midX - Theme.Metrics.recordingPillSize.width / 2,
+            y: visible.maxY - recordingPillTopInset
         )
     }
 

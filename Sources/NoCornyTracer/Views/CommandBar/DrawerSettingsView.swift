@@ -4,12 +4,11 @@ import AppKit
 /// The Settings drawer of the command bar (Figma 61:66): the old SettingsView's
 /// sections re-laid as macro-style rows — label left, value right, tracked all-caps
 /// section headers, hairline dividers. Same 560×332 glass sheet as the Gallery.
+/// Controls are the drawer's OWN (DrawerControls.swift) since round 2 — the old
+/// design's CustomDropdownButton and system switches are gone (verdict 25.08).
 struct DrawerSettingsView: View {
     @Bindable var appState: AppState
     let manager: CommandBarWindowManager
-
-    /// One open dropdown at a time across the whole drawer, same as SettingsView.
-    @State private var activeDropdownID: String? = nil
 
     /// Why a locked engine could not be picked, shown under the Engine row.
     @State private var lockedEngineNotice: String? = nil
@@ -31,10 +30,12 @@ struct DrawerSettingsView: View {
                     // (Drawer / Settings, 77:1179) places it.
                     transcriptionSection
                     generalSection
+                    aboutSection
                 }
                 .padding(.trailing, 4)
             }
-            .scrollIndicators(.never)
+            // The macro draws a scrollbar (61:233) — don't force it hidden.
+            .scrollIndicators(.automatic)
             .frame(maxHeight: .infinity)
 
             DrawerFooterView(appState: appState)
@@ -48,9 +49,6 @@ struct DrawerSettingsView: View {
         )
         .glassSurface(cornerRadius: DrawerStyle.cornerRadius)
         .floatingPanelShadow()
-        // On the drawer ROOT and after the glass clip, so menus draw above every row
-        // and are not cut off by the glass surface's clipShape.
-        .customDropdownOverlay(activeDropdownID: $activeDropdownID)
         .onAppear {
             appState.cameraManager.refreshDevices()
             appState.recordingManager.audioCaptureManager.refreshDevices()
@@ -62,7 +60,7 @@ struct DrawerSettingsView: View {
         }
     }
 
-    // MARK: Header
+    // MARK: Header (61:128: "Settings" + "⌘,  ·  Esc закрити" — EN copy here)
 
     private var header: some View {
         HStack(spacing: 8) {
@@ -72,7 +70,9 @@ struct DrawerSettingsView: View {
 
             Spacer(minLength: 8)
 
-            Text("Esc to close")
+            // Both shortcuts are live on the panel: ⌘, toggles this drawer
+            // (CommandBarPanel.onCmdComma), Esc closes it.
+            Text("⌘,  ·  Esc to close")
                 .font(.system(size: 10.5, weight: .medium))
                 .foregroundStyle(DrawerStyle.ink(0.4))
         }
@@ -96,85 +96,67 @@ struct DrawerSettingsView: View {
 
             Group {
                 settingRow(icon: "display", label: "Resolution") {
-                    CustomDropdownButton(
-                        id: "drawer-resolution",
+                    DrawerPopUp(
                         options: VideoResolution.allCases.map {
-                            DropdownOption(id: $0.rawValue, label: $0.displayName, value: $0)
+                            DrawerPopUpOption(id: $0.rawValue, label: $0.displayName, value: $0)
                         },
-                        selection: $appState.videoResolution,
-                        activeDropdownID: $activeDropdownID
+                        selection: $appState.videoResolution
                     )
                 }
 
                 hairline
 
-                settingRow(icon: "film", label: "Frame rate") {
-                    CustomDropdownButton(
-                        id: "drawer-framerate",
+                // icon/play in the macro (61:158) — the ▶ reads as "motion".
+                settingRow(icon: "play", label: "Frame rate") {
+                    DrawerPopUp(
                         options: VideoFrameRate.allCases.map {
-                            DropdownOption(id: String($0.rawValue), label: $0.displayName, value: $0)
+                            DrawerPopUpOption(id: String($0.rawValue), label: $0.displayName, value: $0)
                         },
-                        selection: $appState.videoFrameRate,
-                        activeDropdownID: $activeDropdownID
+                        selection: $appState.videoFrameRate
                     )
                 }
 
                 hairline
 
                 settingRow(icon: "mic", label: "Microphone") {
-                    CustomDropdownButton(
-                        id: "drawer-microphone",
-                        options: [DropdownOption(id: "", label: "Default Input", value: "")] +
+                    DrawerPopUp(
+                        options: [DrawerPopUpOption(id: "", label: "Default Input", value: "")] +
                             appState.recordingManager.audioCaptureManager.availableDevices.map {
-                                DropdownOption(id: $0.uniqueID, label: $0.localizedName, value: $0.uniqueID)
+                                DrawerPopUpOption(id: $0.uniqueID, label: $0.localizedName, value: $0.uniqueID)
                             },
                         selection: Binding(
                             get: { appState.selectedMicrophoneID ?? "" },
                             set: { appState.selectedMicrophoneID = $0.isEmpty ? nil : $0 }
-                        ),
-                        activeDropdownID: $activeDropdownID,
-                        minWidth: 160
+                        )
                     )
                 }
 
                 hairline
 
                 settingRow(icon: "video", label: "Camera") {
-                    CustomDropdownButton(
-                        id: "drawer-camera",
-                        options: [DropdownOption(id: "", label: "Default Camera", value: "")] +
+                    DrawerPopUp(
+                        options: [DrawerPopUpOption(id: "", label: "Default Camera", value: "")] +
                             appState.cameraManager.availableDevices.map {
-                                DropdownOption(id: $0.uniqueID, label: $0.localizedName, value: $0.uniqueID)
+                                DrawerPopUpOption(id: $0.uniqueID, label: $0.localizedName, value: $0.uniqueID)
                             },
                         selection: Binding(
                             get: { appState.selectedCameraDeviceID ?? "" },
                             set: { appState.selectedCameraDeviceID = $0.isEmpty ? nil : $0 }
-                        ),
-                        activeDropdownID: $activeDropdownID,
-                        minWidth: 160
+                        )
                     )
                 }
 
                 hairline
 
-                // Ported from the old SettingsView's Input Devices section when phase 7
-                // deleted it (these two had no drawer row yet and would have lost their
-                // only UI). Row styling is the drawer's own; the macro doesn't cover
-                // them — flagged for the design pass.
+                // Blessed into the macro in phase 8 (581:2079 / 581:2090).
                 settingRow(icon: "waveform", label: "Reduce background noise") {
-                    Toggle("", isOn: $appState.reduceBackgroundNoise)
-                        .labelsHidden()
-                        .toggleStyle(.switch)
-                        .controlSize(.small)
+                    DrawerToggle(isOn: $appState.reduceBackgroundNoise)
                 }
 
                 hairline
 
                 settingRow(icon: "speaker.wave.2", label: "Record system audio") {
-                    Toggle("", isOn: $appState.recordSystemAudio)
-                        .labelsHidden()
-                        .toggleStyle(.switch)
-                        .controlSize(.small)
+                    DrawerToggle(isOn: $appState.recordSystemAudio)
                 }
             }
             // Same rule as the old Settings: capture parameters are fixed mid-recording.
@@ -226,7 +208,7 @@ struct DrawerSettingsView: View {
 
             Spacer(minLength: 8)
 
-            Button("Sign Out") {
+            DrawerLink(title: "Sign Out") {
                 Task {
                     await appState.tracerAPIClient.signOut()
                     await MainActor.run {
@@ -235,10 +217,6 @@ struct DrawerSettingsView: View {
                     }
                 }
             }
-            .buttonStyle(.plain)
-            .font(.system(size: 11.5, weight: .medium))
-            .foregroundStyle(DrawerStyle.ink(0.55))
-            .pointerOnHover()
         }
         .padding(.top, 6)
         .padding(.bottom, 9)
@@ -262,13 +240,9 @@ struct DrawerSettingsView: View {
 
                 Spacer(minLength: 8)
 
-                Button(appState.dropboxAuthManager.isSignedIn ? "Manage ↗" : "Connect ↗") {
+                DrawerLink(title: appState.dropboxAuthManager.isSignedIn ? "Manage ↗" : "Connect ↗") {
                     appState.openTracerSettings()
                 }
-                .buttonStyle(.plain)
-                .font(.system(size: 11.5, weight: .medium))
-                .foregroundStyle(DrawerStyle.ink(0.55))
-                .pointerOnHover()
             }
 
             if appState.dropboxAuthManager.isSignedIn && appState.dropboxAllocatedSpace > 0 {
@@ -359,12 +333,9 @@ struct DrawerSettingsView: View {
             DrawerSectionHeader(title: "TRANSCRIPTION")
 
             settingRow(icon: "sparkles", label: "Engine") {
-                CustomDropdownButton(
-                    id: "drawer-transcription-engine",
+                DrawerPopUp(
                     options: engineOptions,
                     selection: $appState.transcriptionEngine,
-                    activeDropdownID: $activeDropdownID,
-                    minWidth: 160,
                     onLockedTap: handleLockedEngine
                 )
             }
@@ -372,7 +343,7 @@ struct DrawerSettingsView: View {
             if let lockedEngineNotice {
                 Text(lockedEngineNotice)
                     .font(.system(size: 10.5))
-                    .foregroundStyle(Theme.Colors.brandPurple)
+                    .foregroundStyle(DrawerStyle.ink(0.6))
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.leading, 24)
@@ -387,7 +358,9 @@ struct DrawerSettingsView: View {
 
             hairline
 
-            settingRow(icon: "person.2", label: "Speakers (diarization)") {
+            // "Speakers" per the macro (527:3597) — the row NAME dropped the
+            // "(diarization)" tail in the design.
+            settingRow(icon: "person.2", label: "Speakers") {
                 diarizationControl
             }
 
@@ -400,13 +373,11 @@ struct DrawerSettingsView: View {
                 hairline
 
                 settingRow(icon: "person.2", label: "People in new recordings") {
-                    CustomDropdownButton(
-                        id: "drawer-expected-speakers",
+                    DrawerPopUp(
                         options: ExpectedSpeakers.quickPickChoices(including: appState.expectedSpeakers).map {
-                            DropdownOption(id: $0.rawValue, label: $0.shortName, value: $0)
+                            DrawerPopUpOption(id: $0.rawValue, label: $0.shortName, value: $0)
                         },
-                        selection: $appState.expectedSpeakers,
-                        activeDropdownID: $activeDropdownID
+                        selection: $appState.expectedSpeakers
                     )
                 }
             }
@@ -417,12 +388,12 @@ struct DrawerSettingsView: View {
     /// unavailable option is shown locked rather than hidden — an option that silently
     /// does not exist reads as a missing feature, one with a padlock and a reason reads
     /// as a choice you have not unlocked yet.
-    private var engineOptions: [DropdownOption<TranscriptionEngineKind>] {
+    private var engineOptions: [DrawerPopUpOption<TranscriptionEngineKind>] {
         let entitlements = appState.tracerAPIClient.entitlements
         return TranscriptionEngineKind.pickerCases(offeredCloudEngines: entitlements.cloudEngines).map { kind in
             switch kind {
             case .localWhisper where !LocalWhisperEngine.isAvailable:
-                return DropdownOption(
+                return DrawerPopUpOption(
                     id: kind.rawValue, label: drawerEngineLabel(kind), value: kind,
                     isLocked: true, badge: "Apple Silicon"
                 )
@@ -430,18 +401,18 @@ struct DrawerSettingsView: View {
             // collect a 503, then quietly transcribe on a different engine than the one
             // chosen -- a choice that does not exist, offered as though it did.
             case _ where !entitlements.offersCloudEngine(kind):
-                return DropdownOption(
+                return DrawerPopUpOption(
                     id: kind.rawValue, label: drawerEngineLabel(kind), value: kind,
                     isLocked: true, badge: "Unavailable"
                 )
             case .cloudGemini where !entitlements.cloudTranscription,
                  .cloudGroq where !entitlements.cloudTranscription:
-                return DropdownOption(
+                return DrawerPopUpOption(
                     id: kind.rawValue, label: drawerEngineLabel(kind), value: kind,
                     isLocked: true, badge: "Premium"
                 )
             default:
-                return DropdownOption(id: kind.rawValue, label: drawerEngineLabel(kind), value: kind)
+                return DrawerPopUpOption(id: kind.rawValue, label: drawerEngineLabel(kind), value: kind)
             }
         }
     }
@@ -493,22 +464,11 @@ struct DrawerSettingsView: View {
         return phase
     }
 
-    /// The clear 14pt block keeps the label on the same column as the icon rows —
-    /// the macro draws this as a sub-row of Engine, without an icon of its own.
+    /// icon/folder per the macro (527:1593) — the model is a thing ON DISK.
     private var localModelRow: some View {
-        HStack(spacing: 10) {
-            Color.clear.frame(width: 14, height: 14)
-
-            Text("On-device model")
-                .font(.system(size: 12.5, weight: .medium))
-                .foregroundStyle(DrawerStyle.ink(0.88))
-
-            Spacer(minLength: 8)
-
+        settingRow(icon: "folder", label: "On-device model") {
             modelStatusCluster
         }
-        .padding(.vertical, 9)
-        .padding(.trailing, 4)
     }
 
     /// Right side of the model row: status dot + line (macro shows the Ready state:
@@ -573,14 +533,8 @@ struct DrawerSettingsView: View {
     }
 
     private func modelLink(_ title: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(.system(size: 11.5, weight: .medium))
-                .foregroundStyle(DrawerStyle.ink(0.55))
-        }
-        .buttonStyle(.plain)
-        .pointerOnHover()
-        .padding(.leading, 4)
+        DrawerLink(title: title, action: action)
+            .padding(.leading, 4)
     }
 
     private func startModelDownload() {
@@ -606,6 +560,8 @@ struct DrawerSettingsView: View {
 
         HStack(spacing: 8) {
             if !unlocked {
+                // Ink-styled Premium tag (the purple one was the OLD design's
+                // accent) — still the thing you click to go unlock the feature.
                 Button {
                     if let url = URL(string: "\(TracerAPIClient.baseURL)/settings#plan") {
                         NSWorkspace.shared.open(url)
@@ -614,10 +570,10 @@ struct DrawerSettingsView: View {
                     HStack(spacing: 4) {
                         Text("Premium")
                             .font(.system(size: 10))
-                            .foregroundStyle(Theme.Colors.brandPurple)
+                            .foregroundStyle(DrawerStyle.ink(0.7))
                             .padding(.horizontal, 6)
                             .padding(.vertical, 1)
-                            .background(Capsule().fill(Theme.Colors.brandPurple.opacity(0.12)))
+                            .background(Capsule().fill(DrawerStyle.ink(0.08)))
                         Image(systemName: "lock.fill")
                             .font(.system(size: 9, weight: .semibold))
                             .foregroundStyle(DrawerStyle.ink(0.55))
@@ -627,14 +583,12 @@ struct DrawerSettingsView: View {
                 .pointerOnHover()
             }
 
-            Toggle("", isOn: Binding(
+            DrawerToggle(isOn: Binding(
                 get: { unlocked && appState.diarizationEnabled },
                 set: { appState.diarizationEnabled = $0 }
             ))
-            .labelsHidden()
-            .toggleStyle(.switch)
-            .controlSize(.small)
             .disabled(!unlocked)
+            .opacity(unlocked ? 1 : 0.55)
         }
     }
 
@@ -644,36 +598,77 @@ struct DrawerSettingsView: View {
         VStack(spacing: 0) {
             DrawerSectionHeader(title: "GENERAL")
 
+            // Known delta (TASK.md): the macro reuses icon/play here; SF `power`
+            // says "launch" better and stays until the kit grows an icon/power.
             settingRow(icon: "power", label: "Launch at Login") {
-                Toggle("", isOn: $appState.launchAtLogin)
-                    .labelsHidden()
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-                    .onChange(of: appState.launchAtLogin) {
+                DrawerToggle(isOn: Binding(
+                    get: { appState.launchAtLogin },
+                    set: {
+                        appState.launchAtLogin = $0
                         appState.updateLaunchAtLogin()
                     }
+                ))
             }
 
             hairline
 
             settingRow(icon: "circle.lefthalf.filled", label: "Appearance") {
-                CustomDropdownButton(
-                    id: "drawer-appearance",
+                DrawerPopUp(
                     options: AppState.AppTheme.allCases.map {
-                        DropdownOption(id: $0.rawValue, label: $0.displayName, value: $0)
+                        DrawerPopUpOption(id: $0.rawValue, label: $0.displayName, value: $0)
                     },
-                    selection: $appState.appTheme,
-                    activeDropdownID: $activeDropdownID
+                    selection: $appState.appTheme
                 )
             }
 
             hairline
 
-            settingRow(icon: "info.circle", label: "Version") {
+            // Macro row 61:225 — the app finally grows it: the drawer is the only
+            // Settings surface since phase 7, and Sparkle's auto-check had no
+            // switch anywhere.
+            settingRow(icon: "arrow.triangle.2.circlepath", label: "Auto-updates (Sparkle)") {
+                DrawerToggle(isOn: autoUpdatesBinding)
+            }
+        }
+    }
+
+    /// Sparkle's auto-check switch, through PermissionsManager (which owns the
+    /// updater handle and the optimistic flag).
+    private var autoUpdatesBinding: Binding<Bool> {
+        Binding(
+            get: {
+                PermissionsManager.shared?.isAutoUpdateEnabled
+                    ?? UserDefaults.standard.bool(forKey: "SUEnableAutomaticChecks")
+            },
+            set: { newValue in
+                guard let permissions = PermissionsManager.shared else { return }
+                if permissions.isAutoUpdateEnabled != newValue {
+                    permissions.toggleAutoUpdate()
+                }
+            }
+        )
+    }
+
+    // MARK: ABOUT (macro 76:149: Version + the links row live under their own header)
+
+    private var aboutSection: some View {
+        VStack(spacing: 0) {
+            DrawerSectionHeader(title: "ABOUT")
+
+            // No icon — the macro's set/version row (76:151) is label + value only.
+            HStack(spacing: 10) {
+                Text("Version")
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(DrawerStyle.ink(0.88))
+
+                Spacer(minLength: 8)
+
                 Text(appVersion)
                     .font(.system(size: 12))
                     .foregroundStyle(DrawerStyle.ink(0.5))
             }
+            .padding(.vertical, 9)
+            .padding(.trailing, 4)
 
             hairline
 
@@ -780,13 +775,7 @@ struct DrawerSettingsView: View {
     }
 
     private func linkButton(_ title: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(.system(size: 11.5, weight: .medium))
-                .foregroundStyle(DrawerStyle.ink(0.6))
-        }
-        .buttonStyle(.plain)
-        .pointerOnHover()
+        DrawerLink(title: title, opacity: 0.6, action: action)
     }
 
     // MARK: Row scaffolding (macro: icon 14 / label 12.5 medium / value right, py 9)
