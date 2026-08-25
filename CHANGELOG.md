@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.2.0] - 2026-08-25
+### Added
+- **Updates now install themselves.** Tracer quietly downloads new versions in the background and simply shows "Relaunch to update" - in the menu bar tray and in Settings - when one is ready. Click it and you restart straight into the new version; ignore it and the update installs on your next quit anyway. A recording is never interrupted: during one, the relaunch politely waits for the take to finish.
+
+### Fixed
+- **"Check for Updates" works again.** Since 4.0.0 the first-run Sparkle permission dialog opened behind every window in the new bar-only design, and an unanswered dialog silently disabled both the button and all background checks. The dialog is gone for good, and a manual check now brings its window to the front.
+
+
 ## [4.1.0] - 2026-08-25
 ### Added
 - **The bar can now match its background by itself.** Appearance has a new Auto mode: Tracer glances at what is behind the panel and picks light or dark glass so the text always stays readable - white page behind you, the bar goes light; dark video, it goes dark. It switches smoothly and never flickers on the boundary. Fresh installs start on Auto; if you had picked Light or Dark yourself, your choice is kept.
