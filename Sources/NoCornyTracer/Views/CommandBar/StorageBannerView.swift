@@ -61,13 +61,13 @@ struct StorageBannerView: View {
     }
 }
 
-/// The banner's glass, same split (and the same 25.08 grey-frost fix) as
-/// `glassSurface`, but amber-washed. macOS 26+ dark rides the `.clear` variant
-/// with the deep navy tint — `.regular`'s frost turned the faint amber tint into
-/// the same grey plate the bar had — with the amber wash layered over it; light
-/// keeps the airy `.regular` frost tinted amber. The fallback stacks blur + deep
-/// tint + wash as before. The amber stroke stays on all paths (it is the
-/// banner's identity, not a glass border).
+/// The banner's glass, same policy as `glassSurface`, but amber-washed. Since
+/// round 5 BOTH schemes ride `.regular` (the luminance floor — dark `.clear`
+/// washed out over white backdrops exactly like the bar did); dark layers the
+/// amber wash over the deep navy tint, light tints the frost amber directly.
+/// The fallback stacks blur + deep tint + wash as before. The amber stroke
+/// stays on all paths (it is the banner's identity, not a glass border — and
+/// it is also what keeps the banner's edge readable, so no extra ink hairline).
 private struct BannerGlass: ViewModifier {
     let isFull: Bool
 
@@ -85,7 +85,7 @@ private struct BannerGlass: ViewModifier {
                 content
                     .background(shape.fill(wash))
                     .clipShape(shape)
-                    .glassEffect(.clear.tint(Theme.Colors.liquidGlassTint), in: shape)
+                    .glassEffect(.regular.tint(Theme.Colors.liquidGlassTint), in: shape)
             } else {
                 content
                     .clipShape(shape)

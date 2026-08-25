@@ -57,6 +57,9 @@ final class BackgroundPillsWindowManager {
             _ = BackgroundActivity.transcriptions(recordings: appState.recordings,
                                                   activity: appState.transcriptionActivity)
             _ = appState.appTheme
+            // The Auto verdict flips panel looks without touching appTheme —
+            // the pills must re-apply their appearance on it too (4.1.0).
+            _ = appState.autoPanelDark
             #if DEBUG
             // UI Preview: fake pills must order the panel in/out and re-fit too.
             _ = UIPreviewState.shared.isUploading
@@ -92,7 +95,7 @@ final class BackgroundPillsWindowManager {
         }
 
         let panel = ensurePanel(appState: appState)
-        panel.appearance = NSAppearance.from(appState.appTheme)
+        panel.appearance = appState.panelAppearance
 
         // Re-fit on every change: a second pill appearing, or "1 video" → "2 videos",
         // changes the stack's natural size. Anchor the TOP-RIGHT visible corner so the

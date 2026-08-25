@@ -113,18 +113,27 @@ enum Theme {
         )
         /// Deep navy-black wash painted OVER the fallback blur (macOS < 26). This is
         /// what kills the grey cast the old `.hudWindow` material gave the surfaces
-        /// (verdict 24.08: "скло сіре") — the reference glass is dark and deep, not grey.
+        /// (verdict 24.08: "скло сіре") — the reference glass is dark and deep, not
+        /// grey. Dark raised 0.52 → 0.70 in round 5 (бойова 4.0.0, «на білому фоні
+        /// дарк тема стає майже невидимою»): the same luminance-floor policy as the
+        /// 26+ glass — over a white window the blur lightens, and the wash must be
+        /// strong enough to keep white text readable regardless of the backdrop.
         static let glassBackdropTint = Color.adaptive(
             light: Color(hex: 0xFFFFFF, opacity: 0.22),
-            dark: Color(hex: 0x05080F, opacity: 0.52)
+            dark: Color(hex: 0x05080F, opacity: 0.70)
         )
-        /// Tint handed to native Liquid Glass (macOS 26+). DARK IS DELIBERATELY DEEP
-        /// (verdict 25.08 "скло досі сіре"): `.regular` glass in dark appearance is a
-        /// grey frost that a faint 30% tint could not fight — the surface read as a
-        /// light-grey plate on light wallpapers. Dark now rides the `.clear` glass
-        /// variant (see `glassSurface`) where this 62% navy IS the tone of the
-        /// surface; the wallpaper glows through the remaining 38%. Light keeps the
-        /// airy `.regular` frost with a whisper of white.
+        /// Tint handed to native Liquid Glass (macOS 26+). DARK IS DELIBERATELY DEEP:
+        /// a 62% navy over the `.regular` frost — the frost supplies the luminance
+        /// floor, the saturated tint supplies the tone. History of the pendulum:
+        /// 30% over `.regular` was a grey plate (verdict 25.08 «скло досі сіре» —
+        /// the WEAK TINT was the culprit); the round-2 fix swung to `.clear`+62%,
+        /// which read beautifully over dark wallpapers but handed 38% of the
+        /// surface to the backdrop — over a white window the dark bar washed out to
+        /// unreadable (вердикт з бойової 4.0.0). `.regular`+62% is the pairing that
+        /// holds both: deep navy tone AND a guaranteed floor on any backdrop.
+        /// (SDK checked, not guessed: `Glass` exposes only regular/clear/identity +
+        /// tint/interactive, and NSGlassEffectView only style+tintColor — there is
+        /// no luminosity knob, so variant+tint IS the whole instrument.)
         static let liquidGlassTint = Color.adaptive(
             light: Color(hex: 0xFFFFFF, opacity: 0.10),
             dark: Color(hex: 0x0B1220, opacity: 0.62)
@@ -351,9 +360,14 @@ enum Theme {
     enum Anim {
         static let standard: SwiftUI.Animation = .easeInOut(duration: 0.2)
         static let smooth: SwiftUI.Animation = .easeInOut(duration: 0.5)
-        /// Surface morph companion: content transitions (drawer slide, bar↔pill
-        /// crossfade) tuned to ride alongside the panel's 0.28s frame animation.
+        /// Pill-morph companion: the bar↔pill crossfade tuned to ride alongside
+        /// the panel's 0.28s frame animation. Since round 5 this drives ONLY the
+        /// pill transitions — drawer morphs are frame-snap + `drawerFade`.
         static let surface: SwiftUI.Animation = .spring(response: 0.32, dampingFraction: 0.85)
+        /// The only motion a drawer/banner morph carries (round 5, «хай плашка
+        /// буде спокійною»): a short fade on the drawer content itself, while the
+        /// bar and the panel frame stay inert.
+        static let drawerFade: SwiftUI.Animation = .easeOut(duration: 0.15)
         /// Toast / background-pill entrances (slide-in from the top + fade).
         static let toast: SwiftUI.Animation = .spring(response: 0.35, dampingFraction: 0.8)
         /// Button hover feedback (fill step + scale).
@@ -393,17 +407,21 @@ extension View {
     /// Rounded "liquid glass" surface.
     ///
     /// macOS 26+: REAL Liquid Glass via SwiftUI's `glassEffect(_:in:)` (the SwiftUI
-    /// face of AppKit's `NSGlassEffectView`, both macOS 26.0+ in the SDK), no
-    /// hairline stroke — the material draws its own rim highlight, and a stroke on
-    /// top reads as a double border. The glass VARIANT is scheme-dependent (verdict
-    /// 25.08 "скло досі сіре"): in dark, `.regular`'s frost is a grey wash that
-    /// swallowed any faint tint, so dark rides `.clear` — no frost, the deep 62%
-    /// navy `liquidGlassTint` IS the tone and the wallpaper glows through the rest,
-    /// which is exactly the sec1-bar reference. Light keeps the airy `.regular`.
+    /// face of AppKit's `NSGlassEffectView`, both macOS 26.0+ in the SDK). BOTH
+    /// schemes ride the `.regular` variant since round 5 (бойова 4.0.0: dark on a
+    /// white background washed out to unreadable): `.regular`'s adaptive frost is
+    /// the luminance floor that keeps the surface separated from ANY backdrop —
+    /// which is the material's whole job — while the saturated 62% navy
+    /// `liquidGlassTint` keeps the deep dark tone the sec1-bar reference shows
+    /// (the round-2 «сіре скло» came from a weak 30% tint, not from `.regular`).
+    /// Dark also carries the hairline `glassStroke`: over a bright backdrop the
+    /// material's own rim highlight is not enough for the panel edge to read.
+    /// Light keeps the airy frost, no extra stroke.
     ///
     /// macOS < 26 fallback: `NSVisualEffectView` blur (`.popover` — cleaner than the
-    /// retired `.hudWindow` and its grey wash) under a deep `glassBackdropTint`,
-    /// clipped to the shape, with the hairline `glassStroke` border as before.
+    /// retired `.hudWindow` and its grey wash) under a deep `glassBackdropTint`
+    /// (raised to a 70% floor in dark for the same round-5 reason), clipped to the
+    /// shape, with the hairline `glassStroke` border as before.
     func glassSurface(
         cornerRadius: CGFloat,
         material: NSVisualEffectView.Material = .popover
@@ -429,12 +447,20 @@ struct GlassSurfaceModifier: ViewModifier {
     func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         if #available(macOS 26.0, *) {
-            let glass: Glass = colorScheme == .dark
-                ? .clear.tint(Theme.Colors.liquidGlassTint)
-                : .regular.tint(Theme.Colors.liquidGlassTint)
+            // .regular in BOTH schemes (round 5): the frost is the luminance
+            // floor; the tint is the tone. See the notes on `liquidGlassTint`.
             content
                 .clipShape(shape)
-                .glassEffect(glass, in: shape)
+                .glassEffect(.regular.tint(Theme.Colors.liquidGlassTint), in: shape)
+                .overlay {
+                    // Dark-only safety hairline (round 5): over a white backdrop
+                    // the material's own rim highlight vanishes — the ink stroke
+                    // keeps the panel edge legible. Light keeps the native rim
+                    // alone (a stroke on top of it reads as a double border).
+                    if colorScheme == .dark {
+                        shape.strokeBorder(Theme.Colors.glassStroke, lineWidth: 1)
+                    }
+                }
         } else {
             content
                 .background(

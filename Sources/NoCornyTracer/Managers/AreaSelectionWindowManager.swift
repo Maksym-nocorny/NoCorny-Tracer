@@ -166,7 +166,9 @@ final class AreaSelectionWindowManager {
             ?? NSScreen.screens.first
     }
 
-    static func displayID(of screen: NSScreen) -> CGDirectDisplayID? {
+    /// Nonisolated: pure device-description reading, also used off the main actor
+    /// by BackdropLuminanceMonitor's sampling (4.1.0).
+    nonisolated static func displayID(of screen: NSScreen) -> CGDirectDisplayID? {
         let key = NSDeviceDescriptionKey("NSScreenNumber")
         return (screen.deviceDescription[key] as? NSNumber).map { CGDirectDisplayID($0.uint32Value) }
     }

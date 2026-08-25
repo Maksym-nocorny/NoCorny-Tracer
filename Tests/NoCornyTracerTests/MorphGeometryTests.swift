@@ -228,6 +228,25 @@ final class MorphGeometryTests: XCTestCase {
         XCTAssertEqual(wide.width, 341 + 38)
     }
 
+    // MARK: Panel-frame animation policy (round 5: «хай плашка буде спокійною»)
+
+    /// Only the recording-pill morphs animate the panel frame — that animation IS
+    /// the pill's flight to its perch. Drawer open/close (both directions) and
+    /// tab switches snap: an animated frame under a re-laying-out SwiftUI root is
+    /// what read as the bar «здригається» on the 4.0.0 demo.
+    func testOnlyPillMorphsAnimateThePanelFrame() {
+        typealias M = CommandBarWindowManager
+        XCTAssertTrue(M.morphAnimates(from: .bar, to: .recordingPill), "the pill flies out")
+        XCTAssertTrue(M.morphAnimates(from: .recordingPill, to: .bar), "and flies back")
+        XCTAssertTrue(M.morphAnimates(from: .barWithDrawer(.gallery), to: .recordingPill),
+                      "recording started over an open drawer still flies")
+        XCTAssertFalse(M.morphAnimates(from: .bar, to: .barWithDrawer(.gallery)), "drawer open snaps")
+        XCTAssertFalse(M.morphAnimates(from: .bar, to: .barWithDrawer(.settings)), "both drawers")
+        XCTAssertFalse(M.morphAnimates(from: .barWithDrawer(.settings), to: .bar), "drawer close snaps")
+        XCTAssertFalse(M.morphAnimates(from: .barWithDrawer(.gallery), to: .barWithDrawer(.settings)),
+                       "tab switch snaps (the frame doesn't even change)")
+    }
+
     // MARK: Recording pill perch (verdict 25.08: default = top-center)
 
     func testRecordingPillDefaultPerchIsTopCenter() {

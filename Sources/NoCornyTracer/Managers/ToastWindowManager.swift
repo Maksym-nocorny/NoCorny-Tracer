@@ -190,8 +190,9 @@ final class ToastWindowManager {
             window = panel
         }
 
-        // The toast follows the in-app theme like every other floating panel.
-        panel.appearance = NSAppearance.from(appState.appTheme)
+        // The toast follows the resolved PANEL look like every other floating
+        // panel — with Auto (4.1.0) that is the backdrop monitor's verdict.
+        panel.appearance = appState.panelAppearance
 
         // Size to the SwiftUI content, then position near top-center of the active
         // screen. The 8 here plus the toastEntrance headroom (16, transparent) puts

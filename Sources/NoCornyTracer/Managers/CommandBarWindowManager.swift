@@ -120,10 +120,11 @@ final class CommandBarWindowManager {
     /// `setRecordingPillContentWidth`; only `.recordingPill` frames consume it.
     private(set) var pillExtraWidth: CGFloat = 0
 
-    /// Whether the currently open (or closing) drawer unfolds ABOVE the bar
-    /// (verdict 25.08: bar in the lower half of the screen → drawer opens up).
-    /// The SwiftUI root reads this to flip the stack order and the pin edge.
-    /// Sticky through the close animation — see the reset in `morph(to:)`.
+    /// Whether the currently open drawer unfolds ABOVE the bar (verdict 25.08:
+    /// bar in the lower half of the screen → drawer opens up). The SwiftUI root
+    /// reads this to flip the stack order and the pin edge. Reset synchronously
+    /// on the morph back to `.bar` (round 5) — the instant close needs no sticky
+    /// pin through an animation that no longer exists.
     private(set) var drawerOpensUp = false
 
     private var panel: CommandBarPanel?
@@ -294,6 +295,7 @@ final class CommandBarWindowManager {
     /// Shared teardown of `hide()` / `hideRecordingPill()`: persist the anchor of
     /// whatever surface is up, then drop the panel (a later `show()` rebuilds it).
     private func dismissPanel() {
+        backdropMonitor.stop()   // no panel → nothing to sample under (4.1.0)
         if let panel {
             let logical = MorphGeometry.logicalFrame(forPanel: panel.frame)
             persistAnchor(forLogicalFrame: logical)
@@ -312,7 +314,23 @@ final class CommandBarWindowManager {
         guard extra != pillExtraWidth else { return }
         pillExtraWidth = extra
         guard surface == .recordingPill else { return }
-        reframe()
+        // The pill's width growth stays animated (round 5 touches only drawers/
+        // banner): it is part of the pill's own motion language, and the timer
+        // crossing its slot is a once-per-take event.
+        reframe(animated: true)
+    }
+
+    /// Whether a surface switch animates the panel FRAME (round 5, вердикт з
+    /// бойової 4.0.0: «хай плашка буде спокійною»). Only the recording-pill
+    /// morphs fly — the pill travels to its perch and back, and the frame
+    /// animation IS that flight. Drawer open/close SNAPS: animating the panel
+    /// frame while the SwiftUI root re-lays out inside it every frame is exactly
+    /// what read as the bar «здригається» — the bar must sit pixel-still, so the
+    /// panel jumps to its final frame in one tick and only the drawer's own
+    /// opacity fades (`Theme.Anim.drawerFade`). Pure and static so the policy is
+    /// testable without a panel.
+    nonisolated static func morphAnimates(from old: Surface, to new: Surface) -> Bool {
+        old == .recordingPill || new == .recordingPill
     }
 
     /// Switches the panel to another surface. The BAR anchor stays the stable
@@ -320,6 +338,7 @@ final class CommandBarWindowManager {
     /// grows above the stationary bar (see `MorphGeometry.targetFrame`).
     func morph(to newSurface: Surface) {
         guard surface != newSurface else { return }
+        let animated = Self.morphAnimates(from: surface, to: newSurface)
         if newSurface == .recordingPill {
             // A fresh take starts at the base width; the mounted pill re-reports
             // its actual width immediately (a stale extra from the previous take's
@@ -335,42 +354,45 @@ final class CommandBarWindowManager {
             drawerOpensUp = MorphGeometry.drawerOpensUpward(anchorTopLeft: anchor, visible: visible)
         }
         surface = newSurface
-        reframe()
-        if newSurface == .bar, drawerOpensUp {
-            // Keep the bottom-pin through the close animation (the bar must stay
-            // put while the drawer folds up), then return to the default top-pin —
-            // invisible at rest, but the banner's grow-down animation needs it.
-            Task { @MainActor [weak self] in
-                try? await Task.sleep(nanoseconds: UInt64(Self.morphDuration * 1_500_000_000))
-                guard let self, self.surface == .bar else { return }
-                self.drawerOpensUp = false
-            }
+        reframe(animated: animated)
+        if newSurface == .bar {
+            // Round 5: the drawer close is INSTANT (no frame animation, removal
+            // without a slide), so the bottom-pin needs no sticky window any
+            // more — back to the default top-pin in the same update. Content
+            // exactly fills the bar-sized panel either way, so the flip itself
+            // cannot move a pixel.
+            drawerOpensUp = false
         }
     }
 
     /// Shows/hides the storage banner under the bar, resizing the panel in place.
     /// Called by the SwiftUI root when the quota level crosses the threshold —
     /// including mid-session, right after an upload refreshes used/allocated.
+    /// Snaps, never animates (round 5): the banner rides under the resting bar,
+    /// and the bar must not stir — the banner's own fade is all the motion.
     func setStorageBannerVisible(_ visible: Bool) {
         let newExtent: CGFloat = visible ? MorphGeometry.storageBannerExtent : 0
         guard newExtent != bannerExtent else { return }
         bannerExtent = newExtent
-        reframe()
+        reframe(animated: false)
     }
 
-    /// Duration of the panel's frame animation during a morph — tuned to ride
-    /// together with the SwiftUI content transitions (`Theme.Anim.surface`).
+    /// Duration of the panel's frame animation during an ANIMATED reframe (the
+    /// pill flights) — tuned to ride together with the pill's content transitions
+    /// (`Theme.Anim.surface`).
     private static let morphDuration: TimeInterval = 0.28
 
     /// Re-derives the panel frame for the current surface + banner extent from the
     /// surface's anchor (bar anchor, or the pill's own perch). Shared by morphs
     /// and banner visibility flips.
     ///
-    /// The frame ANIMATES (verdict 24.08: the morph used to jump): an explicit
-    /// NSAnimationContext with easeInOut rather than `setFrame(_:display:animate:)`,
-    /// whose duration is the window-size-dependent `animationResizeTime`. Skipped
-    /// while the panel is off screen — animating an invisible window only delays it.
-    private func reframe() {
+    /// `animated` (round 5): pill flights animate — an explicit NSAnimationContext
+    /// with easeInOut rather than `setFrame(_:display:animate:)`, whose duration is
+    /// the window-size-dependent `animationResizeTime` (verdict 24.08: the morph
+    /// used to jump). Drawer/banner reframes pass `false` and snap in one tick —
+    /// see `morphAnimates` for why. Animation is also skipped while the panel is
+    /// off screen — animating an invisible window only delays it.
+    private func reframe(animated: Bool) {
         guard let panel else { return }
         let visible = currentVisibleFrame(for: panel)
         let anchor = anchorForCurrentSurface(visible: visible)
@@ -382,7 +404,7 @@ final class CommandBarWindowManager {
             visible: visible
         )
         let panelFrame = MorphGeometry.panelFrame(forLogical: target)
-        if panel.isVisible {
+        if animated, panel.isVisible {
             isAnimatingReframe = true
             NSAnimationContext.runAnimationGroup({ context in
                 context.duration = Self.morphDuration
@@ -396,6 +418,9 @@ final class CommandBarWindowManager {
             panel.setFrame(panelFrame, display: true)
         }
         persistAnchor(forLogicalFrame: target)
+        // The surface now sits over different desktop real estate — let the Auto
+        // theme re-judge it (debounced; a no-op while the monitor sleeps).
+        backdropMonitor.sampleSoon()
     }
 
     /// True while an animated reframe is in flight — its intermediate frames also
@@ -408,6 +433,8 @@ final class CommandBarWindowManager {
     func panelWasDragged(toLogicalFrame logical: CGRect) {
         guard !isAnimatingReframe else { return }
         persistAnchor(forLogicalFrame: logical)
+        // Dragged over new backdrop — re-judge the Auto look (debounced).
+        backdropMonitor.sampleSoon()
     }
 
     /// Writes the anchor a logical surface frame implies. A dragged/reframed pill
@@ -428,14 +455,55 @@ final class CommandBarWindowManager {
 
     // MARK: Theme
 
-    /// Pins the panel's NSAppearance to the in-app theme. First precedent of theme in a
-    /// floating panel: AppState.updateAppAppearance() sets NSApp.appearance, which panels
-    /// inherit, but the explicit pin keeps the bar correct even if that global changes
-    /// (and it is what makes `Color.adaptive` resolve per-panel). Called on show() and
-    /// re-called from CommandBarRootView's `.onChange(of: appState.appTheme)`.
-    func applyPanelAppearance() {
+    /// Watches the desktop under the panel while the Auto theme is on (4.1.0);
+    /// its verdicts land in `AppState.autoPanelDark` and come back through
+    /// `applyPanelAppearance(smooth: true)`.
+    private let backdropMonitor = BackdropLuminanceMonitor()
+
+    /// Pins the panel's NSAppearance to the resolved panel look
+    /// (`AppState.panelAppearance`: the explicit Light/Dark choice, or the Auto
+    /// verdict). The explicit pin is what makes `Color.adaptive` resolve
+    /// per-panel. Called on show(), from CommandBarRootView's
+    /// `.onChange(of: appState.appTheme)`, and by the backdrop monitor.
+    ///
+    /// `smooth` (Auto flips only): NSAppearance is not animatable, so the switch
+    /// is masked with a short alpha dip instead of blinking between looks.
+    func applyPanelAppearance(smooth: Bool = false) {
         guard let appState, let panel else { return }
-        panel.appearance = NSAppearance.from(appState.appTheme)
+        let target = appState.panelAppearance
+        if smooth, panel.isVisible, panel.appearance?.name != target?.name {
+            NSAnimationContext.runAnimationGroup({ context in
+                context.duration = 0.10
+                panel.animator().alphaValue = 0.85
+            }, completionHandler: {
+                MainActor.assumeIsolated {
+                    panel.appearance = target
+                    NSAnimationContext.runAnimationGroup { context in
+                        context.duration = 0.18
+                        panel.animator().alphaValue = 1
+                    }
+                }
+            })
+        } else {
+            panel.appearance = target
+        }
+        syncBackdropMonitor()
+    }
+
+    /// The monitor runs exactly while: Auto is chosen AND the panel is up.
+    /// Everything else puts it to sleep. Silent without the screen permission —
+    /// the monitor checks that itself before every sample.
+    private func syncBackdropMonitor() {
+        guard let appState, let panel, panel.isVisible, appState.appTheme == .auto else {
+            backdropMonitor.stop()
+            return
+        }
+        backdropMonitor.onLook = { [weak self] look in
+            guard let self, let appState = self.appState else { return }
+            appState.autoPanelDark = (look == .dark)
+            self.applyPanelAppearance(smooth: true)
+        }
+        backdropMonitor.start(panel: panel)
     }
 
     // MARK: Helpers
@@ -449,12 +517,14 @@ final class CommandBarWindowManager {
 // MARK: - NSAppearance from app theme
 
 extension NSAppearance {
-    /// The panel counterpart of `AppState.updateAppAppearance()`. The app's theme has no
-    /// "system" case today — if one ever appears, it should map to nil (inherit).
+    /// The ONBOARDING-side mapping (the panels use `AppState.panelAppearance`):
+    /// `.auto` maps to nil — inherit — because Auto steers floating panels only,
+    /// and the onboarding window follows the system appearance by design (4.1.0).
     static func from(_ theme: AppState.AppTheme) -> NSAppearance? {
         switch theme {
         case .light: return NSAppearance(named: .aqua)
         case .dark: return NSAppearance(named: .darkAqua)
+        case .auto: return nil
         }
     }
 }

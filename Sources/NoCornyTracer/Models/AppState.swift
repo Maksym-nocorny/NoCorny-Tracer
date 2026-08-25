@@ -48,22 +48,13 @@ final class AppState {
     static weak var shared: AppState?
 
     // MARK: - Theme
+    /// `.auto` (4.1.0, наказ шефа): the panels pick light/dark by the CONTRAST of
+    /// whatever sits under them — see BackdropLuminanceMonitor. Declared first so
+    /// the Appearance pop-up lists Auto / Light / Dark. Persisted by rawValue;
+    /// a missing key means a NEW user and lands on `.auto` (the property default
+    /// below), while an existing saved "light"/"dark" keeps the user's choice.
     enum AppTheme: String, CaseIterable {
-        case light, dark
-
-        var colorScheme: ColorScheme {
-            switch self {
-            case .light: return .light
-            case .dark: return .dark
-            }
-        }
-
-        var iconName: String {
-            switch self {
-            case .light: return "sun.max"
-            case .dark: return "moon"
-            }
-        }
+        case auto, light, dark
 
         var displayName: String { rawValue.capitalized }
     }
@@ -151,10 +142,30 @@ final class AppState {
             defaults.set(diarizationEnabled, forKey: "diarizationEnabled")
         }
     }
-    var appTheme: AppTheme = .light {
+    var appTheme: AppTheme = .auto {
         didSet {
             defaults.set(appTheme.rawValue, forKey: "appTheme")
             updateAppAppearance()
+        }
+    }
+
+    /// The Auto theme's resolved look: true = dark panels, false = light panels,
+    /// nil = no verdict yet (no sample taken, or no Screen Recording permission) —
+    /// panels then follow the system. Written by the command-bar manager from
+    /// BackdropLuminanceMonitor; only consulted while `appTheme == .auto`.
+    var autoPanelDark: Bool? = nil
+
+    /// The appearance every FLOATING PANEL should wear right now (bar/pill,
+    /// toasts, background pills, camera bubble). Auto steers panels ONLY — the
+    /// onboarding window deliberately follows the system appearance instead
+    /// (`NSAppearance.from` maps `.auto` to nil for exactly that reason).
+    var panelAppearance: NSAppearance? {
+        switch appTheme {
+        case .light: return NSAppearance(named: .aqua)
+        case .dark: return NSAppearance(named: .darkAqua)
+        case .auto:
+            guard let autoPanelDark else { return nil }   // no verdict → system
+            return NSAppearance(named: autoPanelDark ? .darkAqua : .aqua)
         }
     }
     var autoUploadEnabled: Bool = true
@@ -509,6 +520,11 @@ final class AppState {
             app.appearance = NSAppearance(named: .aqua)
         case .dark:
             app.appearance = NSAppearance(named: .darkAqua)
+        case .auto:
+            // Auto steers panel appearances individually (panelAppearance); the
+            // app-wide appearance follows the system so windows OUTSIDE the
+            // auto contract (onboarding, alerts) read like native macOS.
+            app.appearance = nil
         }
     }
 

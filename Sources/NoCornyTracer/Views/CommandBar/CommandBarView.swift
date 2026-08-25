@@ -26,10 +26,26 @@ struct CommandBarRootView: View {
         // never fades during those morphs), with transitions on what hangs under
         // it; the pill is the only surface that replaces the bar wholesale —
         // crossfade + slight scale, riding the panel's own frame animation.
+        //
+        // ROUND 5 («хай плашка буде спокійною», бойова 4.0.0): drawer morphs carry
+        // NO ambient animation at all. There are no `.animation(value:)` modifiers
+        // here any more — every remaining transition brings its OWN animation, so
+        // a surface change leaves the transaction empty and the bar row cannot
+        // animate a single property during open/close (which also makes an
+        // explicit `.transaction { $0.animation = nil }` on the bar unnecessary —
+        // there is nothing left to silence, and a blanket kill would eat the
+        // bar's own hover/spin animations). The drawer fades in via its
+        // transition-attached `drawerFade`; its removal is `.identity` because
+        // the panel snaps to the bar size in the same tick — a fade-out would
+        // play inside a window that no longer has room for it.
         Group {
             if manager.surface == .recordingPill {
                 RecordingPillView(appState: appState, manager: manager)
-                    .transition(.scale(scale: 0.92, anchor: .topLeading).combined(with: .opacity))
+                    .transition(
+                        .scale(scale: 0.92, anchor: .topLeading)
+                        .combined(with: .opacity)
+                        .animation(Theme.Anim.surface)
+                    )
             } else {
                 // The drawer sits UNDER the bar by default; when the bar lives in
                 // the lower half of the screen it unfolds ABOVE it instead
@@ -38,29 +54,40 @@ struct CommandBarRootView: View {
                     if manager.drawerOpensUp, case .barWithDrawer(let tab) = manager.surface {
                         drawerContent(tab)
                             .padding(.bottom, MorphGeometry.drawerGap)
-                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                            .transition(.asymmetric(
+                                insertion: .opacity.animation(Theme.Anim.drawerFade),
+                                removal: .identity
+                            ))
                     }
                     CommandBarView(appState: appState, manager: manager)
                     if !manager.drawerOpensUp, case .barWithDrawer(let tab) = manager.surface {
                         drawerContent(tab)
                             .padding(.top, MorphGeometry.drawerGap)
-                            .transition(.move(edge: .top).combined(with: .opacity))
+                            .transition(.asymmetric(
+                                insertion: .opacity.animation(Theme.Anim.drawerFade),
+                                removal: .identity
+                            ))
                     }
                     // Banner on the plain bar ONLY (decision, phase 4): the pill stays
                     // minimal mid-take; the drawer already shows the quota in its
-                    // Dropbox row. See StorageBannerView.
+                    // Dropbox row. Same round-5 policy as the drawer: frame snap,
+                    // own fade, no slide.
                     if manager.surface == .bar, storageLevel != .ok {
                         StorageBannerView(appState: appState, level: storageLevel)
                             .padding(.top, MorphGeometry.bannerGap)
-                            .transition(.move(edge: .top).combined(with: .opacity))
+                            .transition(.asymmetric(
+                                insertion: .opacity.animation(Theme.Anim.drawerFade),
+                                removal: .identity
+                            ))
                     }
                 }
-                .transition(.scale(scale: 0.98, anchor: .topLeading).combined(with: .opacity))
+                .transition(
+                    .scale(scale: 0.98, anchor: .topLeading)
+                    .combined(with: .opacity)
+                    .animation(Theme.Anim.surface)
+                )
             }
         }
-        .animation(Theme.Anim.surface, value: manager.surface)
-        .animation(Theme.Anim.surface, value: manager.drawerOpensUp)
-        .animation(Theme.Anim.surface, value: storageLevel)
         // The panel is `panelShadowInset` larger than the glass on every side so the
         // SwiftUI shadow has room to draw (the panel's own shadow is off).
         .padding(MorphGeometry.panelShadowInset)
@@ -112,18 +139,20 @@ struct CommandBarRootView: View {
         #endif
     }
 
-    /// The open drawer. Each tab carries its own `.opacity` transition so flipping
-    /// gallery↔settings crossfades, while the containing `if case` above owns the
-    /// open/close slide.
+    /// The open drawer. Each tab carries its own fade so flipping
+    /// gallery↔settings crossfades (the panel frame doesn't change between tabs),
+    /// while the containing `if case` above owns the open/close appearance. The
+    /// animation rides ON the transition (round 5): the ambient transaction is
+    /// deliberately empty during surface changes.
     @ViewBuilder
     private func drawerContent(_ tab: CommandBarDrawerTab) -> some View {
         switch tab {
         case .gallery:
             DrawerGalleryView(appState: appState)
-                .transition(.opacity)
+                .transition(.opacity.animation(Theme.Anim.drawerFade))
         case .settings:
             DrawerSettingsView(appState: appState, manager: manager)
-                .transition(.opacity)
+                .transition(.opacity.animation(Theme.Anim.drawerFade))
         }
     }
 }
