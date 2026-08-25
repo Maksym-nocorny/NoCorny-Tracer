@@ -314,6 +314,20 @@ final class StatusItemController: NSObject {
         let isRecording = AppState.shared?.recordingManager.isRecording ?? false
         let isPaused = AppState.shared?.recordingManager.isPaused ?? false
 
+        // 4.2.0: a downloaded update waits for a relaunch — the chip rides on top
+        // of everything, mid-take included (the click then explains instead of
+        // relaunching; UpdateChipState decides).
+        if let chip = UpdateCoordinator.shared?.chipState {
+            let updateItem = NSMenuItem(
+                title: chip.title,
+                action: #selector(relaunchToUpdate),
+                keyEquivalent: ""
+            )
+            updateItem.target = self
+            menu.addItem(updateItem)
+            menu.addItem(NSMenuItem.separator())
+        }
+
         // Recording controls on top, mid-take only (the old menu's functionality;
         // the macro's menu is drawn in the idle state).
         if isRecording {
@@ -396,6 +410,12 @@ final class StatusItemController: NSObject {
     }
 
     // MARK: - Menu actions
+
+    /// The "Relaunch to update vX.Y.Z" chip: staged install + relaunch, or the
+    /// mid-take explanation — the coordinator decides.
+    @objc private func relaunchToUpdate() {
+        UpdateCoordinator.shared?.installPendingUpdate()
+    }
 
     @objc private func stopRecording() {
         Task { @MainActor in

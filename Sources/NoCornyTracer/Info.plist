@@ -31,6 +31,19 @@
 	<string>NoCorny Tracer needs access to your microphone to record audio with your screen recordings.</string>
 	<key>NSScreenCaptureUsageDescription</key>
 	<string>NoCorny Tracer needs screen recording access to capture your screen.</string>
+	<!-- Sparkle. SUEnableAutomaticChecks MUST stay: without it Sparkle asks for
+	     permission with a prompt this almost-never-active app cannot surface
+	     (nonactivating panels), and the unanswered prompt silently disables BOTH
+	     the manual "Check for Updates" click and all scheduled checks (the
+	     4.0.0/4.1.0 dead-updates bug). SUAutomaticallyUpdate makes scheduled
+	     checks download and stage silently — the "Relaunch to update" chip is
+	     the only scheduled-update UI (4.2.0). User defaults override both keys,
+	     so the drawer's Auto-updates toggle keeps working. Guarded by
+	     InfoPlistSparkleKeysTests. -->
+	<key>SUAutomaticallyUpdate</key>
+	<true/>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
 	<key>SUFeedURL</key>
 	<string>https://raw.githubusercontent.com/Maksym-nocorny/NoCorny-Tracer/main/appcast.xml</string>
 	<key>SUPublicEDKey</key>

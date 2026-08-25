@@ -21,20 +21,24 @@ struct NoCornyTracerApp: App {
 
     // Sparkle auto-updater
     private let updaterController: SPUStandardUpdaterController
-    /// Held for the lifetime of the app: Sparkle keeps its delegate weakly.
-    private let updateScheduler: UpdateScheduler
+    /// Held for the lifetime of the app: Sparkle keeps both delegates weakly.
+    private let updateCoordinator: UpdateCoordinator
 
     init() {
         // Register custom fonts from the app bundle
         Theme.Typography.registerFonts()
 
-        // Initialize Sparkle updater (auto-checks for updates on launch)
-        let scheduler = UpdateScheduler()
-        self.updateScheduler = scheduler
+        // Sparkle (4.2.0, the Claude Code way): scheduled checks download and
+        // stage silently (SUAutomaticallyUpdate in Info.plist), the coordinator's
+        // "Relaunch to update" chip is the only scheduled-update UI (it is the
+        // userDriverDelegate's gentle reminders), and an ignored chip still
+        // installs on the next quit. Manual checks stay Sparkle-standard.
+        let coordinator = UpdateCoordinator()
+        self.updateCoordinator = coordinator
         let updater = SPUStandardUpdaterController(
             startingUpdater: true,
-            updaterDelegate: scheduler,
-            userDriverDelegate: nil
+            updaterDelegate: coordinator,
+            userDriverDelegate: coordinator
         )
         self.updaterController = updater
 
@@ -43,7 +47,7 @@ struct NoCornyTracerApp: App {
 
         // Read live rather than captured: the app almost always launches with no recording
         // running, so a captured value would always say "go ahead".
-        scheduler.isRecording = { AppState.shared?.recordingManager.isRecording ?? false }
+        coordinator.isRecording = { AppState.shared?.recordingManager.isRecording ?? false }
 
         // Hand Sparkle to the AppDelegate through a static rather than by touching
         // `appDelegate` here: the adaptor's timing in `init` is an implementation

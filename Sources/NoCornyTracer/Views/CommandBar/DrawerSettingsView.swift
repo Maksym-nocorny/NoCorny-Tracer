@@ -625,19 +625,52 @@ struct DrawerSettingsView: View {
 
             // Macro row 61:225 — the app finally grows it: the drawer is the only
             // Settings surface since phase 7, and Sparkle's auto-check had no
-            // switch anywhere.
-            settingRow(icon: "arrow.triangle.2.circlepath", label: "Auto-updates (Sparkle)") {
+            // switch anywhere. 4.2.0: OFF also stops the silent download+staged
+            // install (Sparkle couples allowsAutomaticUpdates to the checks) —
+            // the subtext says what the switch really governs.
+            HStack(spacing: 10) {
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(DrawerStyle.ink(0.6))
+                    .frame(width: 14)
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Auto-updates (Sparkle)")
+                        .font(.system(size: 12.5, weight: .medium))
+                        .foregroundStyle(DrawerStyle.ink(0.88))
+                    Text("Auto-download and install")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(DrawerStyle.ink(0.42))
+                }
+
+                Spacer(minLength: 8)
+
                 DrawerToggle(isOn: autoUpdatesBinding)
             }
+            .padding(.vertical, 9)
+            .padding(.trailing, 4)
         }
     }
 
+    /// The "Relaunch to update" chip (4.2.0). Reading the coordinator's
+    /// observable `pendingUpdateVersion` inside body keeps the row live — it
+    /// swaps in the moment a staged update lands.
+    private var updateChip: UpdateChipState? {
+        UpdateChipState.decide(
+            pendingVersion: UpdateCoordinator.shared?.pendingUpdateVersion,
+            isRecording: isRecording
+        )
+    }
+
     /// Sparkle's auto-check switch, through PermissionsManager (which owns the
-    /// updater handle and the optimistic flag).
+    /// updater handle and the optimistic flag). Fallbacks resolve the way
+    /// Sparkle does — defaults first, then Info.plist — because raw defaults
+    /// miss the plist's `SUEnableAutomaticChecks=true` default (4.2.0).
     private var autoUpdatesBinding: Binding<Bool> {
         Binding(
             get: {
                 PermissionsManager.shared?.isAutoUpdateEnabled
+                    ?? AppDelegate.bootstrapUpdaterController?.updater.automaticallyChecksForUpdates
                     ?? UserDefaults.standard.bool(forKey: "SUEnableAutomaticChecks")
             },
             set: { newValue in
@@ -685,8 +718,23 @@ struct DrawerSettingsView: View {
     /// General section so the reporting door survives the main window.
     private var linksRow: some View {
         HStack(spacing: 16) {
-            linkButton("Check for Updates") {
-                (NSApp.delegate as? AppDelegate)?.updaterController?.checkForUpdates(nil)
+            if let chip = updateChip {
+                // 4.2.0: a downloaded update replaces the manual check — green
+                // dot + the same link style, one click to install and relaunch.
+                HStack(spacing: 5) {
+                    Circle()
+                        .fill(Theme.Colors.statusGreen)
+                        .frame(width: 5, height: 5)
+                    linkButton(chip.title) {
+                        UpdateCoordinator.shared?.installPendingUpdate()
+                    }
+                }
+            } else {
+                linkButton("Check for Updates") {
+                    // Activation lives inside: without it every Sparkle window
+                    // opened BEHIND the frontmost app (the 4.0.0 dead button).
+                    UpdateCoordinator.requestUserInitiatedCheck()
+                }
             }
             linkButton("Show Logs") {
                 NSWorkspace.shared.selectFile(

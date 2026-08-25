@@ -32,7 +32,11 @@ final class PermissionsManager {
         self.isCameraGranted = AVCaptureDevice.authorizationStatus(for: .video) == .authorized
         self.isMicrophoneGranted = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
         self.isAccessibilityGranted = AXIsProcessTrusted()
-        self.isAutoUpdateEnabled = UserDefaults.standard.bool(forKey: "SUEnableAutomaticChecks")
+        // Through Sparkle, not raw defaults: the updater resolves defaults →
+        // Info.plist, and since 4.2.0 the plist carries the ON default
+        // (SUEnableAutomaticChecks) that raw defaults would miss.
+        self.isAutoUpdateEnabled = updaterController?.updater.automaticallyChecksForUpdates
+            ?? UserDefaults.standard.bool(forKey: "SUEnableAutomaticChecks")
         self.isLaunchAtLoginEnabled = SMAppService.mainApp.status == .enabled
     }
     
@@ -60,7 +64,10 @@ final class PermissionsManager {
         // AXIsProcessTrusted is fast & thread safe
         let accessibility = AXIsProcessTrusted()
         
-        let autoUpdate = UserDefaults.standard.bool(forKey: "SUEnableAutomaticChecks")
+        // Same defaults→Info.plist resolution as in init (4.2.0). The timer
+        // fires on the main run loop, where Sparkle wants to be read.
+        let autoUpdate = updaterController?.updater.automaticallyChecksForUpdates
+            ?? UserDefaults.standard.bool(forKey: "SUEnableAutomaticChecks")
         let launchLogin = SMAppService.mainApp.status == .enabled
 
         DispatchQueue.main.async { [weak self] in
