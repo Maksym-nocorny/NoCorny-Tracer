@@ -19,7 +19,31 @@ struct RecordingPillView: View {
     @State private var confirmExpiry: Task<Void, Never>?
 
     private var recordingManager: RecordingManager { appState.recordingManager }
-    private var isPaused: Bool { recordingManager.isPaused }
+
+    #if DEBUG
+    /// Non-nil while the tray's UI Preview drives this pill with fake data.
+    /// A real recording always wins: with a live take the pill reads the real
+    /// manager even if a preview was left switched on.
+    private var preview: UIPreviewState? {
+        let state = UIPreviewState.shared
+        guard state.pill != nil, !recordingManager.isRecording else { return nil }
+        return state
+    }
+    #endif
+
+    private var isPaused: Bool {
+        #if DEBUG
+        if let preview { return preview.pill == .paused }
+        #endif
+        return recordingManager.isPaused
+    }
+
+    private var displayedDuration: String {
+        #if DEBUG
+        if let preview { return preview.formattedElapsed }
+        #endif
+        return recordingManager.formattedDuration
+    }
 
     /// Ring + accents: recordRed while recording, pausedAmber while paused (macro 88:744).
     private var accent: Color {
@@ -51,13 +75,25 @@ struct RecordingPillView: View {
 
     /// 38pt stop control: a 14pt rounded stop square inside a dashed ring (macro
     /// btn/stop). Always the recording accent — this IS the "recording" mark.
+    /// Ring thickness and dash rhythm match the bar's round record button
+    /// (RecordRingMark: 2.5pt, ~15.9pt period, round caps — 7 exact periods at
+    /// this diameter), and the ring pulses while actually recording — the
+    /// "time is running" cue; paused holds it steady.
     private var stopButton: some View {
         Button {
+            #if DEBUG
+            if let preview { preview.endPill(); return }
+            #endif
             Task { await appState.stopRecording() }
         } label: {
             ZStack {
                 Circle()
-                    .strokeBorder(accent, style: StrokeStyle(lineWidth: 2, dash: [3.5, 3.5]))
+                    .strokeBorder(accent, style: StrokeStyle(
+                        lineWidth: 2.5,
+                        lineCap: .round,
+                        dash: [9.94, 5.99]
+                    ))
+                    .modifier(PulsingModifier(isActive: !isPaused))
                 RoundedRectangle(cornerRadius: 3.5, style: .continuous)
                     .fill(Theme.Colors.recordRed)
                     .frame(width: 14, height: 14)
@@ -75,7 +111,7 @@ struct RecordingPillView: View {
     /// JetBrains Mono 19 (macro I77:1305;220:845). White 0.95 recording, 0.55 paused —
     /// the paused dimming is the "time is standing still" cue.
     private var timerText: some View {
-        Text(recordingManager.formattedDuration)
+        Text(displayedDuration)
             .font(Theme.Typography.timer(19))
             .foregroundStyle(
                 isPaused
@@ -90,6 +126,9 @@ struct RecordingPillView: View {
 
     private var pauseButton: some View {
         Button {
+            #if DEBUG
+            if let preview { preview.togglePaused(); return }
+            #endif
             Task { await recordingManager.togglePause() }
         } label: {
             ZStack {
@@ -113,6 +152,9 @@ struct RecordingPillView: View {
         if confirmingDiscard {
             Button {
                 confirmExpiry?.cancel()
+                #if DEBUG
+                if let preview { preview.endPill(); return }
+                #endif
                 Task { await appState.abortRecording() }
                 // No morph here: abort drops isRecording, and the root's onChange
                 // brings the bar back through the one shared path.

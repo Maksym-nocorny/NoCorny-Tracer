@@ -55,17 +55,43 @@ struct StorageBannerView: View {
             width: Theme.Metrics.commandBarSize.width,
             height: MorphGeometry.storageBannerHeight
         )
-        .background(
-            ZStack {
-                // The macro's backdrop-blur 8 over the wallpaper, then the amber wash.
-                Theme.Glass.GlassBackground(material: .hudWindow)
-                Theme.Colors.pausedAmber.opacity(isFull ? 0.16 : 0.10)
-            }
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .modifier(BannerGlass(isFull: isFull))
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .strokeBorder(Theme.Colors.pausedAmber.opacity(isFull ? 0.45 : 0.30), lineWidth: 1)
         )
+    }
+}
+
+/// The banner's glass, same split as `glassSurface` but amber-washed: native
+/// Liquid Glass tinted amber on macOS 26+, the fallback blur + deep tint + amber
+/// wash below. The amber stroke stays on both (it is the banner's identity, not
+/// a glass border).
+private struct BannerGlass: ViewModifier {
+    let isFull: Bool
+
+    private var wash: Color {
+        Theme.Colors.pausedAmber.opacity(isFull ? 0.16 : 0.10)
+    }
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
+        if #available(macOS 26.0, *) {
+            content
+                .clipShape(shape)
+                .glassEffect(.regular.tint(wash), in: shape)
+        } else {
+            content
+                .background(
+                    ZStack {
+                        // The macro's backdrop-blur over the wallpaper, then the amber wash.
+                        Theme.Glass.GlassBackground()
+                        Theme.Colors.glassBackdropTint
+                        wash
+                    }
+                )
+                .clipShape(shape)
+        }
     }
 }

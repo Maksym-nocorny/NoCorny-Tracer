@@ -1,4 +1,7 @@
 import AppKit
+#if DEBUG
+import SwiftUI  // Theme colors for the UI Preview toasts
+#endif
 
 /// The menu-bar (tray) presence of the app, extracted from AppDelegate in redesign
 /// phase 5. Owns the NSStatusItem, its icon/title rendering, the click routing and
@@ -326,6 +329,11 @@ final class StatusItemController: NSObject {
         settingsItem.target = self
         menu.addItem(settingsItem)
 
+        #if DEBUG
+        menu.addItem(NSMenuItem.separator())
+        menu.addItem(uiPreviewMenuItem())
+        #endif
+
         menu.addItem(NSMenuItem.separator())
 
         let aboutItem = NSMenuItem(title: "About NoCorny Tracer", action: #selector(showAbout), keyEquivalent: "")
@@ -390,4 +398,93 @@ final class StatusItemController: NSObject {
             inFileViewerRootedAtPath: ""
         )
     }
+
+    // MARK: - UI Preview (DEBUG builds only, verdict 24.08)
+
+    #if DEBUG
+    /// Fake-state previews of the surfaces a demo cannot reach without Screen
+    /// Recording permission and a live take: the recording/paused pill, the
+    /// background pills, both toast kinds and the storage banner. Everything
+    /// runs through `UIPreviewState` (never the real recording path) except the
+    /// toasts, which use the real `presentToast` door — they are transient anyway.
+    private func uiPreviewMenuItem() -> NSMenuItem {
+        let submenu = NSMenu(title: "UI Preview")
+        func add(_ title: String, _ action: Selector) {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            submenu.addItem(item)
+        }
+        add("Recording pill", #selector(previewRecordingPill))
+        add("Paused pill", #selector(previewPausedPill))
+        submenu.addItem(.separator())
+        add("Uploading 34%", #selector(previewUploading))
+        add("Transcribing 2 videos", #selector(previewTranscribing))
+        submenu.addItem(.separator())
+        add("Toast: link copied", #selector(previewToastLinkCopied))
+        add("Toast: mic lost (critical)", #selector(previewToastMicLost))
+        submenu.addItem(.separator())
+        add("Storage banner: low", #selector(previewBannerLow))
+        add("Storage banner: full", #selector(previewBannerFull))
+        submenu.addItem(.separator())
+        add("Reset preview", #selector(previewReset))
+
+        let root = NSMenuItem(title: "UI Preview", action: nil, keyEquivalent: "")
+        root.submenu = submenu
+        return root
+    }
+
+    /// The bar must be up for the pill/banner previews — CommandBarRootView is
+    /// what reads the preview state and morphs the panel.
+    @objc private func previewRecordingPill() {
+        actions.showCommandBar()
+        UIPreviewState.shared.showPill(paused: false)
+    }
+
+    @objc private func previewPausedPill() {
+        actions.showCommandBar()
+        UIPreviewState.shared.showPill(paused: true)
+    }
+
+    @objc private func previewUploading() {
+        UIPreviewState.shared.showUploading()
+    }
+
+    @objc private func previewTranscribing() {
+        UIPreviewState.shared.showTranscribing(count: 2)
+    }
+
+    /// Mirrors the real upload-completion toast (AppState step 2 of the pipeline).
+    @objc private func previewToastLinkCopied() {
+        AppState.shared?.presentToast?(ToastContent(
+            icon: "link",
+            iconColor: Theme.Colors.statusGreen,
+            message: "Uploaded — link copied"
+        ))
+    }
+
+    /// Mirrors the real mic-death critical toast (AppState's device-loss hook).
+    @objc private func previewToastMicLost() {
+        AppState.shared?.presentToast?(ToastContent(
+            icon: "mic.slash",
+            iconColor: Theme.Colors.recordRed,
+            message: "The microphone stopped recording — stop and start a new take to get your voice back",
+            duration: 8,
+            priority: .critical
+        ))
+    }
+
+    @objc private func previewBannerLow() {
+        actions.showCommandBar()
+        UIPreviewState.shared.storageLevel = .low(minutesLeft: 12)
+    }
+
+    @objc private func previewBannerFull() {
+        actions.showCommandBar()
+        UIPreviewState.shared.storageLevel = .full
+    }
+
+    @objc private func previewReset() {
+        UIPreviewState.shared.reset()
+    }
+    #endif
 }

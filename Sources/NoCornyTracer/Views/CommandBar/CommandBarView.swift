@@ -12,38 +12,46 @@ struct CommandBarRootView: View {
 
     /// Same used/allocated the drawer footer reads. `.ok` for a missing/zero
     /// allocation, so a signed-out bar never grows an amber line.
+    /// DEBUG: the tray's UI Preview can fake a level to show the banner.
     private var storageLevel: StorageAlertLevel {
-        StorageAlert.level(used: appState.dropboxUsedSpace,
-                           allocated: appState.dropboxAllocatedSpace)
+        #if DEBUG
+        if let previewLevel = UIPreviewState.shared.storageLevel { return previewLevel }
+        #endif
+        return StorageAlert.level(used: appState.dropboxUsedSpace,
+                                  allocated: appState.dropboxAllocatedSpace)
     }
 
     var body: some View {
+        // One stable CommandBarView across bar↔drawer↔banner (so the bar itself
+        // never fades during those morphs), with transitions on what hangs under
+        // it; the pill is the only surface that replaces the bar wholesale —
+        // crossfade + slight scale, riding the panel's own frame animation.
         Group {
-            switch manager.surface {
-            case .bar:
-                VStack(spacing: MorphGeometry.bannerGap) {
+            if manager.surface == .recordingPill {
+                RecordingPillView(appState: appState, manager: manager)
+                    .transition(.scale(scale: 0.92, anchor: .topLeading).combined(with: .opacity))
+            } else {
+                VStack(spacing: 0) {
                     CommandBarView(appState: appState, manager: manager)
+                    if case .barWithDrawer(let tab) = manager.surface {
+                        drawerContent(tab)
+                            .padding(.top, MorphGeometry.drawerGap)
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    }
                     // Banner on the plain bar ONLY (decision, phase 4): the pill stays
                     // minimal mid-take; the drawer already shows the quota in its
                     // Dropbox row. See StorageBannerView.
-                    if storageLevel != .ok {
+                    if manager.surface == .bar, storageLevel != .ok {
                         StorageBannerView(appState: appState, level: storageLevel)
+                            .padding(.top, MorphGeometry.bannerGap)
+                            .transition(.move(edge: .top).combined(with: .opacity))
                     }
                 }
-            case .barWithDrawer(let tab):
-                VStack(spacing: MorphGeometry.drawerGap) {
-                    CommandBarView(appState: appState, manager: manager)
-                    switch tab {
-                    case .gallery:
-                        DrawerGalleryView(appState: appState)
-                    case .settings:
-                        DrawerSettingsView(appState: appState, manager: manager)
-                    }
-                }
-            case .recordingPill:
-                RecordingPillView(appState: appState, manager: manager)
+                .transition(.scale(scale: 0.98, anchor: .topLeading).combined(with: .opacity))
             }
         }
+        .animation(Theme.Anim.surface, value: manager.surface)
+        .animation(Theme.Anim.surface, value: storageLevel)
         // The panel is `panelShadowInset` larger than the glass on every side so the
         // SwiftUI shadow has room to draw (the panel's own shadow is off).
         .padding(MorphGeometry.panelShadowInset)
@@ -78,6 +86,29 @@ struct CommandBarRootView: View {
                 Task { await appState.syncDropboxFromTracer() }
             }
         }
+        #if DEBUG
+        // UI Preview (tray submenu): a fake recording pill morphs the panel the
+        // same way a real take does. A real recording always wins the surface.
+        .onChange(of: UIPreviewState.shared.pill != nil) { _, previewActive in
+            guard !appState.recordingManager.isRecording else { return }
+            manager.morph(to: previewActive ? .recordingPill : .bar)
+        }
+        #endif
+    }
+
+    /// The open drawer. Each tab carries its own `.opacity` transition so flipping
+    /// gallery↔settings crossfades, while the containing `if case` above owns the
+    /// open/close slide.
+    @ViewBuilder
+    private func drawerContent(_ tab: CommandBarDrawerTab) -> some View {
+        switch tab {
+        case .gallery:
+            DrawerGalleryView(appState: appState)
+                .transition(.opacity)
+        case .settings:
+            DrawerSettingsView(appState: appState, manager: manager)
+                .transition(.opacity)
+        }
     }
 }
 
@@ -91,6 +122,8 @@ struct CommandBarView: View {
     let manager: CommandBarWindowManager
 
     @State private var showCaptureMenu = false
+    @State private var recordHovering = false
+    @State private var captureHovering = false
 
     private var isRecording: Bool { appState.recordingManager.isRecording }
 
@@ -133,10 +166,12 @@ struct CommandBarView: View {
                 }
             }
         } label: {
-            RecordMarkView()
-                .frame(width: 52, height: 52)
+            RecordRingMark(diameter: 52, isSpinning: recordHovering)
         }
         .buttonStyle(.plain)
+        .scaleEffect(recordHovering ? 1.05 : 1)
+        .animation(Theme.Anim.hover, value: recordHovering)
+        .onHover { recordHovering = $0 }
         .help(isRecording ? "Stop recording" : "Start recording")
         .pointingHandOnHover()
     }
@@ -202,7 +237,7 @@ struct CommandBarView: View {
             .foregroundStyle(Theme.Colors.textPrimary)
             .padding(.horizontal, 13)
             .frame(height: Theme.Metrics.controlSize)
-            .background(Theme.Colors.glassControlFill)
+            .background(captureHovering ? Theme.Colors.glassControlFillHover : Theme.Colors.glassControlFill)
             .clipShape(RoundedRectangle(cornerRadius: Theme.Metrics.controlCornerRadius, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: Theme.Metrics.controlCornerRadius, style: .continuous)
@@ -211,6 +246,9 @@ struct CommandBarView: View {
             .contentShape(RoundedRectangle(cornerRadius: Theme.Metrics.controlCornerRadius, style: .continuous))
         }
         .buttonStyle(.plain)
+        .scaleEffect(captureHovering ? 1.03 : 1)
+        .animation(Theme.Anim.hover, value: captureHovering)
+        .onHover { captureHovering = $0 }
         .help(captureModeHelp)
         .pointingHandOnHover()
         .popover(isPresented: $showCaptureMenu, arrowEdge: .bottom) {
@@ -358,10 +396,12 @@ private struct CommandToggleButton: View {
     let help: String
     let action: () -> Void
 
+    @State private var isHovering = false
+
     var body: some View {
         Button(action: action) {
             ZStack {
-                Circle().fill(Theme.Colors.glassControlFill)
+                Circle().fill(isHovering ? Theme.Colors.glassControlFillHover : Theme.Colors.glassControlFill)
                 Circle().strokeBorder(Theme.Colors.glassStroke, lineWidth: 1)
                 Image(systemName: systemName)
                     .font(.system(size: 15, weight: .medium))
@@ -378,6 +418,9 @@ private struct CommandToggleButton: View {
             }
         }
         .buttonStyle(.plain)
+        .scaleEffect(isHovering ? 1.03 : 1)
+        .animation(Theme.Anim.hover, value: isHovering)
+        .onHover { isHovering = $0 }
         .help(help)
         .pointingHandOnHover()
     }
@@ -391,10 +434,13 @@ private struct CommandGlassButton: View {
     let help: String
     let action: () -> Void
 
+    @State private var isHovering = false
+
     var body: some View {
         Button(action: action) {
             ZStack {
-                Circle().fill(Theme.Colors.glassControlFillSubtle)
+                // Hover steps the subtle fill up to the primary one.
+                Circle().fill(isHovering ? Theme.Colors.glassControlFill : Theme.Colors.glassControlFillSubtle)
                 Circle().strokeBorder(Theme.Colors.glassStrokeSubtle, lineWidth: 1)
                 Image(systemName: systemName)
                     .font(.system(size: 15, weight: .medium))
@@ -414,59 +460,105 @@ private struct CommandGlassButton: View {
             }
         }
         .buttonStyle(.plain)
+        .scaleEffect(isHovering ? 1.03 : 1)
+        .animation(Theme.Anim.hover, value: isHovering)
+        .onHover { isHovering = $0 }
         .help(help)
         .pointingHandOnHover()
     }
 }
 
-// MARK: - Record mark
+// MARK: - Record mark (native, verdict 24.08)
 
-/// The icon-v2 record mark (dashed frame + blue play triangle, without the red status
-/// dot), rendered from design/icon-v2/svg/mark(.dark).svg into @1x/@2x/@3x PNGs at 52pt
-/// — same multi-representation recipe as the menu-bar icons in AppDelegate.
-private struct RecordMarkView: View {
-    @Environment(\.colorScheme) private var colorScheme
+/// The record mark drawn natively: a round dashed blue ring around a blue-gradient
+/// play triangle over a faint dark well — the sec1-bar.png reference at 52pt.
+/// Replaces the commandbar_mark* PNGs (which stay in Resources untouched); native
+/// drawing is what makes the hover spin/scale and any future morphs animatable.
+///
+/// Every metric scales with `diameter`, and the dash period divides the ring's
+/// circumference exactly (10 periods at any size), so the dashes always meet
+/// cleanly instead of leaving a seam.
+struct RecordRingMark: View {
+    var diameter: CGFloat = 52
+    /// Marching-ants spin of the dashed ring. TASTE DECISION: the spin is
+    /// hover-only, NOT always-on — the bar floats over the user's work all day,
+    /// and a perpetually crawling selection frame in peripheral vision is
+    /// distraction (plus a permanent animation in a floating panel costs battery
+    /// on a machine that is busy recording). The ring wakes up when aimed at.
+    var isSpinning: Bool = false
+
+    @State private var spinAngle: Double = 0
+
+    static let ringBlue = Color(hex: 0x3E90FF)
+
+    private static let triangleGradient = LinearGradient(
+        colors: [Color(hex: 0x0B5BE0), Color(hex: 0x0846B5)],
+        startPoint: .top,
+        endPoint: .bottom
+    )
+
+    /// The faint disc behind the triangle (the reference shows the ring's inside
+    /// a notch darker than the bar glass).
+    private static let wellFill = Color.adaptive(
+        light: Color(hex: 0x0B1220, opacity: 0.05),
+        dark: Color(hex: 0x000000, opacity: 0.25)
+    )
+
+    private var scale: CGFloat { diameter / 52 }
+    private var lineWidth: CGFloat { 2.5 * scale }
 
     var body: some View {
-        if let mark = CommandBarMarkImage.image(dark: colorScheme == .dark) {
-            Image(nsImage: mark)
-                .resizable()
-                .interpolation(.high)
-                .scaledToFit()
-        } else {
-            // PNGs missing from the bundle — fall back to a recognizable glyph.
-            Image(systemName: "play.circle")
-                .font(.system(size: 34))
-                .foregroundStyle(Theme.Colors.brandPurple)
+        ZStack {
+            Circle()
+                .inset(by: lineWidth)
+                .fill(Self.wellFill)
+            Circle()
+                .inset(by: lineWidth / 2)
+                .stroke(Self.ringBlue, style: StrokeStyle(
+                    lineWidth: lineWidth,
+                    lineCap: .round,
+                    // 10 exact periods around the centerline circumference.
+                    dash: [9.7 * scale, 5.85 * scale]
+                ))
+                .rotationEffect(.degrees(spinAngle))
+            RoundedTrianglePlay(cornerRadius: 2.5 * scale)
+                .fill(Self.triangleGradient)
+                .frame(width: diameter * 0.34, height: diameter * 0.38)
+                .offset(x: diameter * 0.035)  // optical centering of the triangle
+        }
+        .frame(width: diameter, height: diameter)
+        .onChange(of: isSpinning) { _, spinning in
+            if spinning {
+                withAnimation(.linear(duration: 8).repeatForever(autoreverses: false)) {
+                    spinAngle += 360
+                }
+            } else {
+                // The ants settle back to rest rather than freezing mid-crawl.
+                withAnimation(.easeOut(duration: 0.35)) {
+                    spinAngle = 0
+                }
+            }
         }
     }
 }
 
-@MainActor
-enum CommandBarMarkImage {
-    private static var cache: [Bool: NSImage] = [:]
+/// A right-pointing play triangle with softly rounded corners (the reference's
+/// triangle is not razor-sharp).
+struct RoundedTrianglePlay: Shape {
+    var cornerRadius: CGFloat = 2.5
 
-    static func image(dark: Bool) -> NSImage? {
-        if let cached = cache[dark] { return cached }
+    func path(in rect: CGRect) -> Path {
+        let top = CGPoint(x: rect.minX, y: rect.minY)
+        let tip = CGPoint(x: rect.maxX, y: rect.midY)
+        let bottom = CGPoint(x: rect.minX, y: rect.maxY)
 
-        let baseName = dark ? "commandbar_mark_dark" : "commandbar_mark"
-        let bundle = Bundle.appResources
-        let pointSize = NSSize(width: 52, height: 52)
-        let image = NSImage(size: pointSize)
-
-        for suffix in ["", "@2x", "@3x"] {
-            let name = baseName + suffix
-            guard let url = bundle.url(forResource: name, withExtension: "png", subdirectory: "Resources")
-                    ?? bundle.url(forResource: name, withExtension: "png"),
-                  let data = try? Data(contentsOf: url),
-                  let rep = NSBitmapImageRep(data: data) else { continue }
-            rep.size = pointSize  // 52pt regardless of pixel density
-            image.addRepresentation(rep)
-        }
-
-        guard !image.representations.isEmpty else { return nil }
-        cache[dark] = image
-        return image
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX, y: rect.minY + cornerRadius))
+        path.addArc(tangent1End: top, tangent2End: tip, radius: cornerRadius)
+        path.addArc(tangent1End: tip, tangent2End: bottom, radius: cornerRadius)
+        path.addArc(tangent1End: bottom, tangent2End: top, radius: cornerRadius)
+        path.closeSubpath()
+        return path
     }
 }
 

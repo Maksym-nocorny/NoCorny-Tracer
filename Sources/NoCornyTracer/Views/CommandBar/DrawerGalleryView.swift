@@ -85,22 +85,27 @@ struct DrawerGalleryView: View {
         .frame(maxHeight: .infinity)
     }
 
-    // MARK: Empty state (87:708)
+    // MARK: Empty state (87:708; mark redrawn native per verdict 24.08)
+
+    @State private var emptyMarkHovering = false
 
     private var emptyState: some View {
         VStack(spacing: 10) {
-            ZStack {
-                Circle()
-                    .fill(DrawerStyle.rowFill)
-                Circle()
-                    .strokeBorder(
-                        DrawerStyle.ink(0.16),
-                        style: StrokeStyle(lineWidth: 1.2, dash: [4, 3])
-                    )
-                DrawerBrandMark()
-                    .frame(width: 26, height: 26)
+            // The smaller round record mark — and a real button: the empty state's
+            // whole message is "hit record", so the mark starts a take like the
+            // bar's big one does (isRecording then morphs the panel to the pill).
+            Button {
+                Task { try? await appState.startRecording() }
+            } label: {
+                RecordRingMark(diameter: 44, isSpinning: emptyMarkHovering)
             }
-            .frame(width: 64, height: 64)
+            .buttonStyle(.plain)
+            .scaleEffect(emptyMarkHovering ? 1.05 : 1)
+            .animation(Theme.Anim.hover, value: emptyMarkHovering)
+            .onHover { emptyMarkHovering = $0 }
+            .help("Start recording")
+            .pointerOnHover()
+            .padding(.bottom, 4)
 
             Text("No recordings yet")
                 .font(.system(size: 14, weight: .semibold))
@@ -113,27 +118,6 @@ struct DrawerGalleryView: View {
                 .lineSpacing(4)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
-// MARK: - Brand mark
-
-/// The phase-2 record-mark PNGs (Resources/commandbar_mark*), scaled down for the
-/// empty state's dashed badge. Falls back to a glyph if the PNGs are missing.
-private struct DrawerBrandMark: View {
-    @Environment(\.colorScheme) private var colorScheme
-
-    var body: some View {
-        if let mark = CommandBarMarkImage.image(dark: colorScheme == .dark) {
-            Image(nsImage: mark)
-                .resizable()
-                .interpolation(.high)
-                .scaledToFit()
-        } else {
-            Image(systemName: "play.circle")
-                .font(.system(size: 20))
-                .foregroundStyle(DrawerStyle.ink(0.6))
-        }
     }
 }
 

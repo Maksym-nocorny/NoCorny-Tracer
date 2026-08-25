@@ -57,6 +57,12 @@ final class BackgroundPillsWindowManager {
             _ = BackgroundActivity.transcriptions(recordings: appState.recordings,
                                                   activity: appState.transcriptionActivity)
             _ = appState.appTheme
+            #if DEBUG
+            // UI Preview: fake pills must order the panel in/out and re-fit too.
+            _ = UIPreviewState.shared.isUploading
+            _ = UIPreviewState.shared.transcribingCount
+            _ = UIPreviewState.shared.progress
+            #endif
         } onChange: { [weak self] in
             // onChange fires on willSet — hop to the next main-actor turn so refresh()
             // reads the post-change values, then re-arm (tracking is one-shot).
@@ -76,7 +82,11 @@ final class BackgroundPillsWindowManager {
                                                  recordings: appState.recordings)
         let transcriptions = BackgroundActivity.transcriptions(recordings: appState.recordings,
                                                                activity: appState.transcriptionActivity)
-        guard uploads != nil || transcriptions != nil else {
+        var hasContent = uploads != nil || transcriptions != nil
+        #if DEBUG
+        hasContent = hasContent || UIPreviewState.shared.hasBackgroundPills
+        #endif
+        guard hasContent else {
             panel?.orderOut(nil)
             return
         }
@@ -145,24 +155,38 @@ private struct BackgroundPillsView: View {
     let openGallery: () -> Void
 
     private var uploads: UploadPillState? {
-        BackgroundActivity.uploads(progress: appState.uploadProgress,
-                                   recordings: appState.recordings)
+        #if DEBUG
+        if let fake = UIPreviewState.shared.uploadPill { return fake }
+        #endif
+        return BackgroundActivity.uploads(progress: appState.uploadProgress,
+                                          recordings: appState.recordings)
     }
 
     private var transcriptions: TranscribePillState? {
-        BackgroundActivity.transcriptions(recordings: appState.recordings,
-                                          activity: appState.transcriptionActivity)
+        #if DEBUG
+        if let fake = UIPreviewState.shared.transcribePill { return fake }
+        #endif
+        return BackgroundActivity.transcriptions(recordings: appState.recordings,
+                                                 activity: appState.transcriptionActivity)
     }
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 8) {
             if let uploads {
                 uploadingPill(uploads)
+                    .transition(.move(edge: .top).combined(with: .opacity))
             }
             if let transcriptions {
                 transcribePill(transcriptions)
+                    .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
+        // Slide-in from the top + fade when a pill appears/disappears; the 40pt
+        // shadow inset around the stack is the transparent room the slide uses.
+        // Keyed on nil-ness, not the whole state: percent ticks should update the
+        // text dead-on, not morph it.
+        .animation(Theme.Anim.toast, value: uploads != nil)
+        .animation(Theme.Anim.toast, value: transcriptions != nil)
         .padding(BackgroundPillsWindowManager.shadowInset)
         .fixedSize()
     }

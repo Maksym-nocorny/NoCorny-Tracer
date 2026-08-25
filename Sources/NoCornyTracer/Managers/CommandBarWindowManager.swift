@@ -203,8 +203,17 @@ final class CommandBarWindowManager {
         reframe()
     }
 
+    /// Duration of the panel's frame animation during a morph — tuned to ride
+    /// together with the SwiftUI content transitions (`Theme.Anim.surface`).
+    private static let morphDuration: TimeInterval = 0.28
+
     /// Re-derives the panel frame for the current surface + banner extent, holding
     /// the top-left anchor. Shared by morphs and banner visibility flips.
+    ///
+    /// The frame ANIMATES (verdict 24.08: the morph used to jump): an explicit
+    /// NSAnimationContext with easeInOut rather than `setFrame(_:display:animate:)`,
+    /// whose duration is the window-size-dependent `animationResizeTime`. Skipped
+    /// while the panel is off screen — animating an invisible window only delays it.
     private func reframe() {
         guard let panel else { return }
         let logical = MorphGeometry.logicalFrame(forPanel: panel.frame)
@@ -215,7 +224,16 @@ final class CommandBarWindowManager {
             bannerHeight: bannerExtent,
             visible: currentVisibleFrame(for: panel)
         )
-        panel.setFrame(MorphGeometry.panelFrame(forLogical: target), display: true)
+        let panelFrame = MorphGeometry.panelFrame(forLogical: target)
+        if panel.isVisible {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = Self.morphDuration
+                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                panel.animator().setFrame(panelFrame, display: true)
+            }
+        } else {
+            panel.setFrame(panelFrame, display: true)
+        }
         Self.saveAnchor(CGPoint(x: target.minX, y: target.maxY))
     }
 

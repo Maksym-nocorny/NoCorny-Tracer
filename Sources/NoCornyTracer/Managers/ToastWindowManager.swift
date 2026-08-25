@@ -190,13 +190,16 @@ final class ToastWindowManager {
         // The toast follows the in-app theme like every other floating panel.
         panel.appearance = NSAppearance.from(appState.appTheme)
 
-        // Size to the SwiftUI content, then position near top-center of the active screen.
+        // Size to the SwiftUI content, then position near top-center of the active
+        // screen. The 8 here plus the toastEntrance headroom (16, transparent) puts
+        // the visible glass 24 under the top edge — same spot as before the
+        // slide-in was added.
         let fitting = hostingController.view.fittingSize
         panel.setContentSize(fitting)
         if let visible = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame {
             let origin = NSPoint(
                 x: visible.midX - fitting.width / 2,
-                y: visible.maxY - fitting.height - 24
+                y: visible.maxY - fitting.height - 8
             )
             panel.setFrameOrigin(origin)
         }
@@ -258,7 +261,35 @@ private struct InfoToastView: View {
         .frame(height: 44)
         .fixedSize()
         .glassSurface(cornerRadius: 22)
+        .toastEntrance()
     }
+}
+
+// MARK: - Entrance
+
+/// Slide-down + fade entrance for everything this panel hosts. The panel is sized
+/// to the content, so the modifier carries its own transparent top headroom for
+/// the slide to happen in (offset stays inside the window, nothing clips).
+private struct ToastEntranceModifier: ViewModifier {
+    /// Transparent air above the content the slide starts in. `present(...)`'s
+    /// position math accounts for it — change them together.
+    static let headroom: CGFloat = 16
+
+    @State private var shown = false
+
+    func body(content: Content) -> some View {
+        content
+            .padding(.top, Self.headroom)
+            .offset(y: shown ? 0 : -14)
+            .opacity(shown ? 1 : 0)
+            .onAppear {
+                withAnimation(Theme.Anim.toast) { shown = true }
+            }
+    }
+}
+
+private extension View {
+    func toastEntrance() -> some View { modifier(ToastEntranceModifier()) }
 }
 
 // MARK: - Noise suggestion view (moved verbatim from NoiseSuggestionWindowManager)
@@ -308,5 +339,6 @@ private struct NoiseSuggestionToastView: View {
         }
         .frame(width: 320, alignment: .leading)
         .cardStyle()
+        .toastEntrance()
     }
 }
