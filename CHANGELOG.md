@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.4.1] - 2026-08-27
+### Fixed
+- **The record button no longer turns into a black hole on light backdrops.** Its backdrop is now a translucent lift over the glass - it brightens and darkens together with the bar on any wallpaper, instead of being a fixed dark disc.
+
+### Added
+- **"Preview update button" toggle** (Settings, About) - shows the bar's update button with all its animations so you can see it without waiting for a real update. Clicking it in preview just plays the ripple and switches the preview off; a real pending update always takes over.
+
+
 ## [4.4.0] - 2026-08-26
 ### Added
 - **An update button appears in the bar when a new version is ready.** A compact accent circle between the gear and the close button; hover it and it unfolds to show the version. One click relaunches you into the update. It shimmers gently, respects Reduce Motion, and never shows during a recording.
