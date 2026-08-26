@@ -488,7 +488,7 @@ final class StatusItemController: NSObject {
         add("Recording pill", #selector(previewRecordingPill))
         add("Paused pill", #selector(previewPausedPill))
         submenu.addItem(.separator())
-        add("Update chip (v9.9.9)", #selector(previewUpdateChip))
+        add("Update chip preview", #selector(previewUpdateChip))
         submenu.addItem(.separator())
         add("Toast: link copied", #selector(previewToastLinkCopied))
         add("Toast: mic lost (critical)", #selector(previewToastMicLost))
@@ -528,12 +528,12 @@ final class StatusItemController: NSObject {
         UIPreviewState.shared.showPill(paused: true)
     }
 
-    /// Fakes a staged update (round 7): the bar chip, the tray item and the
-    /// drawer row all light up as if v9.9.9 were waiting for a relaunch.
+    /// The bar chip's preview (round 8: the same product door as the Settings
+    /// toggle — session-only, current version, real update outranks it).
     /// "Reset preview" clears it.
     @objc private func previewUpdateChip() {
         actions.showCommandBar()
-        UpdateCoordinator.shared?.previewSetPendingUpdate(version: "9.9.9")
+        UpdateCoordinator.shared?.setChipPreview(enabled: true)
     }
 
     /// Mirrors the upload-completion FALLBACK toast (round 7: the primary
@@ -570,7 +570,7 @@ final class StatusItemController: NSObject {
 
     @objc private func previewReset() {
         UIPreviewState.shared.reset()
-        UpdateCoordinator.shared?.previewSetPendingUpdate(version: nil)
+        UpdateCoordinator.shared?.setChipPreview(enabled: false)
     }
 
     @objc private func previewToggleCapturablePanels() {

@@ -42,15 +42,20 @@ struct RecordRingMark: View {
         endPoint: .bottom
     )
 
-    /// The disc behind the triangle — canonized in round 7 as the «припіднятий
-    /// камінець» (raised stone). RULE: in DARK the well is LIGHTER than the
-    /// glass around it (~1.2:1 against the bar's deep navy), lit from the
-    /// top-left by the diagonal #2C313B → #1A1E26 gradient (~44°), so the
-    /// button reads as a stone RAISED off the surface. The darker-than-glass
-    /// well (round 6's #05080F 62%) was rejected by the boss as a «діра» — it
-    /// read as a hole punched in the bar, not a control sitting on it. Light
-    /// scheme unchanged: the subtle ink wash from the macro (light glass is
-    /// brighter than the disc, so the wash already reads raised there).
+    /// The disc behind the triangle — the «припіднятий камінець» (raised stone),
+    /// made RELATIVE in round 8. RULE: the well is a RELATIVE lift over the
+    /// glass — absolute colors are FORBIDDEN here, because the glass itself is
+    /// adaptive: Liquid Glass lets the desktop through, so over a bright
+    /// backdrop the bar lightens while an absolute dark well stays dark and
+    /// punches a «чорна діра» through it (the boss's 4.4.0 verdict — exactly
+    /// the round-6/7 absolutes failing outside the mock's dark canvas).
+    ///
+    /// Dark: a translucent WHITE lift, same family as the neighbouring
+    /// buttons' `glassControlFill` (white 10%) — diagonal 10% → 6% (top-left
+    /// lit, avg ~8%) so the stone still catches light, riding WHATEVER the
+    /// glass currently shows instead of fighting it. Light: the macro's ink
+    /// wash (#0B1220 5%) — already relative, unchanged. A `glassStrokeSubtle`
+    /// hairline keeps the rim readable in the dash gaps of the ring.
     ///
     /// Inherited at every diameter on purpose — the bar's 52pt, the gallery
     /// empty state's 44pt and the 18pt ThumbnailPlayBadge (which pins the dark
@@ -61,9 +66,9 @@ struct RecordRingMark: View {
     private static let wellGradient = LinearGradient(
         colors: [
             Color.adaptive(light: Color(hex: 0x0B1220, opacity: 0.05),
-                           dark: Color(hex: 0x2C313B)),
+                           dark: Color(hex: 0xFFFFFF, opacity: 0.10)),
             Color.adaptive(light: Color(hex: 0x0B1220, opacity: 0.05),
-                           dark: Color(hex: 0x1A1E26))
+                           dark: Color(hex: 0xFFFFFF, opacity: 0.06))
         ],
         startPoint: .topLeading,
         endPoint: .bottomTrailing
@@ -77,6 +82,11 @@ struct RecordRingMark: View {
             Circle()
                 .inset(by: lineWidth)
                 .fill(Self.wellGradient)
+            // The relative well's rim (round 8): without it the stone's edge
+            // dissolves into the glass in the ring's dash gaps.
+            Circle()
+                .inset(by: lineWidth)
+                .strokeBorder(Theme.Colors.glassStrokeSubtle, lineWidth: 1)
             Circle()
                 .inset(by: lineWidth / 2)
                 .stroke(Self.ringBlue, style: StrokeStyle(

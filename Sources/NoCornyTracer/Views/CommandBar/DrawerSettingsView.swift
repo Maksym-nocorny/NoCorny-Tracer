@@ -718,8 +718,46 @@ struct DrawerSettingsView: View {
 
             hairline
 
+            chipPreviewRow
+
+            hairline
+
             linksRow
         }
+    }
+
+    /// Round 8 (boss's request): a SESSION-ONLY switch that fakes a staged
+    /// update, so the bar's chip — appearance spring, shimmer, hover unroll,
+    /// click wave — can be tried without waiting for a release. Clicking the
+    /// previewed chip plays its wave and turns the preview off (no relaunch).
+    /// A REAL pending update outranks it (`UpdateCoordinator.resolve`): the
+    /// toggle greys out with "Real update is pending" and the chip shows the
+    /// truth. Nothing is persisted on purpose.
+    private var chipPreviewRow: some View {
+        let realPending = !(UpdateCoordinator.shared?.pendingUpdateVersion ?? "").isEmpty
+        return HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Preview update button")
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(DrawerStyle.ink(0.88))
+                Text(realPending
+                     ? "Real update is pending"
+                     : "Show the bar's update chip with the current version")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(DrawerStyle.ink(0.42))
+            }
+
+            Spacer(minLength: 8)
+
+            DrawerToggle(isOn: Binding(
+                get: { UpdateCoordinator.shared?.previewVersion != nil },
+                set: { UpdateCoordinator.shared?.setChipPreview(enabled: $0) }
+            ))
+            .disabled(realPending)
+            .opacity(realPending ? 0.55 : 1)
+        }
+        .padding(.vertical, 9)
+        .padding(.trailing, 4)
     }
 
     private var appVersion: String {

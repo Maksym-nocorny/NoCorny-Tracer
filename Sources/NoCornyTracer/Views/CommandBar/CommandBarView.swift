@@ -262,11 +262,17 @@ struct CommandBarView: View {
     // MARK: Update chip (round 7)
 
     /// nil = no chip in the bar. Reading the coordinator's observable
-    /// `pendingUpdateVersion` re-renders the row when an update stages.
-    /// Mid-take the bar shows no chip (the tray/drawer keep theirs) — decided
-    /// by the pure `UpdateChipState.showsInBar`.
+    /// `pendingUpdateVersion`/`previewVersion` re-renders the row when an
+    /// update stages or the Settings preview toggle flips (round 8) — the pure
+    /// `resolve` puts the real update above the preview. Mid-take the bar
+    /// shows no chip (the tray/drawer keep theirs) — `showsInBar` decides.
     private var pendingUpdateVersion: String? {
-        guard let version = UpdateCoordinator.shared?.pendingUpdateVersion,
+        guard let coordinator = UpdateCoordinator.shared else { return nil }
+        let resolved = UpdateCoordinator.resolve(
+            preview: coordinator.previewVersion,
+            realPending: coordinator.pendingUpdateVersion
+        )
+        guard let version = resolved.version,
               UpdateChipState.showsInBar(pendingVersion: version, isRecording: isRecording)
         else { return nil }
         return version

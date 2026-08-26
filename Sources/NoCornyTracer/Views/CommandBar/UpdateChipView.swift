@@ -213,8 +213,10 @@ struct UpdateChipView: View {
     // MARK: Click (ripple + dip, then the coordinator's existing door)
 
     private func fire() {
+        // Through the coordinator (round 8): a real pending update installs;
+        // a preview chip lets the wave finish, then switches the preview off.
         guard !reduceMotion else {
-            UpdateCoordinator.shared?.installPendingUpdate()
+            UpdateCoordinator.shared?.handleBarChipClick()
             return
         }
         rippleID += 1
@@ -222,7 +224,7 @@ struct UpdateChipView: View {
         withAnimation(.easeOut(duration: 0.08)) { pressed = true }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
             withAnimation(.easeOut(duration: 0.12)) { pressed = false }
-            UpdateCoordinator.shared?.installPendingUpdate()
+            UpdateCoordinator.shared?.handleBarChipClick()
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
             rippleVisible = false

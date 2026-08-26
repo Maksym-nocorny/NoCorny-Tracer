@@ -52,4 +52,38 @@ final class UpdateChipStateTests: XCTestCase {
         XCTAssertFalse(UpdateChipState.showsInBar(pendingVersion: nil, isRecording: false))
         XCTAssertFalse(UpdateChipState.showsInBar(pendingVersion: "", isRecording: false))
     }
+
+    // MARK: Preview resolve (round 8 — the Settings "Preview update button")
+
+    /// Truth outranks the demo: with a real update staged, the chip shows THAT
+    /// and the click installs — no matter what the preview toggle says.
+    func testRealPendingUpdateOutranksThePreview() {
+        let resolved = UpdateCoordinator.resolve(preview: "4.4.0", realPending: "4.5.0")
+        XCTAssertEqual(resolved.version, "4.5.0")
+        XCTAssertFalse(resolved.isPreview)
+    }
+
+    /// With nothing real staged, the preview fills the gap — and is marked as
+    /// such, so the click knows to switch it off instead of relaunching.
+    func testPreviewFillsTheGapWhenNothingRealIsStaged() {
+        let resolved = UpdateCoordinator.resolve(preview: "4.4.0", realPending: nil)
+        XCTAssertEqual(resolved.version, "4.4.0")
+        XCTAssertTrue(resolved.isPreview)
+    }
+
+    func testNoPreviewAndNoRealMeansNoChip() {
+        let resolved = UpdateCoordinator.resolve(preview: nil, realPending: nil)
+        XCTAssertNil(resolved.version)
+        XCTAssertFalse(resolved.isPreview)
+    }
+
+    /// Empty strings count as nothing on both sides.
+    func testEmptyStringsCountAsNothing() {
+        let real = UpdateCoordinator.resolve(preview: "4.4.0", realPending: "")
+        XCTAssertEqual(real.version, "4.4.0")
+        XCTAssertTrue(real.isPreview)
+        let none = UpdateCoordinator.resolve(preview: "", realPending: nil)
+        XCTAssertNil(none.version)
+        XCTAssertFalse(none.isPreview)
+    }
 }

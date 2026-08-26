@@ -265,19 +265,59 @@ final class UpdateCoordinator: NSObject, SPUUpdaterDelegate, SPUStandardUserDriv
         }
     }
 
-    // MARK: - UI Preview (DEBUG builds only)
+    // MARK: - Chip preview (round 8 — the boss's Settings toggle)
 
-    #if DEBUG
-    /// The tray's UI Preview door (round 7): fakes a staged update so the bar
-    /// chip, the tray item and the drawer row can be eyeballed without cutting
-    /// a real release. Preview-only: there is no immediateInstallHandler, so a
-    /// click on the faked chip falls through to the ordinary user-initiated
-    /// check — harmless. Also pins the 5-minute poll (pending ≠ nil), which is
-    /// exactly what a real staged update would do.
-    func previewSetPendingUpdate(version: String?) {
-        pendingUpdateVersion = version
+    /// Session-only preview of the BAR's update chip: the version the chip
+    /// fakes, nil when off. Deliberately NOT persisted — a preview that
+    /// survives a relaunch becomes a lie. Grew out of the round-7 DEBUG-only
+    /// hook into a product switch (Settings → ABOUT → "Preview update
+    /// button"); the tray's DEBUG UI Preview menu calls the same door. Only
+    /// the BAR chip reads it — the tray item and drawer row stay honest —
+    /// and the 5-minute poll keeps running (it gates on the REAL pending).
+    private(set) var previewVersion: String?
+
+    /// Pure (covered by UpdateChipStateTests): what the BAR chip shows. The
+    /// REAL pending update always wins — truth outranks the demo; preview
+    /// only fills the gap when nothing real is staged. Empty strings count
+    /// as nothing.
+    static func resolve(preview: String?, realPending: String?) -> (version: String?, isPreview: Bool) {
+        if let real = realPending, !real.isEmpty { return (real, false) }
+        if let preview, !preview.isEmpty { return (preview, true) }
+        return (nil, false)
     }
-    #endif
+
+    /// The toggle's door: ON fakes the CURRENT version (the boss tests the
+    /// chip as it would look for the next release of the app he is running).
+    func setChipPreview(enabled: Bool) {
+        previewVersion = enabled ? Self.currentAppVersion : nil
+    }
+
+    static var currentAppVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
+    }
+
+    /// The BAR chip's click (round 8): a real pending update installs exactly
+    /// as before; a preview chip plays its ring-wave and then switches the
+    /// preview off — no relaunch, a short toast says what happened. The view
+    /// calls this 0.08s after the press (the dip); the extra beat here lets
+    /// the 0.28s wave finish on the standing chip before it collapses on the
+    /// same spring it appeared with.
+    func handleBarChipClick() {
+        let resolved = Self.resolve(preview: previewVersion, realPending: pendingUpdateVersion)
+        guard resolved.isPreview else {
+            installPendingUpdate()
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) { [weak self] in
+            self?.setChipPreview(enabled: false)
+            AppState.shared?.presentToast?(ToastContent(
+                icon: "eye.slash",
+                iconColor: Theme.Colors.accentUpdate,
+                message: "Preview off",
+                duration: 2.5
+            ))
+        }
+    }
 
     // MARK: - Manual check (the drawer's "Check for Updates" link)
 
