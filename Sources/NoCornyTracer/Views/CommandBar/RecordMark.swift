@@ -42,14 +42,18 @@ struct RecordRingMark: View {
         endPoint: .bottom
     )
 
-    /// The faint disc behind the triangle. Round-3 dark fix: the reference's disc
-    /// is a notch LIGHTER than the surrounding glass (pipette: ~#262B34 over the
-    /// deep navy), not darker — the old black-25% well was the "dirty stain" the
-    /// verdict called out. Dark is now a whisper of white lift; light keeps the
-    /// subtle ink wash (light glass is brighter than the disc, as in the macro).
+    /// The disc behind the triangle. Light: the subtle ink wash from the macro
+    /// (light glass is brighter than the disc). Dark: ROUND 6 (verdict from the
+    /// 4.2.1 build: «надто блякла, зроби більш чорно насиченою, щоб виділялась»
+    /// — overrides the round-3 white-7% lift, which read as washed-out): a deep
+    /// saturated black-navy well, so the button reads as a distinct dark pill on
+    /// the glass while the #3E90FF-family ring and triangle fire against it.
+    /// Inherited at every diameter on purpose — the bar's 52pt, the gallery
+    /// empty state's 44pt and the 18pt ThumbnailPlayBadge (which pins the dark
+    /// scheme) all wear the same well, one brand mark everywhere.
     private static let wellFill = Color.adaptive(
         light: Color(hex: 0x0B1220, opacity: 0.05),
-        dark: Color(hex: 0xFFFFFF, opacity: 0.07)
+        dark: Color(hex: 0x05080F, opacity: 0.62)
     )
 
     private var scale: CGFloat { diameter / 52 }

@@ -164,6 +164,29 @@ final class ThemeDecisionTests: XCTestCase {
         XCTAssertEqual(ThemeDecision.next(current: .light, luminance: black), .dark)
     }
 
+    // MARK: - Monitor run policy (round 6 regression)
+
+    /// «Після апдейту авто не працює на світлих фонах, поки не перемкнеш тему»:
+    /// on a fresh launch `show()` synced the monitor BEFORE ordering the panel
+    /// front, and the not-yet-visible panel read as "stop" — Auto never sampled
+    /// until a manual theme round-trip re-synced against a visible panel. The
+    /// policy is a pure function now: the monitor runs EXACTLY for (.auto,
+    /// visible panel), and `show()` re-syncs after `orderFrontRegardless()`.
+    func testBackdropMonitorRunsExactlyForAutoOnAVisiblePanel() {
+        XCTAssertTrue(CommandBarWindowManager.backdropMonitorShouldRun(
+            theme: .auto, panelIsVisible: true
+        ))
+        XCTAssertFalse(CommandBarWindowManager.backdropMonitorShouldRun(
+            theme: .auto, panelIsVisible: false
+        ), "a sync before orderFront must stay silent — this half was the round-6 regression")
+        XCTAssertFalse(CommandBarWindowManager.backdropMonitorShouldRun(
+            theme: .light, panelIsVisible: true
+        ))
+        XCTAssertFalse(CommandBarWindowManager.backdropMonitorShouldRun(
+            theme: .dark, panelIsVisible: true
+        ))
+    }
+
     // MARK: - Theme persistence / migration
 
     /// A fresh install (no saved key) lands on Auto; an existing explicit choice

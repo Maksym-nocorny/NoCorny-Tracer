@@ -165,7 +165,37 @@ enum MorphGeometry {
             y = min(max(downwardOriginY, visible.minY), visible.maxY - size.height)
         }
 
-        return CGRect(x: x, y: y, width: size.width, height: size.height)
+        // Final full clamp (round 6, «плашка не повинна покидати рамки екрану»):
+        // the branches above clamp the bottom edge but let a stale anchor — saved
+        // on a taller display, say — hang the surface past the TOP of the visible
+        // frame. Every programmatic frame going through this one clamp is also
+        // what keeps the flight unions in-bounds, so the panel-side drag clamp
+        // (`clampedIntoVisible` via CommandBarPanel) never fights a morph.
+        return clampedIntoVisible(
+            CGRect(x: x, y: y, width: size.width, height: size.height),
+            visible: visible
+        )
+    }
+
+    /// Slides a LOGICAL surface frame fully into `visible` (the CameraOverlayWindow
+    /// clamp recipe): each axis pins to the near edge, and when the frame is larger
+    /// than the visible frame the min edge wins — the surface overflows on one side
+    /// only, deterministically. Shared by `targetFrame` (programmatic placement) and
+    /// the panel's drag clamp (round 6).
+    static func clampedIntoVisible(_ frame: CGRect, visible: CGRect) -> CGRect {
+        var f = frame
+        f.origin.x = max(visible.minX, min(f.origin.x, visible.maxX - f.width))
+        f.origin.y = max(visible.minY, min(f.origin.y, visible.maxY - f.height))
+        return f
+    }
+
+    /// The drag clamp in PANEL coordinates (round 6): strips the shadow margin,
+    /// clamps the GLASS into the visible frame, puts the margin back. Clamping the
+    /// raw panel frame would be wrong by `panelShadowInset` on every side — the
+    /// transparent shadow apron is supposed to hang past the screen edge when the
+    /// glass sits flush against it.
+    static func clampedPanelFrame(_ panel: CGRect, visible: CGRect) -> CGRect {
+        panelFrame(forLogical: clampedIntoVisible(logicalFrame(forPanel: panel), visible: visible))
     }
 
     /// The bar's top-left anchor recovered from a surface frame — the inverse of

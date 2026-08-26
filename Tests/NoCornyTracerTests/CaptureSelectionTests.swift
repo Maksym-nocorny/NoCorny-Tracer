@@ -96,13 +96,46 @@ final class CaptureSelectionTests: XCTestCase {
                       "a rect with no display ID falls back to the recorder's selected display")
     }
 
-    // MARK: - Phase gate
+    // MARK: - Retired modes (round 6)
 
-    func testEveryCaptureModeIsAvailable() {
-        // Phase 6b shipped the area overlay — the last gated mode is open. A mode
-        // regressing to unavailable would grey out a menu row that used to work.
-        for mode in CaptureMode.allCases {
-            XCTAssertTrue(mode.isAvailable, "\(mode) must be recordable")
-        }
+    func testSelectedAreaIsRetiredAndHiddenFromTheMenu() {
+        // Round 6 removed Selected Area from the UI («дуже багована фіча»). The case
+        // must keep decoding old persisted payloads but never resurface as a menu row.
+        XCTAssertFalse(CaptureMode.selectedArea.isAvailable)
+        XCTAssertEqual(CaptureMode.menuCases, [.entireScreen, .window])
+    }
+
+    func testPersistedAreaSelectionMigratesToEntireScreen() {
+        var old = CaptureSelection()
+        old.mode = .selectedArea
+        old.areaRect = CGRect(x: 10, y: 20, width: 300, height: 200)
+        old.areaDisplayID = 69733382
+
+        let migrated = old.migratingRetiredModes()
+        XCTAssertEqual(migrated.mode, .entireScreen)
+        XCTAssertNil(migrated.areaRect, "the dead rect must not linger in defaults")
+        XCTAssertNil(migrated.areaDisplayID)
+    }
+
+    func testMigrationKeepsARememberedWindowIntact() {
+        // Only the retired mode migrates; a window selection is untouched — the
+        // one-click "record that window again" memory must survive the update.
+        let selection = fullSelection()
+        XCTAssertEqual(selection.migratingRetiredModes(), selection)
+    }
+
+    func testOldSelectedAreaPayloadStillDecodesThenMigrates() {
+        // The exact JSON an older build wrote: decode must not fail (the enum keeps
+        // the case for this), and the load→migrate pipeline lands on entireScreen.
+        let defaults = SandboxDefaults.make()
+        var old = CaptureSelection()
+        old.mode = .selectedArea
+        old.areaRect = CGRect(x: 1, y: 2, width: 640, height: 360)
+        old.areaDisplayID = 1
+        old.save(to: defaults)
+
+        let loaded = CaptureSelection.load(from: defaults)
+        XCTAssertEqual(loaded?.mode, .selectedArea, "decoding must survive the retired case")
+        XCTAssertEqual(loaded?.migratingRetiredModes().mode, .entireScreen)
     }
 }

@@ -118,6 +118,21 @@ final class AppState {
             defaults.set(recordSystemAudio, forKey: "recordSystemAudio")
         }
     }
+    /// Whether Tracer's own panels appear in screen captures (round 6, package 4 —
+    /// Settings → RECORDING → "Show Tracer in screen captures"). Off by default:
+    /// the panels ship with `sharingType = .none` and stay out of screenshots and
+    /// the user's own recordings. The state itself is applied to the panels by
+    /// PanelCaptureRegistry; this property owns persistence and is the single
+    /// writer (the DEBUG tray dupe toggles it here too, so all doors stay in sync).
+    var panelsCapturable: Bool = false {
+        didSet {
+            defaults.set(panelsCapturable, forKey: PanelCaptureRegistry.defaultsKey)
+            let capturable = panelsCapturable
+            MainActor.assumeIsolated {
+                PanelCaptureRegistry.setCapturable(capturable)
+            }
+        }
+    }
     /// Which engine transcribes. Defaults to the cloud so nothing changes for anyone
     /// already using the app; on-device is opt-in until its model is downloaded, which is
     /// a deliberate 1.5 GB decision rather than something that happens on first launch.
@@ -297,6 +312,14 @@ final class AppState {
         self.launchAtLogin = defaults.bool(forKey: "launchAtLogin")
         self.reduceBackgroundNoise = defaults.bool(forKey: "reduceBackgroundNoise")
         self.recordSystemAudio = defaults.bool(forKey: "recordSystemAudio")
+        // didSet does not fire in init — apply the persisted capture-visibility
+        // state to the registry explicitly, so panels created at launch already
+        // come up with the right sharing type (round 6, package 4).
+        self.panelsCapturable = defaults.bool(forKey: PanelCaptureRegistry.defaultsKey)
+        let capturableAtLaunch = self.panelsCapturable
+        MainActor.assumeIsolated {
+            PanelCaptureRegistry.setCapturable(capturableAtLaunch)
+        }
         self.diarizationEnabled = defaults.bool(forKey: "diarizationEnabled")
         if let speakersRaw = defaults.string(forKey: "expectedSpeakers"),
            let speakers = ExpectedSpeakers(rawValue: speakersRaw) {
@@ -317,6 +340,17 @@ final class AppState {
         if let savedSelection = CaptureSelection.load(from: defaults) {
             self.captureSelection = savedSelection
             self.captureMode = savedSelection.mode
+        }
+        // Round 6: Selected Area is retired («дуже багована фіча») — a selection
+        // persisted by an older build migrates to entire-screen ON LOAD, and the
+        // migrated value is saved back immediately (didSet does not fire in init,
+        // so both writes are explicit).
+        if captureMode == .selectedArea || captureSelection.mode == .selectedArea {
+            let migrated = captureSelection.migratingRetiredModes()
+            self.captureSelection = migrated
+            self.captureMode = migrated.mode
+            migrated.save(to: defaults)
+            defaults.set(migrated.mode.rawValue, forKey: "captureMode")
         }
         self.isCameraEnabled = defaults.bool(forKey: "isCameraEnabled")
         self.selectedCameraDeviceID = defaults.string(forKey: "selectedCameraDeviceID")
@@ -712,27 +746,6 @@ final class AppState {
             }
         }
 
-        // Same early check for a remembered area (phase 6b, mirror of the window branch):
-        // the display it lives on can be unplugged between takes, and a mode picked with
-        // no rect ever saved is unsatisfiable by definition. Either way the honest answer
-        // is the overlay, not an error alert - and the recorder still re-checks
-        // authoritatively at capture start.
-        if captureMode == .selectedArea {
-            var liveDisplayIDs: Set<CGDirectDisplayID> = []
-            if let content = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true) {
-                liveDisplayIDs = Set(content.displays.map(\.displayID))
-            }
-            if !captureSelection.isSatisfiable(liveWindowIDs: [], liveDisplayIDs: liveDisplayIDs) {
-                LogManager.shared.log("Capture: remembered area is gone (no rect, or its display disconnected) - asking for a new pick", type: .info)
-                var cleared = captureSelection
-                cleared.areaRect = nil
-                cleared.areaDisplayID = nil
-                captureSelection = cleared
-                await chooseAreaForCapture()
-                return
-            }
-        }
-
         startRecordingFailure = nil
 
         // Play start sound immediately on button click.
@@ -788,14 +801,14 @@ final class AppState {
         return "The recording could not be started. The log in Settings has the details."
     }
 
-    /// Screen-permission gate for BOTH capture pickers (round 3, «минулого разу
-    /// викинуло»). Without it, a build with no Screen Recording grant walked the
-    /// user through the WHOLE picking ritual — fullscreen dim, drag, Enter — and
-    /// only then `startRecording`'s gate fired, by which point the overlay had
-    /// already closed: the user landed on an empty desktop with an onboarding
-    /// card appearing a beat later, which read as "the app threw me out".
-    /// Pre-checking here means the gate (onboarding step 1) opens INSTEAD of the
-    /// picker, with the bar still on screen — no dim, no dead-end ritual.
+    /// Screen-permission gate for the window picker (round 3, «минулого разу
+    /// викинуло»; the area overlay it also used to guard was retired in round 6).
+    /// Without it, a build with no Screen Recording grant walked the user through
+    /// the whole picking ritual and only then `startRecording`'s gate fired —
+    /// the user landed on an empty desktop with an onboarding card appearing a
+    /// beat later, which read as "the app threw me out". Pre-checking here means
+    /// the gate (onboarding step 1) opens INSTEAD of the picker, with the bar
+    /// still on screen — no dead-end ritual.
     ///
     /// Only Screen Recording is pre-checked: it is the one permission every
     /// capture needs and the one whose grant needs a relaunch. Mic/camera stay
@@ -832,34 +845,6 @@ final class AppState {
             selection.mode = .window
             selection.windowID = window.windowID
             selection.windowTitle = window.title
-            self.captureSelection = selection
-            Task { try? await self.startRecording() }
-        }
-    }
-
-    /// The command bar's "Selected Area" row lands here. Mirror of the window flow
-    /// (phase 6a decision, applied to areas in 6b): the row ALWAYS opens the overlay,
-    /// and Enter saves the rect AND starts recording immediately - pick = record. The
-    /// record button is what reuses the remembered area without the overlay (see the
-    /// liveness check in `startRecording`). Esc changes nothing: mode and the
-    /// previously remembered area stay as they were.
-    ///
-    /// Round 3: the overlay only opens once Screen Recording is granted — the
-    /// missing-permission path goes STRAIGHT to the gate, never through the
-    /// fullscreen dim (see `ensureScreenPermissionForPicker`). The commit path's
-    /// ordering is already safe: AreaSelectionWindowManager.commit() closes the
-    /// overlay BEFORE invoking this handler, so anything `startRecording` surfaces
-    /// (system mic prompt, failure toast + bar) lands on a clean screen, never
-    /// under the .screenSaver-level overlay.
-    @MainActor
-    func chooseAreaForCapture() {
-        guard ensureScreenPermissionForPicker() else { return }
-        AreaSelectionWindowManager.shared.present(current: captureSelection) { [weak self] rect, displayID in
-            guard let self else { return }
-            var selection = self.captureSelection
-            selection.mode = .selectedArea
-            selection.areaRect = rect
-            selection.areaDisplayID = displayID
             self.captureSelection = selection
             Task { try? await self.startRecording() }
         }

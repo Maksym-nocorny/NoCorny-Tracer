@@ -45,6 +45,22 @@ struct CaptureSelection: Codable, Equatable {
         defaults.set(data, forKey: Self.defaultsKey)
     }
 
+    // MARK: - Retired modes (round 6)
+
+    /// Selected Area left the UI in round 6 («дуже багована фіча») — the case only
+    /// survives in `CaptureMode` so an old persisted payload still decodes. This is
+    /// the load-time migration: a remembered area selection becomes a plain
+    /// entire-screen one, with the dead rect dropped. Pure, so it is testable;
+    /// AppState applies it right after `load` and saves the result back.
+    func migratingRetiredModes() -> CaptureSelection {
+        guard mode == .selectedArea else { return self }
+        var migrated = self
+        migrated.mode = .entireScreen
+        migrated.areaRect = nil
+        migrated.areaDisplayID = nil
+        return migrated
+    }
+
     // MARK: - Liveness
 
     /// Whether this selection can start a recording right now, given what is actually on

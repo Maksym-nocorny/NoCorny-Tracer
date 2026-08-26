@@ -184,9 +184,11 @@ final class ToastWindowManager {
             panel.hidesOnDeactivate = false
             panel.sharingType = .none
             panel.isReleasedWhenClosed = false
-            #if DEBUG
-            CapturablePanels.register(panel)
-            #endif
+            // ToastWindowManager predates strict isolation annotations; it runs
+            // on the main thread (it builds NSPanels) but is not @MainActor.
+            MainActor.assumeIsolated {
+                PanelCaptureRegistry.register(panel)
+            }
             window = panel
         }
 

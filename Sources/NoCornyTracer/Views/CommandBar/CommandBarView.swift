@@ -278,32 +278,13 @@ struct CommandBarView: View {
     // MARK: Capture mode
 
     /// Tooltip for the capture-mode capsule: the mode, plus what it points at when it
-    /// remembers something — "Window" answers "which window?" and "Selected Area"
-    /// answers "how big?" (in pixels, matching the overlay's badge) without opening
-    /// the menu.
+    /// remembers something — "Window" answers "which window?" without opening the menu.
     private var captureModeHelp: String {
         if appState.captureMode == .window,
            let title = appState.captureSelection.windowTitle, !title.isEmpty {
             return "\(appState.captureMode.displayName) - \(title)"
         }
-        if appState.captureMode == .selectedArea,
-           let rect = appState.captureSelection.areaRect,
-           let scale = areaDisplayScale {
-            return "\(appState.captureMode.displayName) - \(AreaSelectionGeometry.badgeText(for: rect, scale: scale)) px"
-        }
         return appState.captureMode.displayName
-    }
-
-    /// Backing scale of the display the remembered area lives on — nil once that
-    /// display is gone (the tooltip then degrades to the bare mode name rather than
-    /// showing pixel numbers computed against the wrong screen).
-    private var areaDisplayScale: CGFloat? {
-        guard let displayID = appState.captureSelection.areaDisplayID else {
-            return AreaSelectionWindowManager.screenWithMouse()?.backingScaleFactor
-        }
-        return NSScreen.screens
-            .first { AreaSelectionWindowManager.displayID(of: $0) == displayID }?
-            .backingScaleFactor
     }
 
     private var captureModeButton: some View {
@@ -425,28 +406,30 @@ struct CommandBarView: View {
 
 /// The capture-target picker, per macro frame 72:137 (224 wide).
 ///
-/// The click contract for modes that point at something (decision, phase 6a; areas
-/// joined in 6b): the Window row ALWAYS opens the system window picker and the
-/// Selected Area row ALWAYS opens the selection overlay — picking/Enter saves the
-/// choice and starts recording immediately. The remembered window or area is what
-/// the record BUTTON reuses without a picker. One row, one behaviour — no separate
-/// "Choose…" items, no guessing whether a click switches the mode or re-picks.
+/// The click contract for modes that point at something (decision, phase 6a): the
+/// Window row ALWAYS opens the system window picker — picking saves the choice and
+/// starts recording immediately. The remembered window is what the record BUTTON
+/// reuses without a picker. One row, one behaviour — no separate "Choose…" items,
+/// no guessing whether a click switches the mode or re-picks.
+///
+/// Only `CaptureMode.menuCases` are listed (round 6): a retired mode — Selected
+/// Area — is hidden outright, not greyed out.
 private struct CaptureModeMenu: View {
     @Bindable var appState: AppState
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            ForEach(CaptureMode.allCases, id: \.self) { mode in
+            ForEach(CaptureMode.menuCases, id: \.self) { mode in
                 Button {
                     dismiss()
                     switch mode {
                     case .window:
                         appState.chooseWindowForCapture()
-                    case .selectedArea:
-                        appState.chooseAreaForCapture()
                     case .entireScreen:
                         appState.captureMode = .entireScreen
+                    case .selectedArea:
+                        break   // retired (round 6) — never in menuCases
                     }
                 } label: {
                     HStack(spacing: 8) {
@@ -476,11 +459,6 @@ private struct CaptureModeMenu: View {
                     .contentShape(RoundedRectangle(cornerRadius: 8))
                 }
                 .buttonStyle(.plain)
-                // No mode is gated today (phase 6b opened the last one); the styling
-                // stays wired to `isAvailable` so a future half-shipped mode reads as
-                // disabled instead of silently misrecording.
-                .disabled(!mode.isAvailable)
-                .opacity(mode.isAvailable ? 1 : 0.4)
             }
         }
         .padding(8)

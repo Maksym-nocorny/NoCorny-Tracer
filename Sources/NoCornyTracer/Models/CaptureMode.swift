@@ -2,11 +2,13 @@ import Foundation
 
 /// What the recorder captures. Chosen from the command bar's capture-mode menu and
 /// persisted on AppState (UserDefaults key "captureMode"; the full choice — which
-/// window, which area — is CaptureSelection, key "captureSelection").
+/// window — is CaptureSelection, key "captureSelection").
 ///
-/// All three modes record: entire-screen and window since phase 6a, selected-area
-/// since phase 6b wired its picking overlay (AreaSelectionOverlay) to the engine that
-/// was already waiting (CaptureGeometry + sourceRect in ScreenRecorder).
+/// `.selectedArea` was RETIRED in round 6 (verdict from the 4.2.1 build: «дуже
+/// багована фіча»): the picking overlay and every UI door are gone. The case stays
+/// in the enum ONLY so an old persisted selection still decodes — it is not
+/// available, never shown in the menu, and migrates to `.entireScreen` on load
+/// (`CaptureSelection.migratingRetiredModes`).
 enum CaptureMode: String, CaseIterable, Codable {
     case entireScreen
     case window
@@ -29,8 +31,16 @@ enum CaptureMode: String, CaseIterable, Codable {
         }
     }
 
-    /// Whether the capture engine can actually record this mode. All modes are live
-    /// since phase 6b shipped the area overlay; the property (and the menu's disabled
-    /// styling behind it) stays so a future half-shipped mode has a gate to stand on.
-    var isAvailable: Bool { true }
+    /// Whether the mode is offered to the user at all. Since round 6 an unavailable
+    /// mode is HIDDEN from the capture menu (not greyed out): `.selectedArea` exists
+    /// only to decode old persisted selections and must not resurface as a row.
+    var isAvailable: Bool {
+        switch self {
+        case .entireScreen, .window: return true
+        case .selectedArea: return false
+        }
+    }
+
+    /// The modes the capture menu shows — the available ones, in declaration order.
+    static var menuCases: [CaptureMode] { allCases.filter(\.isAvailable) }
 }

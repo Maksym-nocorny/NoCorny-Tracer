@@ -134,6 +134,9 @@ final class BackdropLuminanceMonitor {
     func start(panel: NSPanel) {
         self.panel = panel
         guard timer == nil else { return }
+        // One line per actual transition (round 6, after «після апдейту авто не
+        // працює»): the next report about Auto doing nothing starts from this trail.
+        LogManager.shared.log("🎨 Auto theme: backdrop monitor started", type: .info)
         let heartbeat = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in await self?.sampleNow() }
         }
@@ -147,6 +150,9 @@ final class BackdropLuminanceMonitor {
     }
 
     func stop() {
+        if timer != nil {   // log transitions only — stop() is called liberally
+            LogManager.shared.log("🎨 Auto theme: backdrop monitor stopped", type: .info)
+        }
         timer?.invalidate()
         timer = nil
         debounceTask?.cancel()
@@ -207,7 +213,7 @@ final class BackdropLuminanceMonitor {
     /// `screen`, downscaled to ~32px on the long side, averaged to a luminance.
     nonisolated static func sampleLuminance(under rect: CGRect, on screen: NSScreen) async throws -> Double {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-        guard let displayID = AreaSelectionWindowManager.displayID(of: screen),
+        guard let displayID = Self.displayID(of: screen),
               let display = content.displays.first(where: { $0.displayID == displayID }) else {
             throw SampleFailed()
         }
@@ -237,6 +243,14 @@ final class BackdropLuminanceMonitor {
 
         let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
         return averageLuminance(of: image)
+    }
+
+    /// The CGDirectDisplayID behind an NSScreen. Pure device-description reading;
+    /// nonisolated because sampling runs off the main actor. Lived on
+    /// AreaSelectionWindowManager until round 6 removed the area picker.
+    nonisolated static func displayID(of screen: NSScreen) -> CGDirectDisplayID? {
+        let key = NSDeviceDescriptionKey("NSScreenNumber")
+        return (screen.deviceDescription[key] as? NSNumber).map { CGDirectDisplayID($0.uint32Value) }
     }
 
     /// Mean Rec.709 luminance in gamma space (0…1). Gamma-space averaging is a

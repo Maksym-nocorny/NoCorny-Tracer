@@ -497,16 +497,17 @@ final class StatusItemController: NSObject {
         add("Storage banner: low", #selector(previewBannerLow))
         add("Storage banner: full", #selector(previewBannerFull))
         submenu.addItem(.separator())
-        // Design-review escape hatch (verdict 25.08: the demo could not be
-        // screenshotted — every panel ships sharingType = .none). Checked = the
-        // registered panels are .readOnly and screenshots capture them.
+        // Design-review escape hatch (verdict 25.08), since round 6 a DUPE of the
+        // product setting (Settings → RECORDING → "Show Tracer in screen
+        // captures"): same state, same persistence — it toggles
+        // AppState.panelsCapturable, so both doors always agree.
         let capturable = NSMenuItem(
             title: "Capturable panels (design review)",
             action: #selector(previewToggleCapturablePanels),
             keyEquivalent: ""
         )
         capturable.target = self
-        capturable.state = CapturablePanels.isEnabled ? .on : .off
+        capturable.state = PanelCaptureRegistry.isCapturable ? .on : .off
         submenu.addItem(capturable)
         submenu.addItem(.separator())
         add("Reset preview", #selector(previewReset))
@@ -571,7 +572,9 @@ final class StatusItemController: NSObject {
     }
 
     @objc private func previewToggleCapturablePanels() {
-        CapturablePanels.setEnabled(!CapturablePanels.isEnabled)
+        // Through AppState — the single writer — so the flip persists and the
+        // Settings drawer's toggle shows the same state.
+        AppState.shared?.panelsCapturable.toggle()
     }
     #endif
 }

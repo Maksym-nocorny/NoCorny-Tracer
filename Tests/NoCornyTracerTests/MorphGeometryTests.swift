@@ -447,4 +447,95 @@ final class MorphGeometryTests: XCTestCase {
         XCTAssertEqual(panel.height, logical.height + 2 * MorphGeometry.panelShadowInset)
         XCTAssertEqual(MorphGeometry.logicalFrame(forPanel: panel), logical)
     }
+
+    // MARK: Round 6 — the glass never leaves the screen
+
+    func testClampedIntoVisibleLeavesAnInBoundsFrameAlone() {
+        let frame = CGRect(x: 400, y: 300, width: 560, height: 80)
+        XCTAssertEqual(MorphGeometry.clampedIntoVisible(frame, visible: visible), frame)
+    }
+
+    func testClampedIntoVisiblePinsEveryEdge() {
+        let size = CGSize(width: 560, height: 80)
+        // Off the left / right edges.
+        XCTAssertEqual(
+            MorphGeometry.clampedIntoVisible(
+                CGRect(origin: CGPoint(x: visible.minX - 200, y: 300), size: size), visible: visible
+            ).minX,
+            visible.minX
+        )
+        XCTAssertEqual(
+            MorphGeometry.clampedIntoVisible(
+                CGRect(origin: CGPoint(x: visible.maxX - 100, y: 300), size: size), visible: visible
+            ).maxX,
+            visible.maxX
+        )
+        // Off the bottom (into the Dock strip) / off the top (under the menu bar).
+        XCTAssertEqual(
+            MorphGeometry.clampedIntoVisible(
+                CGRect(origin: CGPoint(x: 400, y: visible.minY - 70), size: size), visible: visible
+            ).minY,
+            visible.minY
+        )
+        XCTAssertEqual(
+            MorphGeometry.clampedIntoVisible(
+                CGRect(origin: CGPoint(x: 400, y: visible.maxY - 10), size: size), visible: visible
+            ).maxY,
+            visible.maxY
+        )
+    }
+
+    func testClampedIntoVisiblePrefersTheMinEdgesWhenOversized() {
+        // A surface taller than the visible frame cannot fully fit — the clamp
+        // pins the bottom-left deterministically instead of oscillating.
+        let oversized = CGRect(x: -100, y: -100, width: 2000, height: 2000)
+        let clamped = MorphGeometry.clampedIntoVisible(oversized, visible: visible)
+        XCTAssertEqual(clamped.minX, visible.minX)
+        XCTAssertEqual(clamped.minY, visible.minY)
+    }
+
+    /// A stale anchor saved on a taller display used to hang the bar past the TOP
+    /// of the visible frame (the downward branch only clamped the bottom). Round 6:
+    /// `targetFrame` ends in a full clamp, so every programmatic placement is
+    /// in-bounds — which is also what keeps flight unions in-bounds.
+    func testTargetFrameClampsAStaleAnchorBackUnderTheTop() {
+        let anchor = CGPoint(x: 400, y: visible.maxY + 200)
+        let frame = MorphGeometry.targetFrame(anchorTopLeft: anchor, surface: .bar, visible: visible)
+        XCTAssertLessThanOrEqual(frame.maxY, visible.maxY, "the glass may not hide under the menu bar")
+        XCTAssertGreaterThanOrEqual(frame.minY, visible.minY)
+    }
+
+    /// The drag clamp works on the GLASS, not the panel: with the glass flush
+    /// against an edge the transparent shadow apron legitimately hangs past it.
+    func testClampedPanelFrameClampsTheGlassNotTheShadowApron() {
+        let offscreenGlass = CGRect(x: 100, y: visible.minY - 50, width: 560, height: 80)
+        let panel = MorphGeometry.panelFrame(forLogical: offscreenGlass)
+        let clampedPanel = MorphGeometry.clampedPanelFrame(panel, visible: visible)
+        let clampedGlass = MorphGeometry.logicalFrame(forPanel: clampedPanel)
+        XCTAssertEqual(clampedGlass.minY, visible.minY, "the glass is pushed back on screen")
+        XCTAssertEqual(clampedGlass.minX, offscreenGlass.minX, "an in-bounds axis is untouched")
+        XCTAssertEqual(clampedPanel.minY, visible.minY - MorphGeometry.panelShadowInset,
+                       "the shadow apron itself may hang past the edge — that is not 'off screen'")
+    }
+
+    func testClampedPanelFrameLeavesAnInBoundsPanelAlone() {
+        let logical = CGRect(x: 400, y: 300, width: 560, height: 80)
+        let panel = MorphGeometry.panelFrame(forLogical: logical)
+        XCTAssertEqual(MorphGeometry.clampedPanelFrame(panel, visible: visible), panel)
+    }
+
+    /// The drag auto-flip's decision inputs (round 6): dragging the bar DOWN with
+    /// an open drawer crosses the fit boundary and the direction verdict flips to
+    /// upward; dragging back up flips it down again. The boundary on this display
+    /// is minY + margin + drawer height = 60 + 16 + 428 = 504.
+    func testDragReEvaluationFlipsTheDrawerDirectionWithPosition() {
+        let high = CGPoint(x: 400, y: 700)
+        let low = CGPoint(x: 400, y: 500)
+        XCTAssertFalse(MorphGeometry.drawerOpensUpward(anchorTopLeft: high, visible: visible),
+                       "plenty of room below — the drawer hangs down")
+        XCTAssertTrue(MorphGeometry.drawerOpensUpward(anchorTopLeft: low, visible: visible),
+                      "dragged under the boundary — the drawer must flip above the bar")
+        XCTAssertFalse(MorphGeometry.drawerOpensUpward(anchorTopLeft: high, visible: visible),
+                       "and back up it flips down again — the rule is position, not history")
+    }
 }

@@ -48,6 +48,37 @@ final class CommandBarPanel: NSPanel {
         return super.performKeyEquivalent(with: event)
     }
 
+    // MARK: Drag clamp (round 6)
+
+    /// Round 6 («тягну вікно вниз — меню заходить за екран»; «сам застосунок не
+    /// повинен покидати рамки екрану взагалі»): the CameraOverlayWindow clamp
+    /// recipe, adapted to the shadow apron — what must stay inside the visible
+    /// frame is the LOGICAL glass rect, not the panel (which is `panelShadowInset`
+    /// larger on every side; its transparent apron is SUPPOSED to hang past the
+    /// edge when the glass sits flush against it). `constrainFrameRect` covers
+    /// AppKit-driven placement including user drags, `setFrameOrigin` the
+    /// origin-only path. Programmatic `setFrame` calls from the manager are left
+    /// alone on purpose: they all come pre-clamped out of
+    /// `MorphGeometry.targetFrame`, and clamping a mid-flight union frame would
+    /// corrupt the flight's offset base. The manager's `panelWasDragged` re-clamp
+    /// is the safety net for any path that slips both overrides (the camera
+    /// window's delegate plays the same role).
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
+        Self.clampedToVisible(frameRect, screen: screen ?? self.screen ?? NSScreen.main)
+    }
+
+    override func setFrameOrigin(_ point: NSPoint) {
+        let proposed = NSRect(origin: point, size: frame.size)
+        super.setFrameOrigin(
+            Self.clampedToVisible(proposed, screen: self.screen ?? NSScreen.main).origin
+        )
+    }
+
+    private static func clampedToVisible(_ frameRect: NSRect, screen: NSScreen?) -> NSRect {
+        guard let visible = screen?.visibleFrame else { return frameRect }
+        return MorphGeometry.clampedPanelFrame(frameRect, visible: visible)
+    }
+
     init(contentRect: NSRect) {
         super.init(
             contentRect: contentRect,
@@ -277,9 +308,7 @@ final class CommandBarWindowManager {
                     break
                 }
             }
-            #if DEBUG
-            CapturablePanels.register(newPanel)
-            #endif
+            PanelCaptureRegistry.register(newPanel)
             panel = newPanel
         }
         guard let panel else { return }
@@ -302,6 +331,17 @@ final class CommandBarWindowManager {
 
         applyPanelAppearance()
         panel.orderFrontRegardless()
+        // Round 6 REGRESSION FIX («після апдейту авто не працює, поки не
+        // перемкнеш тему»): everything above ran while the panel was still
+        // ordered OUT — `applyPanelAppearance()` → `syncBackdropMonitor()` saw
+        // `panel.isVisible == false` and STOPPED the monitor instead of starting
+        // it, and the root view's `.onChange(of: appTheme, initial: true)` fires
+        // during the first layout pass, also pre-front. So a fresh launch with
+        // Auto never sampled the backdrop; a manual theme round-trip "fixed" it
+        // only because that onChange runs against an already-visible panel.
+        // One more sync AFTER orderFront is the whole cure: the panel is
+        // visible now, so Auto actually starts its monitor.
+        syncBackdropMonitor()
     }
 
     /// Hides the bar — the app keeps running in the menu bar (verdict 25.08: the
@@ -705,9 +745,87 @@ final class CommandBarWindowManager {
         // the surface is already `.bar` — deriving a bar anchor from it would
         // corrupt the position. The snap lands in a beat and persists the truth.
         guard !pendingDrawerCloseSnap else { return }
+        // Round 6 safety net (the camera window's delegate recipe): if a move
+        // slipped past the panel's own clamp overrides, push the glass back into
+        // the visible frame. The setFrame fires a fresh `windowDidMove`, and THAT
+        // pass — now in-bounds — persists the anchor and judges the flip.
+        if let panel {
+            let visible = currentVisibleFrame(for: panel)
+            let clamped = MorphGeometry.clampedIntoVisible(logical, visible: visible)
+            if clamped != logical {
+                panel.setFrame(MorphGeometry.panelFrame(forLogical: clamped), display: true)
+                return
+            }
+        }
         persistAnchor(forLogicalFrame: logical)
+        scheduleDrawerFlipIfNeeded()
         // Dragged over new backdrop — re-judge the Auto look (debounced).
         backdropMonitor.sampleSoon()
+    }
+
+    // MARK: Drawer auto-flip on drag (round 6)
+
+    /// Pending re-evaluation of the drawer direction after a drag; nil when the
+    /// position agrees with the current direction.
+    private var drawerFlipTask: Task<Void, Never>?
+
+    /// How long after the LAST `windowDidMove` the direction is re-judged. Long
+    /// enough to never fire between two events of a live drag stream.
+    private static let drawerFlipDebounce: TimeInterval = 0.18
+
+    /// Round 6 («якщо шухляда знизу і місце закінчилось — переміщай наверх»):
+    /// while a drawer is open, every drag event re-evaluates
+    /// `MorphGeometry.drawerOpensUpward` for the bar's new position. A needed
+    /// change does NOT flip mid-drag: the up- and down-frames share only the
+    /// bar's rows, so reframing while AppKit's drag session is live would yank
+    /// the panel out from under the tracked mouse delta. Instead the flip is
+    /// debounced past the event stream AND waits for the mouse button to be
+    /// released (`pressedMouseButtons` poll) — the drawer changes sides the
+    /// moment the user lets go, via the same snap-frame + fade-in language the
+    /// drawer open uses (round-5 policy: the bar itself never stirs).
+    private func scheduleDrawerFlipIfNeeded() {
+        guard case .barWithDrawer = surface, closingDrawerTab == nil, !flightActive,
+              let panel else {
+            drawerFlipTask?.cancel()
+            drawerFlipTask = nil
+            return
+        }
+        let visible = currentVisibleFrame(for: panel)
+        let anchor = anchorForCurrentSurface(visible: visible)
+        let desired = MorphGeometry.drawerOpensUpward(anchorTopLeft: anchor, visible: visible)
+        guard desired != drawerOpensUp else {
+            drawerFlipTask?.cancel()
+            drawerFlipTask = nil
+            return
+        }
+        drawerFlipTask?.cancel()
+        drawerFlipTask = Task { @MainActor [weak self] in
+            // Debounce past the drag's event stream, then wait out the button:
+            // flipping under a held mouse fights AppKit's drag tracking.
+            try? await Task.sleep(nanoseconds: UInt64(Self.drawerFlipDebounce * 1_000_000_000))
+            while !Task.isCancelled, NSEvent.pressedMouseButtons & 0x1 != 0 {
+                try? await Task.sleep(nanoseconds: 120_000_000)
+            }
+            guard !Task.isCancelled else { return }
+            self?.performDrawerFlipIfStillNeeded()
+        }
+    }
+
+    /// The flip itself, re-checked at fire time (the user may have dragged back).
+    /// Same mechanism as a drawer open: `drawerOpensUp` swaps inside a
+    /// `drawerFade` transaction (the drawer fades in on its new side; the pin
+    /// edge follows) and the panel SNAPS to the direction's frame — the bar's
+    /// glass does not move a pixel, because both frames are anchored to it.
+    private func performDrawerFlipIfStillNeeded() {
+        drawerFlipTask = nil
+        guard case .barWithDrawer = surface, closingDrawerTab == nil, !flightActive,
+              !pendingDrawerCloseSnap, let panel else { return }
+        let visible = currentVisibleFrame(for: panel)
+        let anchor = anchorForCurrentSurface(visible: visible)
+        let desired = MorphGeometry.drawerOpensUpward(anchorTopLeft: anchor, visible: visible)
+        guard desired != drawerOpensUp else { return }
+        withAnimation(Theme.Anim.drawerFade) { drawerOpensUp = desired }
+        reframe(animated: false)
     }
 
     /// Writes the anchor a logical surface frame implies. A dragged/reframed pill
@@ -803,11 +921,26 @@ final class CommandBarWindowManager {
         return overlay
     }
 
-    /// The monitor runs exactly while: Auto is chosen AND the panel is up.
-    /// Everything else puts it to sleep. Silent without the screen permission —
-    /// the monitor checks that itself before every sample.
+    /// The one-line policy behind `syncBackdropMonitor`, pure so the regression
+    /// of round 6 stays pinned by a test: the Auto-theme monitor runs exactly
+    /// while Auto is chosen AND the panel is actually on screen. The
+    /// `panelIsVisible` half is why the ORDER of calls in `show()` matters —
+    /// any sync made before `orderFrontRegardless()` must come out as `false`.
+    nonisolated static func backdropMonitorShouldRun(
+        theme: AppState.AppTheme, panelIsVisible: Bool
+    ) -> Bool {
+        theme == .auto && panelIsVisible
+    }
+
+    /// The monitor runs exactly while: Auto is chosen AND the panel is up
+    /// (`backdropMonitorShouldRun`). Everything else puts it to sleep. Silent
+    /// without the screen permission — the monitor checks that itself before
+    /// every sample.
     private func syncBackdropMonitor() {
-        guard let appState, let panel, panel.isVisible, appState.appTheme == .auto else {
+        guard let appState, let panel,
+              Self.backdropMonitorShouldRun(
+                  theme: appState.appTheme, panelIsVisible: panel.isVisible
+              ) else {
             backdropMonitor.stop()
             return
         }

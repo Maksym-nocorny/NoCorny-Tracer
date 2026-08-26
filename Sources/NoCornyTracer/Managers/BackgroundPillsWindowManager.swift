@@ -147,9 +147,7 @@ final class BackgroundPillsWindowManager {
         newPanel.hidesOnDeactivate = false
         newPanel.isReleasedWhenClosed = false
         newPanel.becomesKeyOnlyIfNeeded = true
-        #if DEBUG
-        CapturablePanels.register(newPanel)
-        #endif
+        PanelCaptureRegistry.register(newPanel)
         panel = newPanel
         return newPanel
     }

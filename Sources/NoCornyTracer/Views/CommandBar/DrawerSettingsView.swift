@@ -158,6 +158,19 @@ struct DrawerSettingsView: View {
                 settingRow(icon: "speaker.wave.2", label: "Record system audio") {
                     DrawerToggle(isOn: $appState.recordSystemAudio)
                 }
+
+                hairline
+
+                // Round 6 (package 4): the DEBUG-only "capturable panels" switch,
+                // legalized. Off = the bar and friends stay out of captures
+                // (sharingType .none); on = they join screenshots and recordings.
+                settingRow(
+                    icon: "camera.viewfinder",
+                    label: "Show Tracer in screen captures",
+                    subtext: "Panels appear in screenshots and in your recordings"
+                ) {
+                    DrawerToggle(isOn: $appState.panelsCapturable)
+                }
             }
             // Same rule as the old Settings: capture parameters are fixed mid-recording.
             .disabled(isRecording)
@@ -831,6 +844,7 @@ struct DrawerSettingsView: View {
     private func settingRow(
         icon: String,
         label: String,
+        subtext: String? = nil,
         @ViewBuilder value: () -> some View
     ) -> some View {
         HStack(spacing: 10) {
@@ -839,9 +853,18 @@ struct DrawerSettingsView: View {
                 .foregroundStyle(DrawerStyle.ink(0.6))
                 .frame(width: 14)
 
-            Text(label)
-                .font(.system(size: 12.5, weight: .medium))
-                .foregroundStyle(DrawerStyle.ink(0.88))
+            // The optional subtext (round 6) rides UNDER the label, dimmer and
+            // smaller — the row grows, the trailing control stays centered.
+            VStack(alignment: .leading, spacing: 2) {
+                Text(label)
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(DrawerStyle.ink(0.88))
+                if let subtext {
+                    Text(subtext)
+                        .font(.system(size: 10))
+                        .foregroundStyle(DrawerStyle.ink(0.45))
+                }
+            }
 
             Spacer(minLength: 8)
 
