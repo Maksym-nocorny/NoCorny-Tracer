@@ -1,5 +1,16 @@
 # Changelog
 
+## [4.4.0] - 2026-08-26
+### Added
+- **An update button appears in the bar when a new version is ready.** A compact accent circle between the gear and the close button; hover it and it unfolds to show the version. One click relaunches you into the update. It shimmers gently, respects Reduce Motion, and never shows during a recording.
+- **Transcription progress right in the library.** Rows show a small progress bar under "Transcribing…" - a gentle pulse while the exact percentage is still being measured.
+
+### Changed
+- **Updates are now noticed within minutes, not a day.** The app quietly checks the feed every 5 minutes (a ~4 KB request).
+- **Floating status pills are gone.** Upload and transcription progress live in the library; the finished recording still opens its page automatically. "Link copied" is now a system notification - click it to open the page. If the microphone dies mid-recording, the in-app warning is mirrored to a notification so it reaches you in any Space.
+- The record button's dark backdrop is back to its designed look - a subtly raised pebble instead of a black hole.
+
+
 ## [4.3.0] - 2026-08-26
 ### Added
 - **"Show Tracer in screen captures" switch** (Settings, Recording). Off by default, Tracer stays invisible in screenshots and recordings as before; turn it on to show the bar and pills - handy for showing the app to someone. The camera bubble is always visible either way.
