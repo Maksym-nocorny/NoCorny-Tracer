@@ -474,10 +474,10 @@ final class StatusItemController: NSObject {
 
     #if DEBUG
     /// Fake-state previews of the surfaces a demo cannot reach without Screen
-    /// Recording permission and a live take: the recording/paused pill, the
-    /// background pills, both toast kinds and the storage banner. Everything
-    /// runs through `UIPreviewState` (never the real recording path) except the
-    /// toasts, which use the real `presentToast` door — they are transient anyway.
+    /// Recording permission and a live take: the recording/paused pill, both
+    /// toast kinds and the storage banner. Everything runs through
+    /// `UIPreviewState` (never the real recording path) except the toasts,
+    /// which use the real `presentToast` door — they are transient anyway.
     private func uiPreviewMenuItem() -> NSMenuItem {
         let submenu = NSMenu(title: "UI Preview")
         func add(_ title: String, _ action: Selector) {
@@ -487,9 +487,6 @@ final class StatusItemController: NSObject {
         }
         add("Recording pill", #selector(previewRecordingPill))
         add("Paused pill", #selector(previewPausedPill))
-        submenu.addItem(.separator())
-        add("Uploading 34%", #selector(previewUploading))
-        add("Transcribing 2 videos", #selector(previewTranscribing))
         submenu.addItem(.separator())
         add("Toast: link copied", #selector(previewToastLinkCopied))
         add("Toast: mic lost (critical)", #selector(previewToastMicLost))
@@ -529,15 +526,9 @@ final class StatusItemController: NSObject {
         UIPreviewState.shared.showPill(paused: true)
     }
 
-    @objc private func previewUploading() {
-        UIPreviewState.shared.showUploading()
-    }
-
-    @objc private func previewTranscribing() {
-        UIPreviewState.shared.showTranscribing(count: 2)
-    }
-
-    /// Mirrors the real upload-completion toast (AppState step 2 of the pipeline).
+    /// Mirrors the upload-completion FALLBACK toast (round 7: the primary
+    /// announcement is a system notification; this toast shows only when
+    /// notifications are unavailable or denied — see AppNotifications).
     @objc private func previewToastLinkCopied() {
         AppState.shared?.presentToast?(ToastContent(
             icon: "link",

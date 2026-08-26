@@ -171,7 +171,7 @@ final class AppState {
     var autoPanelDark: Bool? = nil
 
     /// The appearance every FLOATING PANEL should wear right now (bar/pill,
-    /// toasts, background pills, camera bubble). Auto steers panels ONLY — the
+    /// toasts, camera bubble). Auto steers panels ONLY — the
     /// onboarding window deliberately follows the system appearance instead
     /// (`NSAppearance.from` maps `.auto` to nil for exactly that reason).
     var panelAppearance: NSAppearance? {
@@ -281,6 +281,11 @@ final class AppState {
     /// same reason: toasts fire from the pipeline, with every window possibly closed.
     @ObservationIgnored
     var presentToast: ((ToastContent) -> Void)?
+    /// The mic-loss alert sentence — ONE constant because it goes out twice
+    /// (round 7): the critical in-app toast and its system-notification
+    /// duplicate must read as the same event, word for word.
+    static let micStoppedMessage =
+        "The microphone stopped recording — stop and start a new take to get your voice back"
     /// Shows/hides the floating camera bubble. Set by the AppDelegate (phase 7) — the
     /// bubble used to follow the main window's `.onChange(of: isCameraEnabled)`, and the
     /// window scene is gone.
@@ -414,10 +419,18 @@ final class AppState {
             self.presentToast?(ToastContent(
                 icon: "mic.slash",
                 iconColor: Theme.Colors.recordRed,
-                message: "The microphone stopped recording — stop and start a new take to get your voice back",
+                message: Self.micStoppedMessage,
                 duration: 8,
                 priority: .critical
             ))
+            // Round 7: the same alert as a system notification too — the critical
+            // toast reaches only the current screen, while the meeting (and the
+            // user) may live in another Space or on another display. Deliberately
+            // no fallback: the toast above is the primary surface, a denial just
+            // means no duplicate.
+            AppNotifications.shared.post(
+                AppNotifications.microphoneStoppedPayload(message: Self.micStoppedMessage)
+            )
         }
 
         // A writer that dies mid-recording silently drops every further frame. This is
@@ -1118,24 +1131,38 @@ final class AppState {
                 }
                 didUploadVideo = true
 
-                // Phase 4: hand the link over the moment it exists — auto-copy the share
-                // URL (tracer page when the slug resolved, else the raw Dropbox link) and
-                // toast it. The pure decision lives in UploadCompletionNotice; a recording
-                // that somehow has no URL gets a plain "Uploaded" with nothing copied.
-                let notice = UploadCompletionNotice.decision(
-                    shareURL: recordings.first(where: { $0.id == id })?.shareURL
-                )
+                // Phase 4 → round 7: hand the link over the moment it exists — the
+                // auto-copy of the share URL (tracer page when the slug resolved, else
+                // the raw Dropbox link) stays exactly as it was, but the announcement is
+                // now a SYSTEM notification whose click opens that page: the in-app
+                // toast was easy to miss and gone in 4 seconds. The toast remains as
+                // the FALLBACK when notifications are unavailable (unbundled dev run)
+                // or denied — AppNotifications decides. A recording that somehow has no
+                // URL keeps the plain "Uploaded" toast: a notification saying "link
+                // copied — click to open" with nothing copied and nowhere to go would lie.
+                let shareURL = recordings.first(where: { $0.id == id })?.shareURL
+                let notice = UploadCompletionNotice.decision(shareURL: shareURL)
                 await MainActor.run {
                     if let copyText = notice.copyText {
                         let pasteboard = NSPasteboard.general
                         pasteboard.clearContents()
                         pasteboard.setString(copyText, forType: .string)
                     }
-                    presentToast?(ToastContent(
-                        icon: "link",
-                        iconColor: Theme.Colors.statusGreen,
-                        message: notice.message
-                    ))
+                    let fallbackToast: () -> Void = { [weak self] in
+                        self?.presentToast?(ToastContent(
+                            icon: "link",
+                            iconColor: Theme.Colors.statusGreen,
+                            message: notice.message
+                        ))
+                    }
+                    if let shareURL {
+                        AppNotifications.shared.post(
+                            AppNotifications.uploadedPayload(pageURL: shareURL),
+                            fallback: fallbackToast
+                        )
+                    } else {
+                        fallbackToast()
+                    }
                 }
 
                 // Step 2.5: Tell the server the bytes have landed. AI is still

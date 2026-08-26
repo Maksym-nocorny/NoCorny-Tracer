@@ -5,9 +5,9 @@ import Sparkle
 ///
 /// Phase 7 of the redesign: the app has NO SwiftUI windows any more. The whole
 /// surface is imperative AppKit panels owned by the AppDelegate — the floating
-/// command bar (with its Gallery/Settings drawers), the recording pill, the
-/// background-activity pills, toasts, the storage banner, the camera bubble,
-/// the onboarding card and the tray. The `Settings` scene below is a required
+/// command bar (with its Gallery/Settings drawers), the recording pill, toasts,
+/// the storage banner, the camera bubble, the onboarding card and the tray.
+/// The `Settings` scene below is a required
 /// placeholder: a SwiftUI `App` must declare at least one scene.
 @main
 struct NoCornyTracerApp: App {
@@ -49,6 +49,11 @@ struct NoCornyTracerApp: App {
         // running, so a captured value would always say "go ahead".
         coordinator.isRecording = { AppState.shared?.recordingManager.isRecording ?? false }
 
+        // Round 7: 5-minute background checks on our own timer — Sparkle's
+        // scheduler bottoms out at an hour (the plist's 3600 stays as a safety
+        // net). Started here, right after startingUpdater: true.
+        coordinator.startPolling(updater: updater.updater)
+
         // Hand Sparkle to the AppDelegate through a static rather than by touching
         // `appDelegate` here: the adaptor's timing in `init` is an implementation
         // detail, the static is deterministic. Consumed in applicationDidFinishLaunching;
@@ -86,10 +91,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// App @State because it must come up at launch and from the tray menu — since
     /// phase 7 there is no window view graph anywhere to hang it off.
     @MainActor var commandBarWindowManager: CommandBarWindowManager?
-
-    /// The background-activity pills panel (phase 4) — owned here for the same
-    /// reason as the bar: uploads resume at launch, before any UI appears.
-    @MainActor var backgroundPillsWindowManager: BackgroundPillsWindowManager?
 
     /// The onboarding window (phase 5) — owned here because both of its doors
     /// (first launch, permission gate) can open with no SwiftUI window anywhere.
@@ -153,7 +154,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Fronts the command bar (creating it if needed) and optionally opens a drawer.
     /// Mid-take the bar IS the recording pill — the drawer morph is skipped then,
-    /// same invariant as the background-pills click below.
+    /// so the "recording → pill" invariant holds.
     @MainActor func presentCommandBar(drawer: CommandBarDrawerTab? = nil) {
         guard let appState = AppState.shared else { return }
         let manager = commandBarWindowManager ?? CommandBarWindowManager()
@@ -227,19 +228,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         commandBarWindowManager = manager
         manager.show(appState: appState)
 
-        // Phase 4: the background-activity pills ride alongside the bar. A click on
-        // any pill is a shortcut to the details — the bar's Gallery drawer.
-        let pills = backgroundPillsWindowManager ?? BackgroundPillsWindowManager()
-        backgroundPillsWindowManager = pills
-        pills.attach(appState: appState) { [weak self] in
-            guard let self, let appState = AppState.shared,
-                  let bar = self.commandBarWindowManager else { return }
-            // Mid-take the bar IS the recording pill — expanding it into a drawer
-            // would break the "recording → pill" invariant, so the click waits.
-            guard !appState.recordingManager.isRecording else { return }
-            bar.show(appState: appState)
-            bar.morph(to: .barWithDrawer(.gallery))
-        }
+        // The background-activity pills panel died in round 7 (boss's verdict):
+        // in-flight work now shows in the library rows (per-recording progress),
+        // the tray's "↑N" and the Gallery button badge — both fed by the same
+        // BackgroundActivity mappings the pills used to read.
     }
 
     /// The present* closures (phase 7): every AppState "surface this" hook lands on

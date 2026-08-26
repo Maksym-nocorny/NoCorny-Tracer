@@ -73,9 +73,18 @@ struct TranscriptionStatusCluster: View {
             .help("Waiting for transcription to start")
 
         case .transcribing(let percent):
-            HStack(spacing: 6) {
-                icon("sparkles", tint: Theme.Colors.statusGreen)
-                transcribingLabel(percent: percent)
+            // Label + mini progress bar (round 7). The bar slot exists for the
+            // WHOLE transcribing state — indeterminate included — so the label
+            // does not shift down when the engine's first measured fraction
+            // lands. The cluster still fits well under the row's 42pt thumbnail,
+            // so the row height never changes either.
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    icon("sparkles", tint: Theme.Colors.statusGreen)
+                    transcribingLabel(percent: percent)
+                }
+                progressBar(fraction: appState.transcriptionActivity[recording.id]?.fraction)
+                    .padding(.leading, 18) // align with the label (icon 12 + gap 6)
             }
             .help("Transcribing…")
 
@@ -107,6 +116,47 @@ struct TranscriptionStatusCluster: View {
             .font(.system(size: 12))
             .foregroundStyle(tint)
             .frame(width: 12, height: 12)
+    }
+
+    // MARK: Mini progress bar (round 7 — the library's percent, visible at a glance)
+
+    static let miniBarWidth: CGFloat = 64
+
+    /// Fill width for a reported fraction, clamped — engines can overshoot 1.0
+    /// on the last chunk (same clamp the percent label applies). nil for an
+    /// unmeasurable fraction: the bar goes indeterminate instead of lying at 0.
+    static func barFillWidth(fraction: Double?, barWidth: CGFloat = miniBarWidth) -> CGFloat? {
+        guard let fraction, fraction > 0 else { return nil }
+        return barWidth * CGFloat(min(1.0, fraction))
+    }
+
+    @State private var indeterminatePulse = false
+
+    /// 64×3, r1.5 — track ink 10%, fill statusGreen. A measured fraction fills it
+    /// with a 0.3s linear glide, so chunked engines flow instead of stepping.
+    /// Indeterminate (the local engine before its first segment) was a choice
+    /// between "no bar" and "pulsing track" — pulsing track won: the slot is
+    /// reserved anyway (no label jump), and an empty static track would read as
+    /// "stuck at 0%" where the pulse honestly says "working, not measured yet".
+    private func progressBar(fraction: Double?) -> some View {
+        let fillWidth = Self.barFillWidth(fraction: fraction)
+        return ZStack(alignment: .leading) {
+            RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                .fill(DrawerStyle.ink(0.10))
+                .opacity(fillWidth == nil ? (indeterminatePulse ? 1.0 : 0.35) : 1.0)
+            if let fillWidth {
+                RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                    .fill(Theme.Colors.statusGreen)
+                    .frame(width: fillWidth)
+            }
+        }
+        .frame(width: Self.miniBarWidth, height: 3)
+        .animation(.linear(duration: 0.3), value: fraction)
+        .onAppear {
+            withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) {
+                indeterminatePulse = true
+            }
+        }
     }
 
     /// The percentage is the live part, so it alone carries statusGreen.

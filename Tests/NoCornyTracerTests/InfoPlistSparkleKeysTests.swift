@@ -43,9 +43,10 @@ final class InfoPlistSparkleKeysTests: XCTestCase {
         XCTAssertEqual(plist["SUAutomaticallyUpdate"] as? Bool, true)
     }
 
-    /// Sparkle's default cadence is daily, which left the boss staring at an
-    /// empty tray for a day after a release. Hourly keeps the chip timely and
-    /// costs one small feed request per hour.
+    /// 3600 is Sparkle's floor — the scheduler will not go lower. The ACTUAL
+    /// cadence is the coordinator's own 5-minute poll (UpdateCoordinator.
+    /// startPolling); this hourly key stays as the safety net that keeps
+    /// updates flowing if that timer ever dies. Do not delete it.
     func testScheduledCheckIntervalIsHourly() throws {
         let plist = try loadPlist()
         XCTAssertEqual(plist["SUScheduledCheckInterval"] as? Int, 3600)

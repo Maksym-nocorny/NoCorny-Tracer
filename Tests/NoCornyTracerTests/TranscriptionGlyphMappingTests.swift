@@ -53,4 +53,24 @@ final class TranscriptionGlyphMappingTests: XCTestCase {
     func testFailedIsTheAlert() {
         XCTAssertEqual(TranscriptionStatusCluster.glyph(for: .failed, fraction: nil), .failed)
     }
+
+    // MARK: Mini progress bar fill (round 7)
+
+    /// Same convention as the percent label: nil and 0 are "not measured yet" —
+    /// the bar goes indeterminate rather than lying at 0%.
+    func testUnmeasuredFractionHasNoFill() {
+        XCTAssertNil(TranscriptionStatusCluster.barFillWidth(fraction: nil))
+        XCTAssertNil(TranscriptionStatusCluster.barFillWidth(fraction: 0))
+    }
+
+    func testFractionScalesAcrossTheBar() {
+        XCTAssertEqual(TranscriptionStatusCluster.barFillWidth(fraction: 0.5, barWidth: 64), 32)
+        XCTAssertEqual(TranscriptionStatusCluster.barFillWidth(fraction: 1.0, barWidth: 64), 64)
+    }
+
+    /// Engines can overshoot 1.0 on the last chunk — the fill must not escape
+    /// the track.
+    func testRunawayFractionClampsToTheTrack() {
+        XCTAssertEqual(TranscriptionStatusCluster.barFillWidth(fraction: 1.7, barWidth: 64), 64)
+    }
 }

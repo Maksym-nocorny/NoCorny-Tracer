@@ -45,36 +45,15 @@ final class UIPreviewStateTests: XCTestCase {
         XCTAssertEqual(state.formattedElapsed, "00:00")
     }
 
-    // MARK: Background pills
-
-    func testUploadPreviewShapesThePill() {
-        XCTAssertNil(state.uploadPill)
-        state.showUploading()
-        XCTAssertEqual(state.uploadPill, UploadPillState(count: 1, fraction: 0.34),
-                       "the menu item promises 'Uploading 34%'")
-        XCTAssertTrue(state.hasBackgroundPills)
-    }
-
-    func testTranscribePreviewCarriesTheCount() {
-        state.showTranscribing(count: 2)
-        XCTAssertEqual(state.transcribePill?.count, 2)
-        XCTAssertTrue(state.hasBackgroundPills)
-    }
-
     // MARK: Reset
 
     func testResetClearsEverything() {
         state.showPill(paused: false)
-        state.showUploading()
-        state.showTranscribing(count: 2)
         state.storageLevel = .full
 
         state.reset()
 
         XCTAssertNil(state.pill)
-        XCTAssertNil(state.uploadPill)
-        XCTAssertNil(state.transcribePill)
         XCTAssertNil(state.storageLevel)
-        XCTAssertFalse(state.hasBackgroundPills)
     }
 }

@@ -79,7 +79,7 @@ struct Recording: Identifiable, Codable {
     }
 
     /// True while transcription is claimed by a live run. The pair shows up together
-    /// everywhere activity matters: the pills, the server reconcile's do-not-clobber rule,
+    /// everywhere activity matters: the tray's "↑N", the server reconcile's do-not-clobber rule,
     /// and the stranded-at-launch check are all asking this one question.
     var isTranscriptionActive: Bool {
         transcriptionStatus == .queued || transcriptionStatus == .transcribing

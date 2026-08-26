@@ -5,7 +5,7 @@ import AppKit
 /// in screen captures" in Settings → RECORDING).
 ///
 /// Default OFF: the redesign ships every panel with `sharingType = .none`, so the
-/// bar, pills, toasts and onboarding never photobomb screenshots or the user's own
+/// bar, toasts and onboarding never photobomb screenshots or the user's own
 /// recordings. Turning the setting ON flips every REGISTERED panel to `.readOnly`
 /// (visible to captures, still not writable by them) and every panel created later
 /// comes up capturable too, because creation-time registration applies the current

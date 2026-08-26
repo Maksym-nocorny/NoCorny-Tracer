@@ -1,9 +1,11 @@
 import Foundation
 
-// What the command bar's activity pills (and the tray's "↑N") say, computed as pure
-// functions of the state AppState already keeps. The UI phase of the redesign renders
-// these; nothing here renders anything, which is what makes the mapping testable without
-// a window.
+// What is in flight in the background, computed as pure functions of the state
+// AppState already keeps. Round 7 removed the floating pills panel that used to
+// render the two pill states; the mappings stay — `totalBackgroundCount` feeds the
+// tray's "↑N" and the Gallery button badge, and the pill states remain the tested
+// vocabulary for "what is moving" should a surface need them again. Nothing here
+// renders anything, which is what makes the mapping testable without a window.
 
 /// The upload pill: how many videos are moving and how far along they are, averaged.
 struct UploadPillState: Equatable {

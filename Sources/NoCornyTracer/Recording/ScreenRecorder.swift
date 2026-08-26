@@ -89,7 +89,7 @@ final class ScreenRecorder: NSObject {
         // Filter + output geometry per capture mode. The sizing formulas live in
         // CaptureGeometry (pure, tested); this switch only resolves live SCK objects.
         //
-        // Our own panels (command bar, pills, toasts) need no exclusion anywhere: they
+        // Our own panels (command bar, toasts) need no exclusion anywhere: they
         // carry `sharingType = .none`, which keeps them out of a full-display filter, and
         // a desktopIndependentWindow filter captures one window by definition.
         let filter: SCContentFilter

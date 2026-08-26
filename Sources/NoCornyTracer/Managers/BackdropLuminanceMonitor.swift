@@ -219,7 +219,7 @@ final class BackdropLuminanceMonitor {
         }
 
         // Exclude every window of our own process — the bar itself, toasts,
-        // pills, the camera bubble: the backdrop is what's UNDER us, not us.
+        // the camera bubble: the backdrop is what's UNDER us, not us.
         let myPID = ProcessInfo.processInfo.processIdentifier
         let ourWindows = content.windows.filter { $0.owningApplication?.processID == myPID }
         let filter = SCContentFilter(display: display, excludingWindows: ourWindows)

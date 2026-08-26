@@ -74,12 +74,79 @@ final class UpdateCoordinator: NSObject, SPUUpdaterDelegate, SPUStandardUserDriv
     /// Since Sparkle 2.3 it may be invoked again if a termination was cancelled
     /// (e.g. our own applicationShouldTerminate finishing a take).
     @ObservationIgnored private var immediateInstallHandler: (() -> Void)?
-    /// One "downloaded" toast per version per session.
-    @ObservationIgnored private var announcedVersion: String?
+
+    /// The 5-minute poller (see `startPolling`). Weak updater for the same reason
+    /// Sparkle keeps its delegates weakly — the controller owns the updater.
+    @ObservationIgnored private weak var polledUpdater: SPUUpdater?
+    @ObservationIgnored private var pollTimer: Timer?
 
     override init() {
         super.init()
         Self.shared = self
+    }
+
+    deinit {
+        pollTimer?.invalidate()
+    }
+
+    // MARK: - Fast polling (5-minute background checks)
+
+    /// Sparkle's scheduler refuses to go below an hour (`SUScheduledCheckInterval`
+    /// has a hard 3600 floor), which still left a released update invisible for up
+    /// to an hour. So the coordinator runs its OWN 300s timer that calls
+    /// `checkForUpdatesInBackground()` — the same silent cycle, just on our clock.
+    /// The plist keeps 3600 as a safety net: if this timer ever dies, Sparkle's
+    /// stock scheduler still checks hourly. Cost: one ~4 KB appcast GET per tick.
+    static let pollInterval: TimeInterval = 300
+    /// Generous tolerance so the system can coalesce timer wakes (battery).
+    static let pollTolerance: TimeInterval = 30
+
+    /// The pure gate: whether a tick may poke Sparkle right now. Every "no" here
+    /// is a state where a background check is useless or unwelcome:
+    /// - `autoChecksOn == false`: the Settings toggle turns OFF our timer's
+    ///   effect too, not just Sparkle's scheduler.
+    /// - `pending != nil`: an update is already staged/announced — Sparkle has
+    ///   stalled further cycles anyway (`willInstallUpdateOnQuit` returned true),
+    ///   there is nothing a new check could add before the relaunch.
+    /// - `sessionInProgress`: Sparkle is mid-cycle; `checkForUpdatesInBackground`
+    ///   would be a documented no-op, so don't even log the poke.
+    /// - `recording`: the delegate's recording gate would decline the check
+    ///   anyway (and log a decline) — skip the noise at the source.
+    static func shouldPoll(
+        sessionInProgress: Bool,
+        pending: Bool,
+        recording: Bool,
+        autoChecksOn: Bool
+    ) -> Bool {
+        autoChecksOn && !pending && !sessionInProgress && !recording
+    }
+
+    /// Called once from NoCornyTracerApp.init, right after the controller started
+    /// the updater. Main-run-loop timer in `.common` mode; every gate is read at
+    /// fire time, so toggling auto-checks off (or a recording starting) silences
+    /// the next tick without any re-wiring.
+    func startPolling(updater: SPUUpdater) {
+        polledUpdater = updater
+        pollTimer?.invalidate()
+        let timer = Timer(timeInterval: Self.pollInterval, repeats: true) { [weak self] _ in
+            self?.pollTick()
+        }
+        timer.tolerance = Self.pollTolerance
+        RunLoop.main.add(timer, forMode: .common)
+        pollTimer = timer
+    }
+
+    private func pollTick() {
+        guard let updater = polledUpdater else { return }
+        guard Self.shouldPoll(
+            sessionInProgress: updater.sessionInProgress,
+            pending: pendingUpdateVersion != nil,
+            recording: isRecording(),
+            autoChecksOn: updater.automaticallyChecksForUpdates
+        ) else { return }
+        // Silent by design: a hit lands in willInstallUpdateOnQuit (which logs),
+        // a miss should not write 288 "no update" lines a day.
+        updater.checkForUpdatesInBackground()
     }
 
     // MARK: - SPUUpdaterDelegate
@@ -130,7 +197,7 @@ final class UpdateCoordinator: NSObject, SPUUpdaterDelegate, SPUStandardUserDriv
         // Only when the standard driver is NOT handling it (we returned false
         // above). `.installing` covers a staged install resurfacing after the
         // impatient interval; `.notDownloaded` is the rare non-silent scheduled
-        // update (major upgrade, info-only) — chip too, honest toast skipped.
+        // update (major upgrade, info-only) — chip too.
         guard !handleShowingUpdate else { return }
         noteUpdatePending(
             version: update.displayVersionString,
@@ -140,6 +207,9 @@ final class UpdateCoordinator: NSObject, SPUUpdaterDelegate, SPUStandardUserDriv
 
     // MARK: - Pending state
 
+    /// No toast here on purpose (round 7): the "Update downloaded" heads-up was
+    /// dropped — the pending state only lights the passive surfaces (tray menu
+    /// item, drawer row, and the bar button coming in part 2).
     private func noteUpdatePending(version: String, downloaded: Bool) {
         if pendingUpdateVersion != version {
             LogManager.shared.log(
@@ -147,17 +217,6 @@ final class UpdateCoordinator: NSObject, SPUUpdaterDelegate, SPUStandardUserDriv
             )
         }
         pendingUpdateVersion = version
-
-        // The one-time heads-up; the chip carries the state from here on.
-        guard downloaded, announcedVersion != version else { return }
-        announcedVersion = version
-        let display = version.hasPrefix("v") ? version : "v\(version)"
-        AppState.shared?.presentToast?(ToastContent(
-            icon: "arrow.down.circle",
-            iconColor: Theme.Colors.statusGreen,
-            message: "Update \(display) downloaded. Relaunch when convenient.",
-            duration: 6
-        ))
     }
 
     // MARK: - The chip's click (tray menu item + drawer row)

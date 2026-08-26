@@ -2,13 +2,15 @@
 import Foundation
 import Observation
 
-/// Fake data source for eyeballing the recording pill, the background-activity
-/// pills and the storage banner without Screen Recording permission or a live
-/// take (verdict 24.08: the demo build could not show any of them). Driven from
-/// the tray's DEBUG-only "UI Preview" submenu (StatusItemController); the views
-/// read this state FIRST and fall back to the real managers when nothing is
-/// being previewed. Toasts need no state here — the preview menu pushes them
-/// through the real `presentToast` door, which is transient by nature.
+/// Fake data source for eyeballing the recording pill and the storage banner
+/// without Screen Recording permission or a live take (verdict 24.08: the demo
+/// build could not show any of them). Driven from the tray's DEBUG-only
+/// "UI Preview" submenu (StatusItemController); the views read this state FIRST
+/// and fall back to the real managers when nothing is being previewed. Toasts
+/// need no state here — the preview menu pushes them through the real
+/// `presentToast` door, which is transient by nature. (The background-activity
+/// pills this store also used to fake died in round 7 — in-flight work now
+/// shows in the library rows, the tray's "↑N" and the Gallery button badge.)
 ///
 /// DEBUG-only by construction: the class, the menu and every reading branch sit
 /// behind `#if DEBUG`, so none of this code exists in a release build. Nothing
@@ -29,25 +31,8 @@ final class UIPreviewState {
     /// Fake seconds behind the pill timer; ticks while `pill == .recording`.
     private(set) var elapsed: TimeInterval = 0
 
-    private(set) var isUploading = false
-    private(set) var transcribingCount: Int?
-    /// Fake background-pill progress, cycling 0→1→0 so the numbers visibly move.
-    private(set) var progress: Double = 0.34
-
     /// Fake quota level for the storage banner (nil = the real quota decides).
     var storageLevel: StorageAlertLevel?
-
-    // MARK: Derived shapes the pill views consume
-
-    var uploadPill: UploadPillState? {
-        isUploading ? UploadPillState(count: 1, fraction: progress) : nil
-    }
-
-    var transcribePill: TranscribePillState? {
-        transcribingCount.map { TranscribePillState(count: $0, fraction: progress) }
-    }
-
-    var hasBackgroundPills: Bool { isUploading || transcribingCount != nil }
 
     /// mm:ss, same shape as RecordingManager.formattedDuration.
     var formattedElapsed: String {
@@ -77,22 +62,9 @@ final class UIPreviewState {
         ensureTicker()
     }
 
-    func showUploading() {
-        isUploading = true
-        progress = 0.34
-        ensureTicker()
-    }
-
-    func showTranscribing(count: Int) {
-        transcribingCount = count
-        ensureTicker()
-    }
-
     func reset() {
         pill = nil
         elapsed = 0
-        isUploading = false
-        transcribingCount = nil
         storageLevel = nil
         stopTicker()
     }
@@ -101,7 +73,7 @@ final class UIPreviewState {
 
     private var ticker: Task<Void, Never>?
 
-    private var needsTicker: Bool { pill == .recording || hasBackgroundPills }
+    private var needsTicker: Bool { pill == .recording }
 
     private func ensureTicker() {
         guard ticker == nil, needsTicker else { return }
@@ -118,14 +90,9 @@ final class UIPreviewState {
         }
     }
 
-    /// One half-second beat: the pill timer counts, the pill progress loops
-    /// (~22s per lap, restarting low rather than at zero so the loop is obvious).
+    /// One half-second beat of the fake pill timer.
     private func tick() {
         if pill == .recording { elapsed += 0.5 }
-        if hasBackgroundPills {
-            progress += 0.015
-            if progress >= 1 { progress = 0.05 }
-        }
     }
 
     private func stopTicker() {
