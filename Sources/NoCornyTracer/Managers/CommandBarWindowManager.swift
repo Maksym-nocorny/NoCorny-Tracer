@@ -135,6 +135,19 @@ final class CommandBarWindowManager {
     /// from the oversized frame must check this first.
     private var pendingDrawerCloseSnap = false
 
+    /// The tab of a drawer mid-CLOSE (round 5c), nil otherwise. The closing
+    /// drawer STAYS IN THE SWIFTUI TREE — still occupying its layout slot in
+    /// the held panel frame — while its opacity animates to 0; only the
+    /// deferred snap removes it, when nothing of it is visible any more.
+    ///
+    /// Why not a removal transition: burst-proven twice. A bare state change
+    /// yanks the removed subtree in ONE frame (a transition's attached
+    /// animation drives insertions, not removals), and putting the fade into
+    /// the transaction animates the LAYOUT REFLOW too — the dying drawer
+    /// slides across the bar's face while fading. Keeping the node in layout
+    /// is the only variant where the drawer dissolves exactly in place.
+    private(set) var closingDrawerTab: DrawerTab?
+
     /// How long the panel keeps the drawer-sized frame after a close (round 5b).
     /// Harness-measured: the 0.15s `drawerFade` plus the glass dematerialize
     /// tail end ~0.28s after the morph; 0.35s snaps with margin, and a snap that
@@ -192,9 +205,11 @@ final class CommandBarWindowManager {
                        y: defaults.double(forKey: pillAnchorYKey))
     }
 
-    /// The anchor the CURRENT surface should be framed from: the pill has its own
-    /// perch; everything else hangs off the bar anchor.
-    private func anchorForCurrentSurface(visible: CGRect) -> CGPoint {
+    /// The anchor a surface should be framed from: the pill has its own perch;
+    /// everything else hangs off the bar anchor (lazily seeded on first use).
+    /// Parameterized (round 5c) because a flight needs the TARGET surface's
+    /// anchor while `surface` still holds the source.
+    private func anchorFor(surface: Surface, visible: CGRect) -> CGPoint {
         if surface == .recordingPill {
             return Self.savedPillAnchor() ?? MorphGeometry.recordingPillTopLeft(visible: visible)
         }
@@ -204,6 +219,10 @@ final class CommandBarWindowManager {
         let anchor = CGPoint(x: origin.x, y: origin.y + size.height)
         barAnchor = anchor
         return anchor
+    }
+
+    private func anchorForCurrentSurface(visible: CGRect) -> CGPoint {
+        anchorFor(surface: surface, visible: visible)
     }
 
     // MARK: Lifecycle
@@ -276,6 +295,9 @@ final class CommandBarWindowManager {
             anchorTopLeft: anchor, surface: surface, bannerHeight: bannerExtent,
             pillExtraWidth: pillExtraWidth, visible: visible
         )
+        // A re-show mid-flight (round 5c) supersedes the flight: zero offset +
+        // target frame in one transaction, content lands in place.
+        cancelFlight()
         panel.setFrame(MorphGeometry.panelFrame(forLogical: target), display: true)
 
         applyPanelAppearance()
@@ -311,14 +333,17 @@ final class CommandBarWindowManager {
     private func dismissPanel() {
         backdropMonitor.stop()   // no panel → nothing to sample under (4.1.0)
         if let panel {
-            if pendingDrawerCloseSnap {
-                // Mid-close (round 5b): the surface is already `.bar` but the
-                // panel still wears the drawer-sized frame — deriving a bar
-                // anchor from THAT frame would corrupt the saved position. The
-                // correct anchor was persisted while the drawer was open;
-                // there is nothing new to save.
+            if pendingDrawerCloseSnap || flightActive {
+                // Mid-close (round 5b) or mid-flight (round 5c): the surface
+                // state is already final but the panel deliberately wears an
+                // oversized frame (the held drawer frame / the flight union) —
+                // deriving an anchor from THAT frame would corrupt the saved
+                // position. The correct anchor was already persisted (on drawer
+                // open / at flight lift-off); there is nothing new to save.
                 pendingDrawerCloseSnap = false
+                closingDrawerTab = nil
                 drawerOpensUp = false
+                cancelFlight()
             } else {
                 let logical = MorphGeometry.logicalFrame(forPanel: panel.frame)
                 persistAnchor(forLogicalFrame: logical)
@@ -344,15 +369,15 @@ final class CommandBarWindowManager {
         reframe(animated: true)
     }
 
-    /// Whether a surface switch animates the panel FRAME (round 5, вердикт з
+    /// Whether a surface switch animates the morph (round 5, вердикт з
     /// бойової 4.0.0: «хай плашка буде спокійною»). Only the recording-pill
-    /// morphs fly — the pill travels to its perch and back, and the frame
-    /// animation IS that flight. Drawer open/close SNAPS: animating the panel
-    /// frame while the SwiftUI root re-lays out inside it every frame is exactly
-    /// what read as the bar «здригається» — the bar must sit pixel-still, so the
-    /// panel jumps to its final frame in one tick and only the drawer's own
-    /// opacity fades (`Theme.Anim.drawerFade`). Pure and static so the policy is
-    /// testable without a panel.
+    /// morphs fly — the pill travels to its perch and back, on the compositor
+    /// flight since round 5c (`beginFlight`). Drawer open/close SNAPS: moving
+    /// the panel frame tick-by-tick while the SwiftUI root re-lays out inside
+    /// it is exactly what read as the bar «здригається» — the bar must sit
+    /// pixel-still, so the panel jumps to its final frame in one tick and only
+    /// the drawer's own opacity fades (`Theme.Anim.drawerFade`). Pure and
+    /// static so the policy is testable without a panel.
     nonisolated static func morphAnimates(from old: Surface, to new: Surface) -> Bool {
         old == .recordingPill || new == .recordingPill
     }
@@ -363,8 +388,11 @@ final class CommandBarWindowManager {
     func morph(to newSurface: Surface) {
         guard surface != newSurface else { return }
         // Any surface change supersedes a drawer close still waiting for its
-        // frame snap — the new morph reframes for itself.
+        // frame snap — the new morph reframes for itself. A half-faded closing
+        // drawer is dropped on the spot (a ≤0.15s window, user-interrupted).
+        let hadPendingSnap = pendingDrawerCloseSnap
         pendingDrawerCloseSnap = false
+        closingDrawerTab = nil
         let animated = Self.morphAnimates(from: surface, to: newSurface)
         let closingDrawer: Bool
         if case .barWithDrawer = surface, newSurface == .bar {
@@ -386,7 +414,54 @@ final class CommandBarWindowManager {
             if surface == .recordingPill { anchor = barAnchor ?? anchor }
             drawerOpensUp = MorphGeometry.drawerOpensUpward(anchorTopLeft: anchor, visible: visible)
         }
-        surface = newSurface
+
+        if animated, let panel, panel.isVisible {
+            if hadPendingSnap {
+                // Mid close-hold the bar sits at the BOTTOM of a deliberately
+                // oversized panel, but the flight's offset math assumes the
+                // content fills the logical frame — complete the deferred snap
+                // first (clipping the last beats of the drawer fade under a
+                // starting recording is fine; the old frame animation clipped
+                // it the same way).
+                reframe(animated: false)
+                drawerOpensUp = false
+            }
+            // Round 5c compositor flight (verdict 26.08, «рідні анімації …
+            // мають більше fps»). ORDER MATTERS, burst-caught twice:
+            // 1. The flight's coordinate base — the offset jump and the union
+            //    frame — must commit BEFORE the branch swap: an outgoing branch
+            //    freezes at the attribute values of the PREVIOUS commit, so a
+            //    swap-first ordering paints the dying surface one frame at the
+            //    union's top-left corner.
+            // 2. The swap itself must ride the same spring the offset flies on:
+            //    a transition's attached animation drives insertions, but a
+            //    REMOVAL only animates when the transaction of the state change
+            //    carries the animation — a bare `surface = …` yanks the old
+            //    surface in a single frame.
+            let target = beginFlight(toSurface: newSurface, panel: panel)
+            withAnimation(Theme.Anim.surface) { surface = newSurface }
+            persistAnchor(forLogicalFrame: target)
+            backdropMonitor.sampleSoon()
+            if newSurface == .bar { drawerOpensUp = false }
+            return
+        }
+
+        if closingDrawer {
+            // Round 5c: the closing drawer stays IN the tree and IN layout
+            // (`closingDrawerTab`) while its opacity animates to 0 — the fade
+            // lives in the TRANSACTION of this state change. See the property
+            // docs for why a removal transition cannot do this job.
+            if case .barWithDrawer(let tab) = surface {
+                withAnimation(Theme.Anim.drawerFade) {
+                    closingDrawerTab = tab
+                    surface = newSurface
+                }
+            } else {
+                surface = newSurface
+            }
+        } else {
+            surface = newSurface
+        }
 
         if closingDrawer {
             // Round 5b (verdict 26.08, «анімація рвана» when the up-drawer
@@ -404,6 +479,9 @@ final class CommandBarWindowManager {
                     guard let self, self.pendingDrawerCloseSnap else { return }
                     self.pendingDrawerCloseSnap = false
                     guard self.surface == .bar else { return }
+                    // The drawer leaves the tree only NOW, at opacity 0 — its
+                    // removal (and the glass teardown) has nothing visible left.
+                    self.closingDrawerTab = nil
                     self.reframe(animated: false)
                     // Back to the default top pin only once the bar-sized panel
                     // is in place — content fills it exactly, so the flip cannot
@@ -414,7 +492,7 @@ final class CommandBarWindowManager {
             return
         }
 
-        reframe(animated: animated)
+        reframe(animated: false)
         if newSurface == .bar {
             drawerOpensUp = false
         }
@@ -436,22 +514,160 @@ final class CommandBarWindowManager {
         reframe(animated: false)
     }
 
-    /// Duration of the panel's frame animation during an ANIMATED reframe (the
-    /// pill flights) — tuned to ride together with the pill's content transitions
-    /// (`Theme.Anim.surface`).
-    private static let morphDuration: TimeInterval = 0.28
-
     /// Re-derives the panel frame for the current surface + banner extent from the
     /// surface's anchor (bar anchor, or the pill's own perch). Shared by morphs
     /// and banner visibility flips.
     ///
-    /// `animated` (round 5): pill flights animate — an explicit NSAnimationContext
-    /// with easeInOut rather than `setFrame(_:display:animate:)`, whose duration is
-    /// the window-size-dependent `animationResizeTime` (verdict 24.08: the morph
-    /// used to jump). Drawer/banner reframes pass `false` and snap in one tick —
+    /// `animated` (round 5c, verdict 26.08 — «рідні анімації … мають більше fps»):
+    /// pill flights are COMPOSITOR-driven. The previous NSAnimationContext frame
+    /// animation ticked a window-server resize on a main-thread timer: every tick
+    /// re-laid-out the hosting view and re-sampled the Liquid Glass at a new size,
+    /// and the tick rate never exceeds 60 — half the shef's ProMotion display.
+    /// Now the panel takes the UNION of both endpoint frames in ONE tick and the
+    /// CONTENT flies inside it on an animated SwiftUI offset — a per-frame layer
+    /// transform, no re-layout, running at the display's native rate. When the
+    /// spring settles, the frame snaps to the target; the content already sits
+    /// exactly there, so the snap changes no visible pixel (burst-proven,
+    /// shots r5c-*). Drawer/banner reframes pass `false` and snap in one tick —
     /// see `morphAnimates` for why. Animation is also skipped while the panel is
     /// off screen — animating an invisible window only delays it.
     private func reframe(animated: Bool) {
+        guard let panel else { return }
+        if animated, panel.isVisible {
+            // Same-surface animated reframe (the pill widening under a long
+            // timer): starts — or retargets — a flight toward the fresh target.
+            let target = beginFlight(toSurface: surface, panel: panel)
+            persistAnchor(forLogicalFrame: target)
+            backdropMonitor.sampleSoon()
+            return
+        }
+        let visible = currentVisibleFrame(for: panel)
+        let anchor = anchorForCurrentSurface(visible: visible)
+        let target = MorphGeometry.targetFrame(
+            anchorTopLeft: anchor,
+            surface: surface,
+            bannerHeight: bannerExtent,
+            pillExtraWidth: pillExtraWidth,
+            visible: visible
+        )
+        // A snap reframe supersedes any flight still in the air: zero the
+        // offset in the same transaction as the frame jump, so the content
+        // lands exactly in the new frame (drawer opened within ~0.3s of a
+        // pill landing, say).
+        cancelFlight()
+        panel.setFrame(MorphGeometry.panelFrame(forLogical: target), display: true)
+        persistAnchor(forLogicalFrame: target)
+        // The surface now sits over different desktop real estate — let the Auto
+        // theme re-judge it (debounced; a no-op while the monitor sleeps).
+        backdropMonitor.sampleSoon()
+    }
+
+    // MARK: Compositor flight (round 5c)
+
+    /// Content displacement while a flight is in the air: the panel wears the
+    /// union frame, the pin is top-leading, and the CONTENT sits at
+    /// `contentOffset(of: <its logical frame>, in: <union>)` — animated by the
+    /// `Theme.Anim.surface` spring from the source position to the target's.
+    /// Zero between flights. The SwiftUI root applies it verbatim.
+    private(set) var flightOffset: CGSize = .zero
+
+    /// True from lift-off to the settle snap. The root reads it to force the
+    /// top-leading pin during a flight (the offset's coordinate base) even when
+    /// a lingering `drawerOpensUp` would pin bottom.
+    private(set) var flightActive = false
+
+    /// Orphans stale flight callbacks: every lift-off, retarget and cancel bumps
+    /// it, and completions compare before touching state.
+    private var flightGeneration = 0
+
+    /// Starts (or retargets) the compositor flight toward `toSurface`'s target
+    /// frame, computed from that surface's own anchor. Returns the target so
+    /// the caller can persist it. Does NOT touch `surface` — the caller swaps
+    /// it right after, inside the spring transaction (see `morph`).
+    ///
+    /// Lift-off is one atomic beat: `flightOffset` is jumped (animation
+    /// explicitly disabled) to the content's CURRENT position inside the union
+    /// and the panel takes the union frame — same commit, so the content does
+    /// not move on screen. The spring launches a runloop turn later: writing
+    /// the same property twice in one turn coalesces into a plain jump
+    /// (burst-proven — the flight degenerated into two fades in place). A
+    /// retarget mid-flight lets the spring continue from its live presentation
+    /// value — valid as long as the union's top-left (the offset's coordinate
+    /// base) stays put; when a retarget would move the base (pill widening
+    /// against the screen edge — ultra-rare), the flight snaps out instead.
+    @discardableResult
+    private func beginFlight(toSurface: Surface, panel: CommandBarPanel) -> CGRect {
+        let visible = currentVisibleFrame(for: panel)
+        let anchor = anchorFor(surface: toSurface, visible: visible)
+        let target = MorphGeometry.targetFrame(
+            anchorTopLeft: anchor,
+            surface: toSurface,
+            bannerHeight: bannerExtent,
+            pillExtraWidth: pillExtraWidth,
+            visible: visible
+        )
+        let current = MorphGeometry.logicalFrame(forPanel: panel.frame)
+
+        if flightActive {
+            guard MorphGeometry.unionKeepsTopLeft(current: current, adding: target) else {
+                cancelFlight()
+                panel.setFrame(MorphGeometry.panelFrame(forLogical: target), display: true)
+                return target
+            }
+            let union = current.union(target)
+            if union != current {
+                // Grows right/down only — the base corner holds, nothing moves.
+                panel.setFrame(MorphGeometry.panelFrame(forLogical: union), display: true)
+            }
+            launchFlightSpring(toward: MorphGeometry.contentOffset(of: target, in: union))
+            return target
+        }
+
+        let union = current.union(target)
+        flightActive = true
+        isAnimatingReframe = true
+        // The base jump must not animate — and must land BEFORE the union
+        // frame's layout pass, so that pass already draws the content where
+        // it visually is.
+        var still = Transaction()
+        still.disablesAnimations = true
+        withTransaction(still) {
+            flightOffset = MorphGeometry.contentOffset(of: current, in: union)
+        }
+        panel.setFrame(MorphGeometry.panelFrame(forLogical: union), display: true)
+        let destination = MorphGeometry.contentOffset(of: target, in: union)
+        flightGeneration += 1
+        let generation = flightGeneration
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.flightActive, self.flightGeneration == generation else { return }
+            self.launchFlightSpring(toward: destination)
+        }
+        return target
+    }
+
+    /// Animates `flightOffset` to `destination` and, once the spring has fully
+    /// settled (`.removed` — a `logicallyComplete` snap would clip the spring's
+    /// last sub-pixel tail into a visible nudge), snaps the panel to the real
+    /// target frame of whatever surface is CURRENT by then.
+    private func launchFlightSpring(toward destination: CGSize) {
+        flightGeneration += 1
+        let generation = flightGeneration
+        withAnimation(Theme.Anim.surface, completionCriteria: .removed) {
+            flightOffset = destination
+        } completion: { [weak self] in
+            // SwiftUI animation completions run on the main actor.
+            guard let self, self.flightActive, self.flightGeneration == generation else { return }
+            self.settleFlight()
+        }
+    }
+
+    /// The landing: flight state off and the panel snapped to the current
+    /// surface's own frame — in one transaction, so pin + zero offset in the
+    /// target-sized panel draw the content exactly where the flight left it.
+    private func settleFlight() {
+        flightActive = false
+        flightOffset = .zero
+        isAnimatingReframe = false
         guard let panel else { return }
         let visible = currentVisibleFrame(for: panel)
         let anchor = anchorForCurrentSurface(visible: visible)
@@ -462,24 +678,18 @@ final class CommandBarWindowManager {
             pillExtraWidth: pillExtraWidth,
             visible: visible
         )
-        let panelFrame = MorphGeometry.panelFrame(forLogical: target)
-        if animated, panel.isVisible {
-            isAnimatingReframe = true
-            NSAnimationContext.runAnimationGroup({ context in
-                context.duration = Self.morphDuration
-                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                panel.animator().setFrame(panelFrame, display: true)
-            }, completionHandler: { [weak self] in
-                // Runs on the main thread, like every AppKit animation callback.
-                MainActor.assumeIsolated { self?.isAnimatingReframe = false }
-            })
-        } else {
-            panel.setFrame(panelFrame, display: true)
-        }
-        persistAnchor(forLogicalFrame: target)
-        // The surface now sits over different desktop real estate — let the Auto
-        // theme re-judge it (debounced; a no-op while the monitor sleeps).
-        backdropMonitor.sampleSoon()
+        panel.setFrame(MorphGeometry.panelFrame(forLogical: target), display: true)
+    }
+
+    /// Drops a flight without landing it (snap reframe took over, or the panel
+    /// is going away). Offset zeroing is not animated; the caller's own frame
+    /// change lands in the same transaction.
+    private func cancelFlight() {
+        guard flightActive else { return }
+        flightGeneration += 1
+        flightActive = false
+        flightOffset = .zero
+        isAnimatingReframe = false
     }
 
     /// True while an animated reframe is in flight — its intermediate frames also

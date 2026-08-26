@@ -207,6 +207,33 @@ enum MorphGeometry {
         )
     }
 
+    // MARK: Compositor flight (round 5c)
+
+    /// Where a surface frame sits INSIDE a container frame, expressed as the
+    /// SwiftUI offset of content pinned to the container's TOP-LEADING corner.
+    /// AppKit y grows up, SwiftUI y grows down — hence the maxY flip.
+    ///
+    /// Round 5c (verdict 26.08, «рідні анімації мають більше fps»): the pill
+    /// flight no longer animates the window frame tick-by-tick. The panel takes
+    /// the UNION of the two endpoint frames in one jump and the CONTENT flies
+    /// across it on an animated offset — this function is the coordinate bridge
+    /// between the two worlds.
+    static func contentOffset(of frame: CGRect, in container: CGRect) -> CGSize {
+        CGSize(
+            width: frame.minX - container.minX,
+            height: container.maxY - frame.maxY
+        )
+    }
+
+    /// Whether extending `current` to also cover `target` keeps the union's
+    /// TOP-LEFT corner — the coordinate base of a live flight offset — exactly
+    /// where it is. Growing to the right or downward is free; growing left or
+    /// upward moves the base and would invalidate an in-flight offset.
+    static func unionKeepsTopLeft(current: CGRect, adding target: CGRect) -> Bool {
+        let union = current.union(target)
+        return union.minX == current.minX && union.maxY == current.maxY
+    }
+
     /// The NSPanel frame for a logical surface frame (adds the shadow margin).
     static func panelFrame(forLogical logical: CGRect) -> CGRect {
         logical.insetBy(dx: -panelShadowInset, dy: -panelShadowInset)

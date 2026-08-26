@@ -343,6 +343,93 @@ final class MorphGeometryTests: XCTestCase {
                        "the banner grows the surface downward")
     }
 
+    // MARK: Compositor flight (round 5c)
+
+    func testContentOffsetOfFrameInItselfIsZero() {
+        let frame = CGRect(x: 100, y: 200, width: 560, height: 80)
+        XCTAssertEqual(MorphGeometry.contentOffset(of: frame, in: frame), .zero)
+    }
+
+    func testContentOffsetFlipsTheVerticalAxis() {
+        // A low bar flying to the pill's high perch: the union spans both, and
+        // SwiftUI y grows DOWN — the higher AppKit frame gets the smaller offset.
+        let bar = CGRect(x: 440, y: 140, width: 560, height: 80)
+        let pill = CGRect(
+            x: visible.midX - 341 / 2,
+            y: visible.maxY - MorphGeometry.recordingPillTopInset - 54,
+            width: 341, height: 54
+        )
+        let union = bar.union(pill)
+        let barOffset = MorphGeometry.contentOffset(of: bar, in: union)
+        let pillOffset = MorphGeometry.contentOffset(of: pill, in: union)
+        // The union's top edge is the pill's top edge, its left edge is the bar's.
+        XCTAssertEqual(pillOffset.height, 0, "the pill sits at the union's top")
+        XCTAssertEqual(barOffset.width, 0, "the bar sits at the union's left")
+        XCTAssertEqual(barOffset.height, union.maxY - bar.maxY)
+        XCTAssertEqual(pillOffset.width, pill.minX - union.minX)
+        XCTAssertGreaterThan(barOffset.height, 0, "the lower frame is further down in SwiftUI coords")
+    }
+
+    func testContentOffsetRoundTripsThroughTheUnion() {
+        // top-left(container) + offset (with the y-axis flipped back) must
+        // reconstruct the frame's own top-left — the invariant the flight's
+        // settle snap relies on.
+        let frame = CGRect(x: 320, y: 500, width: 341, height: 54)
+        let container = CGRect(x: 100, y: 140, width: 900, height: 700)
+        let offset = MorphGeometry.contentOffset(of: frame, in: container)
+        XCTAssertEqual(container.minX + offset.width, frame.minX)
+        XCTAssertEqual(container.maxY - offset.height, frame.maxY)
+    }
+
+    func testUnionKeepsTopLeftWhenGrowingRightOrDown() {
+        let current = CGRect(x: 100, y: 300, width: 600, height: 400)
+        // Wider to the right and deeper down — the top-left corner holds.
+        XCTAssertTrue(MorphGeometry.unionKeepsTopLeft(
+            current: current,
+            adding: CGRect(x: 500, y: 200, width: 400, height: 300)
+        ))
+        // Inside the current union — trivially holds.
+        XCTAssertTrue(MorphGeometry.unionKeepsTopLeft(
+            current: current,
+            adding: CGRect(x: 200, y: 350, width: 100, height: 100)
+        ))
+    }
+
+    func testUnionMovesTopLeftWhenGrowingLeftOrUp() {
+        let current = CGRect(x: 100, y: 300, width: 600, height: 400)
+        // Growing LEFT moves minX.
+        XCTAssertFalse(MorphGeometry.unionKeepsTopLeft(
+            current: current,
+            adding: CGRect(x: 50, y: 400, width: 100, height: 100)
+        ))
+        // Growing UP moves maxY (AppKit y grows up).
+        XCTAssertFalse(MorphGeometry.unionKeepsTopLeft(
+            current: current,
+            adding: CGRect(x: 300, y: 650, width: 100, height: 100)
+        ))
+    }
+
+    func testFlightEndpointsAgreeWithTargetFrames() {
+        // The real bar→pill flight: source and destination offsets inside the
+        // union must land the content exactly on the two surface frames.
+        let anchor = CGPoint(x: 300, y: 320)
+        let bar = MorphGeometry.targetFrame(anchorTopLeft: anchor, surface: .bar, visible: visible)
+        let pill = MorphGeometry.targetFrame(
+            anchorTopLeft: MorphGeometry.recordingPillTopLeft(visible: visible),
+            surface: .recordingPill, visible: visible
+        )
+        let union = bar.union(pill)
+        let source = MorphGeometry.contentOffset(of: bar, in: union)
+        let destination = MorphGeometry.contentOffset(of: pill, in: union)
+        // Reconstruct both frames from the union's top-left + the offsets.
+        XCTAssertEqual(union.minX + source.width, bar.minX)
+        XCTAssertEqual(union.maxY - source.height, bar.maxY)
+        XCTAssertEqual(union.minX + destination.width, pill.minX)
+        XCTAssertEqual(union.maxY - destination.height, pill.maxY)
+        // And the reverse leg is the mirror image within the same union.
+        XCTAssertEqual(pill.union(bar), union)
+    }
+
     // MARK: Defaults and insets
 
     func testInitialOriginCentersAndHangsFromTheTop() {

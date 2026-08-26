@@ -36,16 +36,18 @@ struct CommandBarRootView: View {
         // there is nothing left to silence, and a blanket kill would eat the
         // bar's own hover/spin animations).
         //
-        // ROUND 5b (verdict 26.08, «анімація рвана» on the up-drawer close): the
-        // drawer's transition is SYMMETRIC — the same `drawerFade` out as in.
-        // The round-5 `.identity` removal relied on the panel snapping small in
-        // the same tick, but Liquid Glass DEMATERIALIZES a removed surface over
-        // ~150ms (harness-measured), and the instant snap CLIPPED that dying
-        // glass — on an upward drawer the clipped remnant and its shadow
-        // collapsed visibly across the bar's face. Now the manager holds the
-        // large panel frame until fade + dematerialize finish (see
-        // `drawerCloseSnapDelay`), so the drawer dissolves IN PLACE and the
-        // late snap changes no visible pixel.
+        // ROUND 5b/5c (verdicts 26.08: «анімація рвана», «рідні анімації …
+        // мають більше fps»): a drawer CLOSE is not a removal. The closing
+        // drawer stays in the tree and in layout (`closingDrawerTab`) inside
+        // the held panel frame while its opacity animates to 0, and only the
+        // deferred frame snap (`drawerCloseSnapDelay`) removes it — burst-
+        // proven to change no visible pixel. Every other variant failed on
+        // pixels: an instant snap clipped the ~150ms Liquid Glass
+        // dematerialize across the bar's face (r5a), a bare state change
+        // yanked the subtree in ONE frame (removal transitions do not animate
+        // from their attached animation), and a fade carried by the
+        // transaction slid the dying drawer down the bar with the layout
+        // reflow.
         Group {
             if manager.surface == .recordingPill {
                 RecordingPillView(appState: appState, manager: manager)
@@ -59,25 +61,25 @@ struct CommandBarRootView: View {
                 // bar only when there is no room below (verdict 26.08) — same
                 // components, mirrored stack.
                 VStack(spacing: 0) {
-                    if manager.drawerOpensUp, case .barWithDrawer(let tab) = manager.surface {
-                        drawerContent(tab)
+                    if manager.drawerOpensUp, let tab = shownDrawerTab {
+                        closableDrawer(tab)
                             .padding(.bottom, MorphGeometry.drawerGap)
-                            .transition(.opacity.animation(Theme.Anim.drawerFade))
                     }
                     CommandBarView(appState: appState, manager: manager)
-                    if !manager.drawerOpensUp, case .barWithDrawer(let tab) = manager.surface {
-                        drawerContent(tab)
+                    if !manager.drawerOpensUp, let tab = shownDrawerTab {
+                        closableDrawer(tab)
                             .padding(.top, MorphGeometry.drawerGap)
-                            .transition(.opacity.animation(Theme.Anim.drawerFade))
                     }
                     // Banner on the plain bar ONLY (decision, phase 4): the pill stays
                     // minimal mid-take; the drawer already shows the quota in its
                     // Dropbox row. Same round-5 policy as the drawer: frame snap,
-                    // own fade, no slide. `!drawerOpensUp` gates it out of the
-                    // up-close fade window (round 5b): with the bottom pin still
-                    // held, a banner joining the stack would push the bar UP for
-                    // the length of the fade — it waits for the snap instead.
-                    if manager.surface == .bar, !manager.drawerOpensUp, storageLevel != .ok {
+                    // own fade, no slide. The `!drawerOpensUp` and closing-tab
+                    // gates keep it out of the close-fade window (rounds 5b/5c):
+                    // the dying drawer still occupies its layout slot, and a
+                    // banner joining the stack would displace the bar for the
+                    // length of the fade — it waits for the snap instead.
+                    if manager.surface == .bar, !manager.drawerOpensUp,
+                       manager.closingDrawerTab == nil, storageLevel != .ok {
                         StorageBannerView(appState: appState, level: storageLevel)
                             .padding(.top, MorphGeometry.bannerGap)
                             .transition(.asymmetric(
@@ -93,16 +95,26 @@ struct CommandBarRootView: View {
                 )
             }
         }
+        // ROUND 5c (verdict 26.08, «рідні анімації … мають більше fps»): during
+        // a pill flight the panel wears the UNION of both endpoint frames and
+        // the CONTENT flies across it on this offset — a per-frame layer
+        // transform at the display's native rate, instead of the old per-tick
+        // window-frame animation with its full re-layout and 60fps timer cap.
+        // Zero between flights, so it is inert on every other surface.
+        .offset(manager.flightOffset)
         // The panel is `panelShadowInset` larger than the glass on every side so the
         // SwiftUI shadow has room to draw (the panel's own shadow is off).
         .padding(MorphGeometry.panelShadowInset)
-        // Pin to whichever edge of the animating panel stays put on screen: the
-        // TOP edge for downward growth, the BOTTOM edge while an upward drawer is
-        // open/closing — that is what keeps the bar visually stationary while the
-        // panel frame animates around it.
+        // Pin to whichever edge of the panel stays put on screen: the TOP edge
+        // for downward growth, the BOTTOM edge while an upward drawer is
+        // open/closing — that is what keeps the bar visually stationary while
+        // the panel frame changes around it. A flight (round 5c) forces the
+        // TOP-LEADING pin — the coordinate base of `flightOffset` — even when a
+        // lingering `drawerOpensUp` would pin bottom.
         .frame(
             maxWidth: .infinity, maxHeight: .infinity,
-            alignment: manager.drawerOpensUp ? .bottomLeading : .topLeading
+            alignment: (manager.drawerOpensUp && !manager.flightActive)
+                ? .bottomLeading : .topLeading
         )
         // Keep the panel's NSAppearance pinned to the in-app theme toggle.
         .onChange(of: appState.appTheme, initial: true) {
@@ -144,9 +156,30 @@ struct CommandBarRootView: View {
         #endif
     }
 
+    /// The drawer the stack should currently RENDER: the open one, or the one
+    /// mid-close (round 5c) — a closing drawer keeps its place in the layout,
+    /// fading via `closableDrawer`, until the manager's deferred snap drops it.
+    private var shownDrawerTab: CommandBarDrawerTab? {
+        if case .barWithDrawer(let tab) = manager.surface { return tab }
+        return manager.closingDrawerTab
+    }
+
+    /// One drawer slot of the stack. INSERTION fades in via the transition (its
+    /// attached animation drives insertions fine). The CLOSE is not a removal
+    /// at all (round 5c): the view stays in the tree and in layout — so it can
+    /// not slide with the reflow and the bar cannot move — while its opacity
+    /// animates to 0 in the `drawerFade` transaction the manager's morph opens;
+    /// the eventual removal happens at the frame snap, fully invisible.
+    @ViewBuilder
+    private func closableDrawer(_ tab: CommandBarDrawerTab) -> some View {
+        drawerContent(tab)
+            .opacity(manager.closingDrawerTab == nil ? 1 : 0)
+            .transition(.opacity.animation(Theme.Anim.drawerFade))
+    }
+
     /// The open drawer. Each tab carries its own fade so flipping
     /// gallery↔settings crossfades (the panel frame doesn't change between tabs),
-    /// while the containing `if case` above owns the open/close appearance. The
+    /// while the containing `if` above owns the open appearance. The
     /// animation rides ON the transition (round 5): the ambient transaction is
     /// deliberately empty during surface changes.
     @ViewBuilder
