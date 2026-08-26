@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.2.1] - 2026-08-26
+### Fixed
+- **Drawer animations are smooth at full display refresh rate.** The bar-to-pill flight now runs on the compositor like native macOS animations - no more stutter, even while a recording is starting. Closing an upward-opened drawer no longer smears over the bar: it fades out in place.
+- **The drawer opens downward whenever there is room.** It only flips upward when the screen really is too tight below the bar.
+- **Auto theme switches gently.** A soft 0.45s crossfade instead of a hard flip, and the theme changes at most once every few seconds after the backdrop has settled - no more eye-jarring flicker.
+
+
 ## [4.2.0] - 2026-08-25
 ### Added
 - **Updates now install themselves.** Tracer quietly downloads new versions in the background and simply shows "Relaunch to update" - in the menu bar tray and in Settings - when one is ready. Click it and you restart straight into the new version; ignore it and the update installs on your next quit anyway. A recording is never interrupted: during one, the relaunch politely waits for the take to finish.
