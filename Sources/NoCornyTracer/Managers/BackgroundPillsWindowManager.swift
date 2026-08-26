@@ -57,9 +57,12 @@ final class BackgroundPillsWindowManager {
             _ = BackgroundActivity.transcriptions(recordings: appState.recordings,
                                                   activity: appState.transcriptionActivity)
             _ = appState.appTheme
-            // The Auto verdict flips panel looks without touching appTheme —
-            // the pills must re-apply their appearance on it too (4.1.0).
-            _ = appState.autoPanelDark
+            // The Auto verdict (autoPanelDark) is deliberately NOT observed
+            // (verdict 26.08): the bar masks Auto flips with a snapshot
+            // crossfade, and a live re-apply here would make the pills blink
+            // beside it. Pills are short-lived — they pick the fresh verdict up
+            // from `panelAppearance` on their next refresh/show. An EXPLICIT
+            // theme change (appTheme above) still re-applies immediately.
             #if DEBUG
             // UI Preview: fake pills must order the panel in/out and re-fit too.
             _ = UIPreviewState.shared.isUploading

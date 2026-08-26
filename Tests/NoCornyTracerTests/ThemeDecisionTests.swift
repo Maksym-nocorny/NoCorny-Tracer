@@ -34,6 +34,112 @@ final class ThemeDecisionTests: XCTestCase {
         XCTAssertEqual(ThemeDecision.next(current: .light, luminance: ThemeDecision.darkThreshold), .light)
     }
 
+    // MARK: - Debouncer (verdict 26.08: «перемикання … ріже око»)
+
+    /// Streak + dwell over the raw hysteresis. Thresholds stay 0.45/0.62; the
+    /// debouncer decides WHEN a crossing is believed. Clock driven by hand.
+    private func makeDebouncer(startingAt seconds: TimeInterval = 0)
+        -> (decide: (ThemeDecision.Look, Double) -> ThemeDecision.Look,
+            advance: (TimeInterval) -> Void) {
+        var now = Date(timeIntervalSinceReferenceDate: seconds)
+        var debouncer = ThemeDecision.Debouncer(now: { now })
+        return (
+            decide: { current, luminance in debouncer.decide(current: current, luminance: luminance) },
+            advance: { now = now.addingTimeInterval($0) }
+        )
+    }
+
+    func testStableBackdropFlipsExactlyOnceAfterThreeSamples() {
+        let d = makeDebouncer()
+        // Two bright samples over a dark look: still dark.
+        XCTAssertEqual(d.decide(.dark, 0.9), .dark)
+        d.advance(1)
+        XCTAssertEqual(d.decide(.dark, 0.9), .dark)
+        d.advance(1)
+        // The third consecutive one earns the flip.
+        XCTAssertEqual(d.decide(.dark, 0.9), .light)
+        d.advance(1)
+        // The backdrop stays bright — the shown look already matches, no re-flip.
+        XCTAssertEqual(d.decide(.light, 0.9), .light)
+    }
+
+    /// A window flashing past — samples alternating across the thresholds —
+    /// never accumulates three in a row, so the theme never strobes.
+    func testFlickeringBackdropNeverFlips() {
+        let d = makeDebouncer()
+        for _ in 0..<6 {
+            XCTAssertEqual(d.decide(.dark, 0.9), .dark)
+            d.advance(1)
+            XCTAssertEqual(d.decide(.dark, 0.1), .dark)
+            d.advance(1)
+        }
+    }
+
+    /// Two bright samples, one back on the dark side, two bright again — the
+    /// opposite sample reset the streak, so five samples still change nothing.
+    func testOppositeSampleResetsTheStreak() {
+        let d = makeDebouncer()
+        XCTAssertEqual(d.decide(.dark, 0.9), .dark)
+        d.advance(1)
+        XCTAssertEqual(d.decide(.dark, 0.9), .dark)
+        d.advance(1)
+        XCTAssertEqual(d.decide(.dark, 0.1), .dark)   // streak wiped
+        d.advance(1)
+        XCTAssertEqual(d.decide(.dark, 0.9), .dark)   // 1 of 3 again
+        d.advance(1)
+        XCTAssertEqual(d.decide(.dark, 0.9), .dark)   // 2 of 3
+        d.advance(1)
+        XCTAssertEqual(d.decide(.dark, 0.9), .light)  // 3 of 3 — now it flips
+    }
+
+    /// A sample inside the holding band resets the streak too: "stably past the
+    /// threshold" means past the threshold, not hovering around it.
+    func testBandSampleResetsTheStreak() {
+        let d = makeDebouncer()
+        XCTAssertEqual(d.decide(.dark, 0.9), .dark)
+        d.advance(1)
+        XCTAssertEqual(d.decide(.dark, 0.9), .dark)
+        d.advance(1)
+        XCTAssertEqual(d.decide(.dark, 0.55), .dark)  // in-band → streak wiped
+        d.advance(1)
+        XCTAssertEqual(d.decide(.dark, 0.9), .dark)
+        d.advance(1)
+        XCTAssertEqual(d.decide(.dark, 0.9), .dark)
+        d.advance(1)
+        XCTAssertEqual(d.decide(.dark, 0.9), .light)
+    }
+
+    /// After a flip, even a genuinely dark backdrop waits out the 6s dwell — and
+    /// flips on the first sample past it (the streak kept building meanwhile).
+    func testDwellHoldsASecondFlipForSixSeconds() {
+        let d = makeDebouncer()
+        // Earn the dark→light flip at t=2.
+        XCTAssertEqual(d.decide(.dark, 0.9), .dark)
+        d.advance(1)
+        XCTAssertEqual(d.decide(.dark, 0.9), .dark)
+        d.advance(1)
+        XCTAssertEqual(d.decide(.dark, 0.9), .light)
+        // The backdrop turns dark immediately; the streak completes 3s after the
+        // flip — but the 6s dwell holds it.
+        for _ in 0..<3 {
+            d.advance(1)
+            XCTAssertEqual(d.decide(.light, 0.1), .light)
+        }
+        d.advance(1)
+        XCTAssertEqual(d.decide(.light, 0.1), .light, "4s after the flip — still held")
+        d.advance(3)
+        XCTAssertEqual(d.decide(.light, 0.1), .dark,
+                       "7s after the flip — dwell expired, the built streak flips")
+    }
+
+    /// The first flip ever needs no dwell — only the streak.
+    func testFirstFlipNeedsNoDwell() {
+        let d = makeDebouncer()
+        XCTAssertEqual(d.decide(.dark, 0.9), .dark)
+        XCTAssertEqual(d.decide(.dark, 0.9), .dark)
+        XCTAssertEqual(d.decide(.dark, 0.9), .light, "no prior flip — dwell does not apply")
+    }
+
     // MARK: - Luminance math
 
     /// White averages to ~1, black to ~0 — the Rec.709 weighting is sane.

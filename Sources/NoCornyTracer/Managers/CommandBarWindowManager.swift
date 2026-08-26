@@ -120,12 +120,26 @@ final class CommandBarWindowManager {
     /// `setRecordingPillContentWidth`; only `.recordingPill` frames consume it.
     private(set) var pillExtraWidth: CGFloat = 0
 
-    /// Whether the currently open drawer unfolds ABOVE the bar (verdict 25.08:
-    /// bar in the lower half of the screen → drawer opens up). The SwiftUI root
-    /// reads this to flip the stack order and the pin edge. Reset synchronously
-    /// on the morph back to `.bar` (round 5) — the instant close needs no sticky
-    /// pin through an animation that no longer exists.
+    /// Whether the currently open drawer unfolds ABOVE the bar (verdict 26.08:
+    /// upward ONLY when the drawer cannot fit below — `MorphGeometry.
+    /// drawerOpensUpward`). The SwiftUI root reads this to flip the stack order
+    /// and the pin edge. On close it stays TRUE until the deferred frame snap
+    /// (round 5b): the bottom pin is what keeps the bar pixel-still while the
+    /// drawer fades out above it inside the still-large panel.
     private(set) var drawerOpensUp = false
+
+    /// True between a drawer close and its deferred frame snap (round 5b): the
+    /// surface is already `.bar` but the panel deliberately still wears the
+    /// drawer-sized frame so the removal fade + the Liquid Glass dematerialize
+    /// can play out un-clipped. Anything that would reframe or persist anchors
+    /// from the oversized frame must check this first.
+    private var pendingDrawerCloseSnap = false
+
+    /// How long the panel keeps the drawer-sized frame after a close (round 5b).
+    /// Harness-measured: the 0.15s `drawerFade` plus the glass dematerialize
+    /// tail end ~0.28s after the morph; 0.35s snaps with margin, and a snap that
+    /// late changes no visible pixel (burst-verified, shots r5a-*).
+    private static let drawerCloseSnapDelay: TimeInterval = 0.35
 
     private var panel: CommandBarPanel?
     private let panelDelegate = CommandBarPanelDelegate()
@@ -297,8 +311,18 @@ final class CommandBarWindowManager {
     private func dismissPanel() {
         backdropMonitor.stop()   // no panel → nothing to sample under (4.1.0)
         if let panel {
-            let logical = MorphGeometry.logicalFrame(forPanel: panel.frame)
-            persistAnchor(forLogicalFrame: logical)
+            if pendingDrawerCloseSnap {
+                // Mid-close (round 5b): the surface is already `.bar` but the
+                // panel still wears the drawer-sized frame — deriving a bar
+                // anchor from THAT frame would corrupt the saved position. The
+                // correct anchor was persisted while the drawer was open;
+                // there is nothing new to save.
+                pendingDrawerCloseSnap = false
+                drawerOpensUp = false
+            } else {
+                let logical = MorphGeometry.logicalFrame(forPanel: panel.frame)
+                persistAnchor(forLogicalFrame: logical)
+            }
             panel.orderOut(nil)
         }
         panel = nil
@@ -338,7 +362,16 @@ final class CommandBarWindowManager {
     /// grows above the stationary bar (see `MorphGeometry.targetFrame`).
     func morph(to newSurface: Surface) {
         guard surface != newSurface else { return }
+        // Any surface change supersedes a drawer close still waiting for its
+        // frame snap — the new morph reframes for itself.
+        pendingDrawerCloseSnap = false
         let animated = Self.morphAnimates(from: surface, to: newSurface)
+        let closingDrawer: Bool
+        if case .barWithDrawer = surface, newSurface == .bar {
+            closingDrawer = true
+        } else {
+            closingDrawer = false
+        }
         if newSurface == .recordingPill {
             // A fresh take starts at the base width; the mounted pill re-reports
             // its actual width immediately (a stale extra from the previous take's
@@ -354,13 +387,35 @@ final class CommandBarWindowManager {
             drawerOpensUp = MorphGeometry.drawerOpensUpward(anchorTopLeft: anchor, visible: visible)
         }
         surface = newSurface
+
+        if closingDrawer {
+            // Round 5b (verdict 26.08, «анімація рвана» when the up-drawer
+            // closes): the close is symmetric to the open. The drawer fades out
+            // IN PLACE — the panel keeps the drawer-sized frame and the pin edge
+            // keeps the bar pixel-still — because snapping the frame in the same
+            // tick would CLIP the removal fade and the ~150ms Liquid Glass
+            // dematerialize that follows it (on an upward drawer that clipped,
+            // dying glass collapsed visibly across the bar's face). The frame
+            // snap runs after `drawerCloseSnapDelay`, when nothing visible is
+            // left to clip — burst-proven invisible (shots r5a-*).
+            pendingDrawerCloseSnap = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.drawerCloseSnapDelay) { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self, self.pendingDrawerCloseSnap else { return }
+                    self.pendingDrawerCloseSnap = false
+                    guard self.surface == .bar else { return }
+                    self.reframe(animated: false)
+                    // Back to the default top pin only once the bar-sized panel
+                    // is in place — content fills it exactly, so the flip cannot
+                    // move a pixel.
+                    self.drawerOpensUp = false
+                }
+            }
+            return
+        }
+
         reframe(animated: animated)
         if newSurface == .bar {
-            // Round 5: the drawer close is INSTANT (no frame animation, removal
-            // without a slide), so the bottom-pin needs no sticky window any
-            // more — back to the default top-pin in the same update. Content
-            // exactly fills the bar-sized panel either way, so the flip itself
-            // cannot move a pixel.
             drawerOpensUp = false
         }
     }
@@ -374,6 +429,10 @@ final class CommandBarWindowManager {
         let newExtent: CGFloat = visible ? MorphGeometry.storageBannerExtent : 0
         guard newExtent != bannerExtent else { return }
         bannerExtent = newExtent
+        // Mid drawer-close (round 5b) the extent is recorded but the panel is
+        // deliberately oversized for the removal fade — the deferred snap will
+        // apply it; reframing NOW would clip the fade.
+        guard !pendingDrawerCloseSnap else { return }
         reframe(animated: false)
     }
 
@@ -432,6 +491,10 @@ final class CommandBarWindowManager {
     /// owns. Called by the window delegate on `windowDidMove`.
     func panelWasDragged(toLogicalFrame logical: CGRect) {
         guard !isAnimatingReframe else { return }
+        // Mid drawer-close (round 5b) the frame is deliberately oversized while
+        // the surface is already `.bar` — deriving a bar anchor from it would
+        // corrupt the position. The snap lands in a beat and persists the truth.
+        guard !pendingDrawerCloseSnap else { return }
         persistAnchor(forLogicalFrame: logical)
         // Dragged over new backdrop — re-judge the Auto look (debounced).
         backdropMonitor.sampleSoon()
@@ -466,21 +529,36 @@ final class CommandBarWindowManager {
     /// per-panel. Called on show(), from CommandBarRootView's
     /// `.onChange(of: appState.appTheme)`, and by the backdrop monitor.
     ///
-    /// `smooth` (Auto flips only): NSAppearance is not animatable, so the switch
-    /// is masked with a short alpha dip instead of blinking between looks.
+    /// `smooth` (Auto flips only, verdict 26.08: the alpha dip still read as a
+    /// hard blink — «перемикання … ріже око»): NSAppearance is not animatable,
+    /// so the flip hides behind a SNAPSHOT CROSSFADE — one bitmap of the old
+    /// look pinned over the content, the appearance switched underneath it, the
+    /// snapshot dissolved over `themeFadeDuration`. The overlay is click-through
+    /// (`hitTest` nil) and hover keeps working: tracking areas belong to the
+    /// live views below and never consult z-order.
     func applyPanelAppearance(smooth: Bool = false) {
         guard let appState, let panel else { return }
         let target = appState.panelAppearance
-        if smooth, panel.isVisible, panel.appearance?.name != target?.name {
+        if smooth, panel.isVisible, panel.appearance?.name != target?.name,
+           let contentView = panel.contentView,
+           let snapshot = Self.snapshotOverlay(of: contentView) {
+            // One fade at a time: a newer flip replaces the previous overlay
+            // (with the 6s decision dwell this is belt-and-braces, not a path
+            // the monitor can actually race).
+            themeFadeOverlay?.removeFromSuperview()
+            contentView.addSubview(snapshot)
+            themeFadeOverlay = snapshot
+            // The live content re-renders in the new look UNDER the snapshot.
+            panel.appearance = target
             NSAnimationContext.runAnimationGroup({ context in
-                context.duration = 0.10
-                panel.animator().alphaValue = 0.85
-            }, completionHandler: {
+                context.duration = Self.themeFadeDuration
+                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                snapshot.animator().alphaValue = 0
+            }, completionHandler: { [weak self] in
                 MainActor.assumeIsolated {
-                    panel.appearance = target
-                    NSAnimationContext.runAnimationGroup { context in
-                        context.duration = 0.18
-                        panel.animator().alphaValue = 1
+                    snapshot.removeFromSuperview()
+                    if let self, self.themeFadeOverlay === snapshot {
+                        self.themeFadeOverlay = nil
                     }
                 }
             })
@@ -488,6 +566,31 @@ final class CommandBarWindowManager {
             panel.appearance = target
         }
         syncBackdropMonitor()
+    }
+
+    /// Duration of the Auto-theme crossfade (verdict 26.08).
+    private static let themeFadeDuration: TimeInterval = 0.45
+
+    /// The dissolving snapshot of the previous look; nil between crossfades.
+    private var themeFadeOverlay: NSImageView?
+
+    /// One bitmap of the content view AS CURRENTLY DRAWN (the old look), wrapped
+    /// in a click-through image view covering the whole content view. Sized in
+    /// points with the rep carrying the backing scale, so Retina stays sharp.
+    private static func snapshotOverlay(of contentView: NSView) -> NSImageView? {
+        let bounds = contentView.bounds
+        guard bounds.width > 0, bounds.height > 0,
+              let rep = contentView.bitmapImageRepForCachingDisplay(in: bounds) else {
+            return nil
+        }
+        contentView.cacheDisplay(in: bounds, to: rep)
+        let image = NSImage(size: bounds.size)
+        image.addRepresentation(rep)
+        let overlay = ThemeFadeOverlayView(frame: bounds)
+        overlay.image = image
+        overlay.imageScaling = .scaleAxesIndependently
+        overlay.autoresizingMask = [.width, .height]
+        return overlay
     }
 
     /// The monitor runs exactly while: Auto is chosen AND the panel is up.
@@ -512,6 +615,15 @@ final class CommandBarWindowManager {
         let screen = panel?.screen ?? NSScreen.main ?? NSScreen.screens.first
         return screen?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1440, height: 900)
     }
+}
+
+// MARK: - Theme-fade overlay
+
+/// The crossfade snapshot (verdict 26.08): sits over the live content while the
+/// old look dissolves, and never intercepts the mouse — clicks land on the live
+/// controls underneath, and their tracking-area hover states keep firing.
+private final class ThemeFadeOverlayView: NSImageView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
 // MARK: - NSAppearance from app theme

@@ -27,6 +27,69 @@ enum ThemeDecision {
         if luminance < darkThreshold { return .dark }
         return current
     }
+
+    /// How many CONSECUTIVE samples must demand the same other look before the
+    /// theme actually flips (≈3s at the 1 Hz cadence). A window flashing past
+    /// underneath is not a reason to repaint the bar.
+    static let samplesToFlip = 3
+
+    /// Minimum time between two flips (verdict 26.08: «перемикання … ріже око»).
+    /// Even a genuinely changed backdrop waits this long after the previous flip.
+    static let flipDwell: TimeInterval = 6
+
+    /// The calming layer over the raw hysteresis (verdict 26.08). The thresholds
+    /// stay 0.45/0.62; what changed is WHEN a crossing is believed:
+    /// - only after `samplesToFlip` consecutive samples demand the same other
+    ///   look (a sample in the band, or back on the current side, resets the
+    ///   streak), AND
+    /// - at least `flipDwell` has passed since the previous flip (the streak
+    ///   keeps building while dwell holds, so a genuinely changed backdrop flips
+    ///   on the first sample after the dwell expires).
+    ///
+    /// The clock is injected so tests can drive time by hand.
+    struct Debouncer {
+        private var streakLook: Look?
+        private var streakCount = 0
+        private var lastFlip: Date?
+        private let now: () -> Date
+
+        init(now: @escaping () -> Date = Date.init) {
+            self.now = now
+        }
+
+        /// Feed one sample; returns the look to SHOW (== `current` until a flip
+        /// is earned).
+        mutating func decide(current: Look, luminance: Double) -> Look {
+            let raw = ThemeDecision.next(current: current, luminance: luminance)
+            guard raw != current else {
+                streakLook = nil
+                streakCount = 0
+                return current
+            }
+            if streakLook == raw {
+                streakCount += 1
+            } else {
+                streakLook = raw
+                streakCount = 1
+            }
+            guard streakCount >= ThemeDecision.samplesToFlip else { return current }
+            if let lastFlip, now().timeIntervalSince(lastFlip) < ThemeDecision.flipDwell {
+                return current
+            }
+            lastFlip = now()
+            streakLook = nil
+            streakCount = 0
+            return raw
+        }
+
+        /// Forget any half-built streak (monitor stop / retarget). The dwell
+        /// clock is NOT reset: hiding and re-showing the panel must not grant a
+        /// free instant flip.
+        mutating func resetStreak() {
+            streakLook = nil
+            streakCount = 0
+        }
+    }
 }
 
 // MARK: - Monitor
@@ -40,7 +103,10 @@ enum ThemeDecision {
 /// by our PID excludes every present and future panel in one stroke.)
 ///
 /// Cadence: one sample per second while the panel is visible, plus a debounced
-/// (~0.7s) immediate sample after moves/reframes/Space switches. The panel gone →
+/// (~0.7s) immediate sample after moves/reframes/Space switches. Samples do NOT
+/// translate into flips directly (verdict 26.08: «перемикання … ріже око») —
+/// they feed `ThemeDecision.Debouncer`, which demands 3 consecutive samples past
+/// the threshold and a 6s dwell since the previous flip. The panel gone →
 /// the monitor sleeps. Without the screen permission (before onboarding) it stays
 /// silent — no sampling, no prompting: the Auto theme then follows the system.
 @MainActor
@@ -56,6 +122,10 @@ final class BackdropLuminanceMonitor {
     private var debounceTask: Task<Void, Never>?
     private var spaceObserver: NSObjectProtocol?
     private var isSampling = false
+
+    /// The calming layer between raw samples and actual flips (verdict 26.08):
+    /// 3 consecutive out-of-band samples + a 6s dwell since the previous flip.
+    private var decision = ThemeDecision.Debouncer()
 
     // MARK: Lifecycle
 
@@ -85,6 +155,9 @@ final class BackdropLuminanceMonitor {
             NSWorkspace.shared.notificationCenter.removeObserver(spaceObserver)
         }
         spaceObserver = nil
+        // A half-built streak must not survive a sleep — but the dwell clock
+        // does: hiding and re-showing the panel is not a license to flip.
+        decision.resetStreak()
     }
 
     /// Debounced sample (~0.7s) for event storms: window drags and reframes fire
@@ -113,8 +186,17 @@ final class BackdropLuminanceMonitor {
         let rect = MorphGeometry.logicalFrame(forPanel: panel.frame).insetBy(dx: -20, dy: -20)
         guard let luminance = try? await Self.sampleLuminance(under: rect, on: screen) else { return }
 
-        let look = ThemeDecision.next(current: currentLook ?? .dark, luminance: luminance)
-        guard look != currentLook else { return }
+        // The very first verdict after start is ADOPTION, not a flip: the panel
+        // just appeared and should wear the right look immediately — the
+        // debounce/dwell calming (verdict 26.08) guards CHANGES only.
+        guard let current = currentLook else {
+            let look = ThemeDecision.next(current: .dark, luminance: luminance)
+            currentLook = look
+            onLook?(look)
+            return
+        }
+        let look = decision.decide(current: current, luminance: luminance)
+        guard look != current else { return }
         currentLook = look
         onLook?(look)
     }

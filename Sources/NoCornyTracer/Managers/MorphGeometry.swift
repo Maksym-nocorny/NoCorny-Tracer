@@ -89,24 +89,30 @@ enum MorphGeometry {
         }
     }
 
-    /// Which way a drawer opens from a bar whose TOP-LEFT sits at `anchorTopLeft`
-    /// (verdict 25.08: direction follows the HALF of the screen, not just fit).
-    /// Bar center in the LOWER half of the visible frame → the drawer unfolds
-    /// UPWARD (above the stationary bar); upper half or dead center → downward.
-    /// Fit still overrides preference: a direction with no room yields to the
-    /// other. The bar itself never moves in either direction — only the surface
-    /// grows past it (the slide-into-bounds fallback is the sole exception).
+    /// Breathing room the drawer keeps from the visible-frame edge when judging
+    /// whether a direction "fits" (verdict 26.08): a drawer that would land flush
+    /// against the Dock or the menu bar is treated as not fitting.
+    static let drawerFitMargin: CGFloat = 16
+
+    /// Which way a drawer opens from a bar whose TOP-LEFT sits at `anchorTopLeft`.
+    ///
+    /// Policy (verdict 26.08 from the 4.2.0 build — «іноді відкриває вгору, хоча
+    /// знизу місця досить» — replaces the old half-screen rule): DOWNWARD whenever
+    /// the full drawer surface fits under the bar with `drawerFitMargin` to spare;
+    /// only when it doesn't, UPWARD if that direction fits the same way; and when
+    /// neither fits, downward again — `targetFrame`'s slide-into-bounds clamp
+    /// takes over from there. The banner never joins this math: the drawer
+    /// surface REPLACES the banner (only `.bar` renders it), so the drawer frame
+    /// is the whole story. The bar itself never moves in either direction — only
+    /// the surface grows past it (the slide-into-bounds fallback is the sole
+    /// exception).
     static func drawerOpensUpward(anchorTopLeft: CGPoint, visible: CGRect) -> Bool {
-        let barHeight = Theme.Metrics.commandBarSize.height
-        let barCenterY = anchorTopLeft.y - barHeight / 2
-        let prefersUp = barCenterY < visible.midY
-
         let drawerSize = size(of: .barWithDrawer(.gallery))
-        let upFits = anchorTopLeft.y - barHeight + drawerSize.height <= visible.maxY
-        let downFits = anchorTopLeft.y - drawerSize.height >= visible.minY
-
-        if prefersUp { return upFits || !downFits }
-        return !downFits && upFits
+        let downFits = anchorTopLeft.y - drawerSize.height >= visible.minY + drawerFitMargin
+        if downFits { return false }
+        let barHeight = Theme.Metrics.commandBarSize.height
+        let upFits = anchorTopLeft.y - barHeight + drawerSize.height <= visible.maxY - drawerFitMargin
+        return upFits
     }
 
     /// Where a surface should sit. `anchorTopLeft` is ALWAYS the top-left of the

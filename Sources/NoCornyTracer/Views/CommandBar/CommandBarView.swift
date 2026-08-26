@@ -34,10 +34,18 @@ struct CommandBarRootView: View {
         // animate a single property during open/close (which also makes an
         // explicit `.transaction { $0.animation = nil }` on the bar unnecessary —
         // there is nothing left to silence, and a blanket kill would eat the
-        // bar's own hover/spin animations). The drawer fades in via its
-        // transition-attached `drawerFade`; its removal is `.identity` because
-        // the panel snaps to the bar size in the same tick — a fade-out would
-        // play inside a window that no longer has room for it.
+        // bar's own hover/spin animations).
+        //
+        // ROUND 5b (verdict 26.08, «анімація рвана» on the up-drawer close): the
+        // drawer's transition is SYMMETRIC — the same `drawerFade` out as in.
+        // The round-5 `.identity` removal relied on the panel snapping small in
+        // the same tick, but Liquid Glass DEMATERIALIZES a removed surface over
+        // ~150ms (harness-measured), and the instant snap CLIPPED that dying
+        // glass — on an upward drawer the clipped remnant and its shadow
+        // collapsed visibly across the bar's face. Now the manager holds the
+        // large panel frame until fade + dematerialize finish (see
+        // `drawerCloseSnapDelay`), so the drawer dissolves IN PLACE and the
+        // late snap changes no visible pixel.
         Group {
             if manager.surface == .recordingPill {
                 RecordingPillView(appState: appState, manager: manager)
@@ -47,32 +55,29 @@ struct CommandBarRootView: View {
                         .animation(Theme.Anim.surface)
                     )
             } else {
-                // The drawer sits UNDER the bar by default; when the bar lives in
-                // the lower half of the screen it unfolds ABOVE it instead
-                // (verdict 25.08) — same components, mirrored stack.
+                // The drawer sits UNDER the bar by default; it unfolds ABOVE the
+                // bar only when there is no room below (verdict 26.08) — same
+                // components, mirrored stack.
                 VStack(spacing: 0) {
                     if manager.drawerOpensUp, case .barWithDrawer(let tab) = manager.surface {
                         drawerContent(tab)
                             .padding(.bottom, MorphGeometry.drawerGap)
-                            .transition(.asymmetric(
-                                insertion: .opacity.animation(Theme.Anim.drawerFade),
-                                removal: .identity
-                            ))
+                            .transition(.opacity.animation(Theme.Anim.drawerFade))
                     }
                     CommandBarView(appState: appState, manager: manager)
                     if !manager.drawerOpensUp, case .barWithDrawer(let tab) = manager.surface {
                         drawerContent(tab)
                             .padding(.top, MorphGeometry.drawerGap)
-                            .transition(.asymmetric(
-                                insertion: .opacity.animation(Theme.Anim.drawerFade),
-                                removal: .identity
-                            ))
+                            .transition(.opacity.animation(Theme.Anim.drawerFade))
                     }
                     // Banner on the plain bar ONLY (decision, phase 4): the pill stays
                     // minimal mid-take; the drawer already shows the quota in its
                     // Dropbox row. Same round-5 policy as the drawer: frame snap,
-                    // own fade, no slide.
-                    if manager.surface == .bar, storageLevel != .ok {
+                    // own fade, no slide. `!drawerOpensUp` gates it out of the
+                    // up-close fade window (round 5b): with the bottom pin still
+                    // held, a banner joining the stack would push the bar UP for
+                    // the length of the fade — it waits for the snap instead.
+                    if manager.surface == .bar, !manager.drawerOpensUp, storageLevel != .ok {
                         StorageBannerView(appState: appState, level: storageLevel)
                             .padding(.top, MorphGeometry.bannerGap)
                             .transition(.asymmetric(

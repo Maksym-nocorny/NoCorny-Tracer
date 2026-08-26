@@ -38,8 +38,9 @@ final class MorphGeometryTests: XCTestCase {
     }
 
     func testDrawerOpensUpwardNearTheBottom() {
-        // Bar center 160 is deep in the lower half — the drawer unfolds ABOVE the
-        // stationary bar: the surface's bottom edge stays the bar's bottom edge.
+        // Downward there is no room at all (200 − 428 < visible.minY) — the drawer
+        // unfolds ABOVE the stationary bar: the surface's bottom edge stays the
+        // bar's bottom edge.
         let anchor = CGPoint(x: 400, y: 200)
         let frame = MorphGeometry.targetFrame(
             anchorTopLeft: anchor, surface: .barWithDrawer(.gallery), visible: visible
@@ -49,41 +50,81 @@ final class MorphGeometryTests: XCTestCase {
         XCTAssertLessThanOrEqual(frame.maxY, visible.maxY, "and the result stays on screen")
     }
 
-    // MARK: Half-screen rule (verdict 25.08): direction follows the half, not just fit
+    // MARK: Direction policy (verdict 26.08): DOWN whenever it fits, UP only when it must
 
-    /// A tall display where BOTH directions fit — the lower half still wins upward.
+    /// A tall borderless display for direction scenarios.
     private let tall = CGRect(x: 0, y: 0, width: 1440, height: 1000)
 
-    func testLowerHalfOpensUpwardEvenWhenDownwardFits() {
-        let anchor = CGPoint(x: 400, y: 460)  // bar center 420 < midY 500
-        XCTAssertTrue(MorphGeometry.drawerOpensUpward(anchorTopLeft: anchor, visible: tall))
-        let frame = MorphGeometry.targetFrame(
-            anchorTopLeft: anchor, surface: .barWithDrawer(.settings), visible: tall
-        )
-        XCTAssertEqual(frame.minY, 460 - 80)
-        XCTAssertEqual(frame.maxY, 460 - 80 + 428)
-    }
-
-    func testUpperHalfOpensDownwardEvenWhenUpwardFits() {
-        let anchor = CGPoint(x: 400, y: 560)  // bar center 520 > midY 500
+    /// The 4.2.0 complaint verbatim: the bar in the LOWER half, yet the drawer
+    /// fits below with margin to spare — it must open DOWNWARD now (the old
+    /// half-screen rule sent it up from here).
+    func testLowerHalfStillOpensDownwardWhenItFits() {
+        let anchor = CGPoint(x: 400, y: 460)  // bar center 420 < midY 500 (old rule: up)
+        // Down needs minY 460 − 428 = 32 ≥ margin 16 — fits.
         XCTAssertFalse(MorphGeometry.drawerOpensUpward(anchorTopLeft: anchor, visible: tall))
         let frame = MorphGeometry.targetFrame(
             anchorTopLeft: anchor, surface: .barWithDrawer(.settings), visible: tall
         )
-        XCTAssertEqual(frame.maxY, 560, "anchor held — the drawer hangs under the bar")
-        XCTAssertEqual(frame.minY, 560 - 428)
+        XCTAssertEqual(frame.maxY, 460, "anchor held — the drawer hangs under the bar")
+        XCTAssertEqual(frame.minY, 460 - 428)
     }
 
-    func testDeadCenterOpensDownward() {
-        let anchor = CGPoint(x: 400, y: 540)  // bar center 500 == midY 500
-        XCTAssertFalse(
-            MorphGeometry.drawerOpensUpward(anchorTopLeft: anchor, visible: tall),
-            "a tie goes downward"
+    func testCenteredBarOpensDownward() {
+        let anchor = CGPoint(x: 400, y: 540)  // bar center 500 == midY, plenty of room below
+        XCTAssertFalse(MorphGeometry.drawerOpensUpward(anchorTopLeft: anchor, visible: tall))
+    }
+
+    func testUpperHalfOpensDownward() {
+        let anchor = CGPoint(x: 400, y: 560)
+        XCTAssertFalse(MorphGeometry.drawerOpensUpward(anchorTopLeft: anchor, visible: tall))
+    }
+
+    /// Down fits geometrically but WITHOUT the 16pt margin — that counts as "does
+    /// not fit", and the drawer goes up (which fits comfortably from here).
+    func testNearBottomWithoutMarginOpensUpward() {
+        let anchor = CGPoint(x: 400, y: 440)  // down would land at minY 12 < margin 16
+        XCTAssertTrue(MorphGeometry.drawerOpensUpward(anchorTopLeft: anchor, visible: tall))
+        let frame = MorphGeometry.targetFrame(
+            anchorTopLeft: anchor, surface: .barWithDrawer(.settings), visible: tall
         )
+        XCTAssertEqual(frame.minY, 440 - 80, "the bar's bottom edge holds")
+        XCTAssertEqual(frame.maxY, 440 - 80 + 428, "the drawer grew upward past the bar")
     }
 
-    /// The half-screen rule applies ONLY to drawers — the banner still grows down.
-    func testBarSurfaceIgnoresTheHalfScreenRule() {
+    /// The margin boundary is inclusive: landing exactly 16pt off the edge fits.
+    func testFitMarginBoundaryIsInclusive() {
+        let exactly = CGPoint(x: 400, y: tall.minY + 428 + MorphGeometry.drawerFitMargin)
+        XCTAssertFalse(MorphGeometry.drawerOpensUpward(anchorTopLeft: exactly, visible: tall))
+        let onePointShort = CGPoint(x: 400, y: exactly.y - 1)
+        XCTAssertTrue(MorphGeometry.drawerOpensUpward(anchorTopLeft: onePointShort, visible: tall))
+    }
+
+    /// Neither direction fits (tiny screen) → the answer is DOWN, and
+    /// `targetFrame`'s slide-into-bounds clamp handles the placement
+    /// (see `testDrawerSlidesIntoBoundsWhenNeitherDirectionFits`).
+    func testTinyScreenFallsBackDownward() {
+        let short = CGRect(x: 0, y: 0, width: 1440, height: 500)
+        let anchor = CGPoint(x: 100, y: 250)
+        XCTAssertFalse(MorphGeometry.drawerOpensUpward(anchorTopLeft: anchor, visible: short))
+    }
+
+    /// The banner never joins the direction math: the drawer surface REPLACES the
+    /// banner (only `.bar` renders it), so a bar wearing the banner opens exactly
+    /// like a bare one — and the drawer's target frame ignores the extent too.
+    func testBannerDoesNotChangeTheDrawerDirectionOrFrame() {
+        let anchor = CGPoint(x: 400, y: 460)  // the down-fits scenario above
+        let bare = MorphGeometry.targetFrame(
+            anchorTopLeft: anchor, surface: .barWithDrawer(.gallery), visible: tall
+        )
+        let withBanner = MorphGeometry.targetFrame(
+            anchorTopLeft: anchor, surface: .barWithDrawer(.gallery),
+            bannerHeight: MorphGeometry.storageBannerExtent, visible: tall
+        )
+        XCTAssertEqual(withBanner, bare)
+    }
+
+    /// The direction policy applies ONLY to drawers — the banner still grows down.
+    func testBarSurfaceIgnoresTheDirectionPolicy() {
         let anchor = CGPoint(x: 400, y: 300)  // lower half
         let frame = MorphGeometry.targetFrame(
             anchorTopLeft: anchor, surface: .bar,
