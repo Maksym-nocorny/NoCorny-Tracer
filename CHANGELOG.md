@@ -1,5 +1,18 @@
 # Changelog
 
+## [4.3.0] - 2026-08-26
+### Added
+- **"Show Tracer in screen captures" switch** (Settings, Recording). Off by default, Tracer stays invisible in screenshots and recordings as before; turn it on to show the bar and pills - handy for showing the app to someone. The camera bubble is always visible either way.
+
+### Changed
+- **The bar can no longer be dragged off screen.** The plate always stays fully visible, and if you drag it down with the drawer open, the drawer automatically flips to open upward when it runs out of room.
+- **Selected Area capture has been retired** - it was too rough. Entire Screen and Window remain; anyone who had Area selected records the entire screen again.
+- The record button on the dark theme sits on a deep dark well and stands out properly.
+
+### Fixed
+- **Auto appearance works right after launch again.** Since 4.2.1 the backdrop watcher failed to start on a fresh launch until you toggled the theme by hand.
+
+
 ## [4.2.1] - 2026-08-26
 ### Fixed
 - **Drawer animations are smooth at full display refresh rate.** The bar-to-pill flight now runs on the compositor like native macOS animations - no more stutter, even while a recording is starting. Closing an upward-opened drawer no longer smears over the bar: it fades out in place.
