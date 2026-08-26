@@ -59,8 +59,11 @@ struct CommandBarRootView: View {
             } else {
                 // The drawer sits UNDER the bar by default; it unfolds ABOVE the
                 // bar only when there is no room below (verdict 26.08) — same
-                // components, mirrored stack.
-                VStack(spacing: 0) {
+                // components, mirrored stack. `.leading` (round 7): the update
+                // chip widens the BAR ROW past the 560pt drawer, and the drawer
+                // must stay pinned to the bar's left edge (the anchor edge), not
+                // re-center under the wider row.
+                VStack(alignment: .leading, spacing: 0) {
                     if manager.drawerOpensUp, let tab = shownDrawerTab {
                         closableDrawer(tab)
                             .padding(.bottom, MorphGeometry.drawerGap)
@@ -207,6 +210,10 @@ struct CommandBarView: View {
     @State private var showCaptureMenu = false
     @State private var recordHovering = false
     @State private var captureHovering = false
+    /// The update chip's hover-unroll state (round 7, hybrid A→B): owned here
+    /// because the ROW pays for it — +`updateChipHoverExtra` of width.
+    @State private var chipExpanded = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var isRecording: Bool { appState.recordingManager.isRecording }
 
@@ -221,17 +228,68 @@ struct CommandBarView: View {
             divider
             libraryButton
             settingsButton
+            // The update chip (round 7): between settings and the spacer, so
+            // its hover-unroll eats the spacer's slack first and only the
+            // remainder widens the row — see barRowWidth.
+            if let version = pendingUpdateVersion {
+                UpdateChipView(version: version, isExpanded: $chipExpanded)
+                    .transition(chipTransition)
+            }
             Spacer(minLength: 0)
             closeButton
         }
         .padding(.leading, 14)
         .padding(.trailing, 18)
         .frame(
-            width: Theme.Metrics.commandBarSize.width,
+            width: barRowWidth,
             height: Theme.Metrics.commandBarSize.height
         )
         .glassSurface(cornerRadius: Theme.Metrics.barCornerRadius)
         .floatingPanelShadow()
+        // Scoped to chip events ONLY (the round-5 "no ambient animation on the
+        // bar" policy holds: barRowWidth changes exactly when the chip appears,
+        // unrolls or leaves). The same spring the chip itself springs on — the
+        // spacer compresses and the close cross glides with it as one motion.
+        .animation(reduceMotion ? nil : Theme.Anim.updateChip, value: barRowWidth)
+        // The panel must grow/shrink around the springing row: grow snaps the
+        // frame first (the new strip is transparent), shrink defers the snap
+        // past the spring — the drawer-close recipe, in the manager.
+        .onChange(of: barRowWidth, initial: true) { _, width in
+            manager.setUpdateChipExtraWidth(width - Theme.Metrics.commandBarSize.width)
+        }
+    }
+
+    // MARK: Update chip (round 7)
+
+    /// nil = no chip in the bar. Reading the coordinator's observable
+    /// `pendingUpdateVersion` re-renders the row when an update stages.
+    /// Mid-take the bar shows no chip (the tray/drawer keep theirs) — decided
+    /// by the pure `UpdateChipState.showsInBar`.
+    private var pendingUpdateVersion: String? {
+        guard let version = UpdateCoordinator.shared?.pendingUpdateVersion,
+              UpdateChipState.showsInBar(pendingVersion: version, isRecording: isRecording)
+        else { return nil }
+        return version
+    }
+
+    /// 560 base; +51 while the chip is present (its 38 + the 13 gap); +20 more
+    /// while it is hover-expanded — the rest of the 38→87 unroll comes out of
+    /// the flexible spacer (~29pt), so no control left of the chip ever moves.
+    private var barRowWidth: CGFloat {
+        guard pendingUpdateVersion != nil else { return Theme.Metrics.commandBarSize.width }
+        var width = Theme.Metrics.commandBarSize.width + MorphGeometry.updateChipExtent
+        if chipExpanded { width += MorphGeometry.updateChipHoverExtra }
+        return width
+    }
+
+    /// Appearance per the handoff: spring scale 0.6→1 (`updateChip`) with a
+    /// 0.12s fade — the neighbours spring apart on the same curve via the
+    /// row-width animation above. Reduce Motion: a plain fade.
+    private var chipTransition: AnyTransition {
+        guard !reduceMotion else { return .opacity }
+        return .scale(scale: 0.6)
+            .animation(Theme.Anim.updateChip)
+            .combined(with: .opacity.animation(.easeOut(duration: 0.12)))
     }
 
     // MARK: Record

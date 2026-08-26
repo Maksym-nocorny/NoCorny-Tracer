@@ -18,15 +18,28 @@ struct UpdateChipState: Equatable {
     var title: String
     var clickAction: ClickAction
 
-    /// nil = no chip (nothing pending). Appcast versions arrive as "4.2.0" —
-    /// the title adds the "v", without doubling one that is already there.
+    /// Appcast versions arrive as "4.2.0" — displays add the "v", without
+    /// doubling one that is already there. Shared by the tray/drawer title and
+    /// the bar chip's short label (round 7).
+    static func displayVersion(_ version: String) -> String {
+        version.hasPrefix("v") ? version : "v\(version)"
+    }
+
+    /// nil = no chip (nothing pending).
     static func decide(pendingVersion: String?, isRecording: Bool) -> UpdateChipState? {
         guard let version = pendingVersion, !version.isEmpty else { return nil }
-        let display = version.hasPrefix("v") ? version : "v\(version)"
         return UpdateChipState(
-            title: "Relaunch to update \(display)",
+            title: "Relaunch to update \(displayVersion(version))",
             clickAction: isRecording ? .explainRecordingBlock : .installAndRelaunch
         )
+    }
+
+    /// Whether the BAR shows its update chip (round 7, hybrid A→B). Unlike
+    /// `decide` — which keeps the tray item and drawer row alive mid-take —
+    /// the bar hides the chip during a recording: mid-take the bar IS the
+    /// recording pill, and the pill carries no chip.
+    static func showsInBar(pendingVersion: String?, isRecording: Bool) -> Bool {
+        !isRecording && decide(pendingVersion: pendingVersion, isRecording: false) != nil
     }
 }
 
@@ -251,6 +264,20 @@ final class UpdateCoordinator: NSObject, SPUUpdaterDelegate, SPUStandardUserDriv
             }
         }
     }
+
+    // MARK: - UI Preview (DEBUG builds only)
+
+    #if DEBUG
+    /// The tray's UI Preview door (round 7): fakes a staged update so the bar
+    /// chip, the tray item and the drawer row can be eyeballed without cutting
+    /// a real release. Preview-only: there is no immediateInstallHandler, so a
+    /// click on the faked chip falls through to the ordinary user-initiated
+    /// check — harmless. Also pins the 5-minute poll (pending ≠ nil), which is
+    /// exactly what a real staged update would do.
+    func previewSetPendingUpdate(version: String?) {
+        pendingUpdateVersion = version
+    }
+    #endif
 
     // MARK: - Manual check (the drawer's "Check for Updates" link)
 

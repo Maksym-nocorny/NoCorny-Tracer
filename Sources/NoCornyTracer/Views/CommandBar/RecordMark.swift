@@ -42,18 +42,31 @@ struct RecordRingMark: View {
         endPoint: .bottom
     )
 
-    /// The disc behind the triangle. Light: the subtle ink wash from the macro
-    /// (light glass is brighter than the disc). Dark: ROUND 6 (verdict from the
-    /// 4.2.1 build: «надто блякла, зроби більш чорно насиченою, щоб виділялась»
-    /// — overrides the round-3 white-7% lift, which read as washed-out): a deep
-    /// saturated black-navy well, so the button reads as a distinct dark pill on
-    /// the glass while the #3E90FF-family ring and triangle fire against it.
+    /// The disc behind the triangle — canonized in round 7 as the «припіднятий
+    /// камінець» (raised stone). RULE: in DARK the well is LIGHTER than the
+    /// glass around it (~1.2:1 against the bar's deep navy), lit from the
+    /// top-left by the diagonal #2C313B → #1A1E26 gradient (~44°), so the
+    /// button reads as a stone RAISED off the surface. The darker-than-glass
+    /// well (round 6's #05080F 62%) was rejected by the boss as a «діра» — it
+    /// read as a hole punched in the bar, not a control sitting on it. Light
+    /// scheme unchanged: the subtle ink wash from the macro (light glass is
+    /// brighter than the disc, so the wash already reads raised there).
+    ///
     /// Inherited at every diameter on purpose — the bar's 52pt, the gallery
     /// empty state's 44pt and the 18pt ThumbnailPlayBadge (which pins the dark
-    /// scheme) all wear the same well, one brand mark everywhere.
-    private static let wellFill = Color.adaptive(
-        light: Color(hex: 0x0B1220, opacity: 0.05),
-        dark: Color(hex: 0x05080F, opacity: 0.62)
+    /// scheme) all wear the same stone, one brand mark everywhere. The badge's
+    /// separate BLACK backing disc is deliberately untouched: that disc is
+    /// contrast armor against light thumbnail frames — a different context
+    /// than glass — and is not the well.
+    private static let wellGradient = LinearGradient(
+        colors: [
+            Color.adaptive(light: Color(hex: 0x0B1220, opacity: 0.05),
+                           dark: Color(hex: 0x2C313B)),
+            Color.adaptive(light: Color(hex: 0x0B1220, opacity: 0.05),
+                           dark: Color(hex: 0x1A1E26))
+        ],
+        startPoint: .topLeading,
+        endPoint: .bottomTrailing
     )
 
     private var scale: CGFloat { diameter / 52 }
@@ -63,7 +76,7 @@ struct RecordRingMark: View {
         ZStack {
             Circle()
                 .inset(by: lineWidth)
-                .fill(Self.wellFill)
+                .fill(Self.wellGradient)
             Circle()
                 .inset(by: lineWidth / 2)
                 .stroke(Self.ringBlue, style: StrokeStyle(

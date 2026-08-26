@@ -488,6 +488,8 @@ final class StatusItemController: NSObject {
         add("Recording pill", #selector(previewRecordingPill))
         add("Paused pill", #selector(previewPausedPill))
         submenu.addItem(.separator())
+        add("Update chip (v9.9.9)", #selector(previewUpdateChip))
+        submenu.addItem(.separator())
         add("Toast: link copied", #selector(previewToastLinkCopied))
         add("Toast: mic lost (critical)", #selector(previewToastMicLost))
         submenu.addItem(.separator())
@@ -526,6 +528,14 @@ final class StatusItemController: NSObject {
         UIPreviewState.shared.showPill(paused: true)
     }
 
+    /// Fakes a staged update (round 7): the bar chip, the tray item and the
+    /// drawer row all light up as if v9.9.9 were waiting for a relaunch.
+    /// "Reset preview" clears it.
+    @objc private func previewUpdateChip() {
+        actions.showCommandBar()
+        UpdateCoordinator.shared?.previewSetPendingUpdate(version: "9.9.9")
+    }
+
     /// Mirrors the upload-completion FALLBACK toast (round 7: the primary
     /// announcement is a system notification; this toast shows only when
     /// notifications are unavailable or denied — see AppNotifications).
@@ -560,6 +570,7 @@ final class StatusItemController: NSObject {
 
     @objc private func previewReset() {
         UIPreviewState.shared.reset()
+        UpdateCoordinator.shared?.previewSetPendingUpdate(version: nil)
     }
 
     @objc private func previewToggleCapturablePanels() {

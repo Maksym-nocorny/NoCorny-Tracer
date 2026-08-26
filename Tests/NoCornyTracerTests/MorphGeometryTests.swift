@@ -269,6 +269,76 @@ final class MorphGeometryTests: XCTestCase {
         XCTAssertEqual(wide.width, 341 + 38)
     }
 
+    // MARK: Update chip width (round 7, hybrid A→B: bar 560 → 611 → 631)
+
+    /// The handoff's arithmetic, pinned: the compact chip adds its 38pt circle
+    /// plus one 13pt gap (560→611); the hover unroll to the 87pt capsule costs
+    /// 49pt, of which the row's ~29pt spacer pays first and only 20pt grow the
+    /// panel (611→631).
+    func testUpdateChipExtentsMatchTheHandoff() {
+        XCTAssertEqual(MorphGeometry.updateChipExtent, 51, "38pt chip + 13pt gap")
+        XCTAssertEqual(MorphGeometry.updateChipHoverExtra, 20, "(87 − 38) − ~29pt of spacer slack")
+    }
+
+    /// The chip widens the bar row on BOTH bar surfaces (the row shows the chip
+    /// with a drawer open too) and never the pill (it carries no chip).
+    func testChipWidensBarAndDrawerSurfacesOnly() {
+        let chip = MorphGeometry.updateChipExtent
+        XCTAssertEqual(
+            MorphGeometry.size(of: .bar, chipExtraWidth: chip),
+            CGSize(width: 611, height: 80)
+        )
+        XCTAssertEqual(
+            MorphGeometry.size(of: .bar, chipExtraWidth: chip + MorphGeometry.updateChipHoverExtra),
+            CGSize(width: 631, height: 80),
+            "hover-expanded: the 20pt remainder joins"
+        )
+        XCTAssertEqual(
+            MorphGeometry.size(of: .barWithDrawer(.gallery), chipExtraWidth: chip).width,
+            611
+        )
+        XCTAssertEqual(
+            MorphGeometry.size(of: .recordingPill, chipExtraWidth: chip),
+            MorphGeometry.size(of: .recordingPill),
+            "the pill ignores the chip"
+        )
+        XCTAssertEqual(
+            MorphGeometry.size(of: .bar, chipExtraWidth: -10),
+            MorphGeometry.size(of: .bar),
+            "a negative report clamps to the base"
+        )
+    }
+
+    /// Chip growth is rightward from the held top-left anchor — every control
+    /// left of the chip keeps its screen position, same contract as the pill's
+    /// extra width.
+    func testChipGrowthHoldsTheTopLeftAnchor() {
+        let anchor = CGPoint(x: 400, y: 700)
+        let bare = MorphGeometry.targetFrame(anchorTopLeft: anchor, surface: .bar, visible: visible)
+        let withChip = MorphGeometry.targetFrame(
+            anchorTopLeft: anchor, surface: .bar,
+            chipExtraWidth: MorphGeometry.updateChipExtent, visible: visible
+        )
+        XCTAssertEqual(withChip.minX, bare.minX, "the leading edge holds")
+        XCTAssertEqual(withChip.maxY, bare.maxY, "the top edge holds")
+        XCTAssertEqual(withChip.width, bare.width + 51, "all growth goes right")
+        XCTAssertEqual(withChip.height, bare.height)
+    }
+
+    /// Near the right screen edge the widened bar slides left — the shared
+    /// clamp, same as the widened pill.
+    func testChipAtTheRightEdgeSlidesTheBarLeft() {
+        let anchor = CGPoint(x: 860, y: 700)   // 860 + 560 = 1420 fits in 1440
+        let bare = MorphGeometry.targetFrame(anchorTopLeft: anchor, surface: .bar, visible: visible)
+        XCTAssertEqual(bare.minX, 860, "the bare bar fits unmoved")
+        let withChip = MorphGeometry.targetFrame(
+            anchorTopLeft: anchor, surface: .bar,
+            chipExtraWidth: MorphGeometry.updateChipExtent, visible: visible
+        )
+        XCTAssertEqual(withChip.maxX, visible.maxX, "the widened bar slid to the edge")
+        XCTAssertEqual(withChip.width, 611)
+    }
+
     // MARK: Panel-frame animation policy (round 5: «хай плашка буде спокійною»)
 
     /// Only the recording-pill morphs animate the panel frame — that animation IS

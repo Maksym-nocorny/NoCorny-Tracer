@@ -50,6 +50,17 @@ enum MorphGeometry {
     /// (gap + banner). This is the value callers pass as `bannerHeight`.
     static var storageBannerExtent: CGFloat { bannerGap + storageBannerHeight }
 
+    /// Extra logical WIDTH of the bar row while the update chip is present
+    /// (round 7, hybrid A→B): the compact 38pt chip plus the 13pt gap it adds
+    /// between the settings button and the spacer. Bar 560 → 611.
+    static let updateChipExtent: CGFloat = 51
+
+    /// The hover remainder (round 7 correction): unrolling the chip 38→87
+    /// costs 49pt; the bar's flexible spacer donates its ~29pt first, and only
+    /// this remainder grows the panel (611 → 631) — with the same spring, so
+    /// no button left of the chip moves. See CommandBarView.barRowWidth.
+    static let updateChipHoverExtra: CGFloat = 20
+
     /// Transparent margin around the logical surface inside the panel, reserved for
     /// the SwiftUI shadow. 60pt comfortably covers radius 27.5 + y-offset 22.
     static let panelShadowInset: CGFloat = 60
@@ -65,20 +76,28 @@ enum MorphGeometry {
     /// designer's 341-pt base for transient content the mockup doesn't draw — a
     /// 100+ minute timer outgrowing its 57-pt slot. It applies ONLY to
     /// `.recordingPill`; anchors and the perch flight stay computed from the base.
+    ///
+    /// `chipExtraWidth` (round 7) widens the BAR ROW for the update chip
+    /// (`updateChipExtent` compact, plus `updateChipHoverExtra` while hovered;
+    /// 0 with no update pending). It applies to `.bar` AND `.barWithDrawer` —
+    /// the bar row shows the chip in both — and never to the pill, which
+    /// carries no chip. Growth goes to the RIGHT of the held top-left anchor,
+    /// same contract as the pill's extra width.
     static func size(
         of surface: CommandBarSurface,
         bannerHeight: CGFloat = 0,
-        pillExtraWidth: CGFloat = 0
+        pillExtraWidth: CGFloat = 0,
+        chipExtraWidth: CGFloat = 0
     ) -> CGSize {
         switch surface {
         case .bar:
             return CGSize(
-                width: Theme.Metrics.commandBarSize.width,
+                width: Theme.Metrics.commandBarSize.width + max(0, chipExtraWidth),
                 height: Theme.Metrics.commandBarSize.height + bannerHeight
             )
         case .barWithDrawer:
             return CGSize(
-                width: Theme.Metrics.commandBarSize.width,
+                width: Theme.Metrics.commandBarSize.width + max(0, chipExtraWidth),
                 height: Theme.Metrics.commandBarSize.height + drawerGap + Theme.Metrics.drawerSize.height
             )
         case .recordingPill:
@@ -135,9 +154,13 @@ enum MorphGeometry {
         surface: CommandBarSurface,
         bannerHeight: CGFloat = 0,
         pillExtraWidth: CGFloat = 0,
+        chipExtraWidth: CGFloat = 0,
         visible: CGRect
     ) -> CGRect {
-        let size = size(of: surface, bannerHeight: bannerHeight, pillExtraWidth: pillExtraWidth)
+        let size = size(
+            of: surface, bannerHeight: bannerHeight,
+            pillExtraWidth: pillExtraWidth, chipExtraWidth: chipExtraWidth
+        )
 
         var x = anchorTopLeft.x
         if x + size.width > visible.maxX { x = visible.maxX - size.width }

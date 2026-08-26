@@ -33,4 +33,23 @@ final class UpdateChipStateTests: XCTestCase {
         let chip = UpdateChipState.decide(pendingVersion: "v4.3.0", isRecording: false)
         XCTAssertEqual(chip?.title, "Relaunch to update v4.3.0")
     }
+
+    /// The bar chip's short label shares the same normalization (round 7).
+    func testDisplayVersionNormalizesThePrefix() {
+        XCTAssertEqual(UpdateChipState.displayVersion("4.3.0"), "v4.3.0")
+        XCTAssertEqual(UpdateChipState.displayVersion("v4.3.0"), "v4.3.0")
+    }
+
+    // MARK: The bar chip's visibility (round 7, hybrid A→B)
+
+    /// The bar shows the chip exactly when an update is pending AND no take is
+    /// running — mid-take the bar is the pill, which carries no chip. The tray
+    /// item and drawer row stay visible mid-take (that is `decide`'s job).
+    func testBarChipShowsOnlyWithAPendingUpdateAndNoRecording() {
+        XCTAssertTrue(UpdateChipState.showsInBar(pendingVersion: "4.3.0", isRecording: false))
+        XCTAssertFalse(UpdateChipState.showsInBar(pendingVersion: "4.3.0", isRecording: true),
+                       "mid-take the bar hides its chip")
+        XCTAssertFalse(UpdateChipState.showsInBar(pendingVersion: nil, isRecording: false))
+        XCTAssertFalse(UpdateChipState.showsInBar(pendingVersion: "", isRecording: false))
+    }
 }

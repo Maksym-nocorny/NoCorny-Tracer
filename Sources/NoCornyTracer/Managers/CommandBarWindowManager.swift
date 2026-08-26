@@ -151,6 +151,21 @@ final class CommandBarWindowManager {
     /// `setRecordingPillContentWidth`; only `.recordingPill` frames consume it.
     private(set) var pillExtraWidth: CGFloat = 0
 
+    /// Extra logical width of the BAR ROW for the update chip (round 7):
+    /// `MorphGeometry.updateChipExtent` while a chip is visible, plus
+    /// `updateChipHoverExtra` while it is hover-expanded; 0 with no update
+    /// pending. Reported by CommandBarView via `setUpdateChipExtraWidth`.
+    private(set) var chipExtraWidth: CGFloat = 0
+
+    /// True between a chip shrink (hover-out / chip gone) and its deferred
+    /// frame snap — same trick as the drawer close: the CONTENT springs down
+    /// inside the still-wide panel (the spare width is transparent), and the
+    /// frame snaps only after the spring has settled, changing no visible pixel.
+    private var pendingChipShrinkSnap = false
+
+    /// updateChip spring (response 0.34) settles ≈ 0.55s; 0.6 snaps with margin.
+    private static let chipShrinkSnapDelay: TimeInterval = 0.6
+
     /// Whether the currently open drawer unfolds ABOVE the bar (verdict 26.08:
     /// upward ONLY when the drawer cannot fit below — `MorphGeometry.
     /// drawerOpensUpward`). The SwiftUI root reads this to flip the stack order
@@ -322,7 +337,7 @@ final class CommandBarWindowManager {
         let anchor = anchorForCurrentSurface(visible: visible)
         let target = MorphGeometry.targetFrame(
             anchorTopLeft: anchor, surface: surface, bannerHeight: bannerExtent,
-            pillExtraWidth: pillExtraWidth, visible: visible
+            pillExtraWidth: pillExtraWidth, chipExtraWidth: chipExtraWidth, visible: visible
         )
         // A re-show mid-flight (round 5c) supersedes the flight: zero offset +
         // target frame in one transaction, content lands in place.
@@ -554,6 +569,45 @@ final class CommandBarWindowManager {
         reframe(animated: false)
     }
 
+    /// The bar row reports its update-chip width here (round 7): 0 (no chip),
+    /// `updateChipExtent` (compact), or extent + `updateChipHoverExtra`
+    /// (hover-expanded). The panel follows the drawer-close recipe, in both
+    /// directions the bar itself never stirs:
+    /// - GROW: the frame widens in the same tick (the new strip is transparent
+    ///   — the content is still narrow), then the row's own spring grows the
+    ///   glass into it. Compositor-path growth, like the pill flight: no
+    ///   tick-by-tick window resize.
+    /// - SHRINK: the row springs down first inside the still-wide panel; the
+    ///   frame snap waits out the spring (`chipShrinkSnapDelay`) and then
+    ///   changes no visible pixel.
+    func setUpdateChipExtraWidth(_ extra: CGFloat) {
+        let clamped = max(0, extra)
+        guard clamped != chipExtraWidth else { return }
+        let growing = clamped > chipExtraWidth
+        chipExtraWidth = clamped
+        // Mid drawer-close the panel is deliberately oversized for the removal
+        // fade — the deferred drawer snap reframes with the new width itself.
+        guard !pendingDrawerCloseSnap else { return }
+        // Mid-flight (bar→pill) the union frame rules; the pill ignores chip
+        // width and the return morph reframes from scratch.
+        guard !flightActive, surface != .recordingPill else { return }
+        if growing {
+            pendingChipShrinkSnap = false
+            reframe(animated: false)
+            return
+        }
+        pendingChipShrinkSnap = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.chipShrinkSnapDelay) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.pendingChipShrinkSnap else { return }
+                self.pendingChipShrinkSnap = false
+                guard !self.pendingDrawerCloseSnap, !self.flightActive,
+                      self.surface != .recordingPill else { return }
+                self.reframe(animated: false)
+            }
+        }
+    }
+
     /// Re-derives the panel frame for the current surface + banner extent from the
     /// surface's anchor (bar anchor, or the pill's own perch). Shared by morphs
     /// and banner visibility flips.
@@ -588,6 +642,7 @@ final class CommandBarWindowManager {
             surface: surface,
             bannerHeight: bannerExtent,
             pillExtraWidth: pillExtraWidth,
+            chipExtraWidth: chipExtraWidth,
             visible: visible
         )
         // A snap reframe supersedes any flight still in the air: zero the
@@ -644,6 +699,7 @@ final class CommandBarWindowManager {
             surface: toSurface,
             bannerHeight: bannerExtent,
             pillExtraWidth: pillExtraWidth,
+            chipExtraWidth: chipExtraWidth,
             visible: visible
         )
         let current = MorphGeometry.logicalFrame(forPanel: panel.frame)
@@ -716,6 +772,7 @@ final class CommandBarWindowManager {
             surface: surface,
             bannerHeight: bannerExtent,
             pillExtraWidth: pillExtraWidth,
+            chipExtraWidth: chipExtraWidth,
             visible: visible
         )
         panel.setFrame(MorphGeometry.panelFrame(forLogical: target), display: true)

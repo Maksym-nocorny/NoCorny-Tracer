@@ -82,6 +82,13 @@ enum Theme {
             dark: Color(hex: 0xF0B24A)
         )
 
+        /// Update-chip accent pair (round 7, designer handoff): the chip's
+        /// diagonal gradient runs accentUpdate → accentUpdateDeep (stop 0.82).
+        /// Light = Dark ON PURPOSE — the chip is a saturated brand surface the
+        /// handoff draws once, identical on both glass looks.
+        static let accentUpdate = Color(hex: 0x3E90FF)
+        static let accentUpdateDeep = Color(hex: 0x0B5BE0)
+
         // MARK: Glass surface tokens
         // Light ink base is #0B1220 (dark navy), straight from the light bar macro.
 
@@ -372,6 +379,10 @@ enum Theme {
         static let toast: SwiftUI.Animation = .spring(response: 0.35, dampingFraction: 0.8)
         /// Button hover feedback (fill step + scale).
         static let hover: SwiftUI.Animation = .easeOut(duration: 0.15)
+        /// The update chip's motion (round 7, designer handoff): the appearance
+        /// pop-in, the hover unroll 38→87 and the row/panel growth around it
+        /// all ride this one spring, so the chip and its neighbours move as one.
+        static let updateChip: SwiftUI.Animation = .spring(response: 0.34, dampingFraction: 0.72)
     }
 }
 
