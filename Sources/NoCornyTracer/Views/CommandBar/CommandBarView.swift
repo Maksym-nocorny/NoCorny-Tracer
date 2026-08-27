@@ -323,7 +323,7 @@ struct CommandBarView: View {
                 } else {
                     // Same start path as RecordingControlsView, deliberately WITHOUT the
                     // old window's orderOut — the bar stays up, and round 12's
-                    // `setTakeLive` has already taken it out of capture for the take.
+                    // `refreshWindowTraits` has already taken it out of capture for the take.
                     try? await appState.startRecording()
                 }
             }

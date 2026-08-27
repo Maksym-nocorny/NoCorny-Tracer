@@ -94,7 +94,7 @@ final class ScreenRecorder: NSObject {
         // toasts carry `sharingType = .none` and are invisible to a full-display
         // filter by construction. The command BAR is now an ordinary window that
         // captures CAN see — but it never coexists with a running take: the pill
-        // replaces it for the whole take, and `CommandBarWindowManager.setTakeLive`
+        // replaces it for the whole take, and `CommandBarWindowManager.refreshWindowTraits`
         // takes the bar out of capture for the head of the start sequence, where
         // the stream is already live and the writer is arming. A
         // desktopIndependentWindow filter captures one window by definition.
