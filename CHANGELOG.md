@@ -1,8 +1,13 @@
 # Changelog
 
+## [4.5.2] - 2026-08-27
+### Fixed
+- **Recording with the camera on really does not crash any more - and this time the culprit is known by name.** 4.5.0 and 4.5.1 both crashed a second or so into a take, and 4.5.1's fix hardened the wrong window: it blamed the camera bubble because it read a test rig's error instead of the one from your machine. The crash reports never carried that text, but the system log did, and all four say the same thing: it is the command bar itself, caught mid-flight as it folds into the recording pill. SwiftUI was resizing that window from inside a layout pass, and macOS aborts the app to escape the loop that starts. The setting we relied on in 4.5.1 turns out to be a request rather than a rule, so SwiftUI is now behind a wall it cannot reach the window through - with a startup audit and tests that build real windows and ask macOS what actually happened, instead of checking our own intentions.
+- **"Check for Updates" always answers now.** With an update already downloaded and waiting, the button did nothing at all and said nothing - the one moment it matters most. It now installs and relaunches straight away, or tells you the update is waiting for your recording to finish.
+
 ## [4.5.1] - 2026-08-27
 ### Fixed
-- **Recording with the camera on no longer crashes the app.** The camera bubble's window was being resized by SwiftUI from inside a layout pass, which sent macOS into a loop it aborts the app to escape. Windows are now sized by Tracer alone - the bubble, the toast and the onboarding card included.
+- Attempted a fix for the camera-recording crash by taking window sizing away from SwiftUI. **It did not work** - see 4.5.2, which names the real window and closes the loop properly.
 
 
 ## [4.5.0] - 2026-08-27
