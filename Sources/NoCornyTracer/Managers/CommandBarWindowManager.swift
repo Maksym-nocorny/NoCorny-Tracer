@@ -544,8 +544,10 @@ final class CommandBarWindowManager {
     /// ours needs it (see `shouldReleaseKeyboard`).
     private func releaseKeyboardIfTaken() {
         guard tookKeyForDrawer else { return }
-        tookKeyForDrawer = false
-        guard let panel else { return }
+        guard let panel else {
+            tookKeyForDrawer = false
+            return
+        }
         let keyWindow = NSApp.keyWindow
         // "Another window of ours that wants the keyboard": visible, keyable,
         // not our own panel — and not one of our transient floating panels.
@@ -559,11 +561,15 @@ final class CommandBarWindowManager {
                 && window.canBecomeKey
                 && !window.styleMask.contains(.nonactivatingPanel)
         }
+        // The flag survives a skipped release on purpose: a Sparkle dialog or the
+        // onboarding card is holding the keyboard right now, and the debt to hand
+        // it back is still ours to settle the next time a drawer closes.
         guard Self.shouldReleaseKeyboard(
             keyWindowIsPanel: keyWindow == nil || keyWindow === panel,
             hasOtherKeyableWindow: hasOtherKeyableWindow,
             isActive: NSApp.isActive
         ) else { return }
+        tookKeyForDrawer = false
         NSApp.deactivate()
     }
 
@@ -776,9 +782,16 @@ final class CommandBarWindowManager {
                 // The drawer's own snap fires first (0.35 < 0.6) and, seeing
                 // this flag, left the frame alone — so this one reframe lands
                 // both the width and the height.
+                self.reframe(animated: false)
+                // Only the bar surface may clear the drawer's bookkeeping. With a
+                // drawer still open — turning off "Preview update button" from an
+                // upward-opened Settings drawer is the live path — clearing
+                // `drawerOpensUp` here would flip the drawer under the bar inside
+                // a frame that is still the upward one, throwing the bar up by the
+                // drawer's height. Same gate the drawer's own snap carries.
+                guard self.surface == .bar else { return }
                 self.pendingDrawerCloseSnap = false
                 self.closingDrawerTab = nil
-                self.reframe(animated: false)
                 self.drawerOpensUp = false
             }
         }
