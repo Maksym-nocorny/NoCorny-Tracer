@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.4.2] - 2026-08-27
+### Fixed
+- **Hovering the update button no longer resizes the bar.** The bar reserves the room once the button appears, and hovering simply unfolds the version label into the space that is already there.
+- **Esc and ⌘, really close the Settings drawer now** - from the first second, without clicking inside it first. The header hint stopped lying.
+- **The record button's ring spins half as slowly and stays where you left it** instead of rewinding to its start position when the pointer leaves.
+
+
 ## [4.4.1] - 2026-08-27
 ### Fixed
 - **The record button no longer turns into a black hole on light backdrops.** Its backdrop is now a translucent lift over the glass - it brightens and darkens together with the bar on any wallpaper, instead of being a fixed dark disc.
