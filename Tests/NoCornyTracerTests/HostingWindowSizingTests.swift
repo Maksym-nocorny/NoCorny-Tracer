@@ -138,25 +138,44 @@ final class HostingWindowSizingTests: XCTestCase {
         // that "somewhere later in the file" does not count.
         let reach = 12
         var offenders: [String] = []
+        // A silent zero would make this test pass forever while checking
+        // nothing — the pattern going stale is exactly how an inventory test
+        // rots. Today's five sites: camera bubble, the bar's view and
+        // controller, onboarding, toast.
+        var sitesFound = 0
 
         for (url, lines) in try swiftSources() {
             // The helper itself is where the pinning is implemented.
             if url.lastPathComponent == "WindowSizing.swift" { continue }
 
             for (index, line) in lines.enumerated() {
-                let isConstruction = line.contains("NSHostingController(")
-                    || line.contains("NSHostingView(")
-                    || line.contains("CommandBarHostingView(")
-                    || line.contains("CommandBarHostingController(")
+                // Generic arguments are stripped BEFORE matching, then the call
+                // paren is required. Matching the bare name would catch the
+                // `class CommandBarHostingView<C>: NSHostingView<C>` declaration
+                // (it did); keeping the paren in the needle would miss a site
+                // spelled `NSHostingController<CameraView>(rootView:)`. Flatten
+                // first, and both spellings land where they should.
+                let flat = line.replacingOccurrences(
+                    of: "<[^>]*>", with: "", options: .regularExpression
+                )
+                let isConstruction = flat.contains("NSHostingController(")
+                    || flat.contains("NSHostingView(")
+                    || flat.contains("CommandBarHostingView(")
+                    || flat.contains("CommandBarHostingController(")
                 guard isConstruction, !line.hasPrefix("//"),
                       !line.trimmingCharacters(in: .whitespaces).hasPrefix("///") else { continue }
 
+                sitesFound += 1
                 let window = lines[index..<min(index + reach, lines.count)].joined(separator: "\n")
                 guard !window.contains("WindowSizing.pin") else { continue }
                 offenders.append("\(url.lastPathComponent):\(index + 1) — \(line.trimmingCharacters(in: .whitespaces))")
             }
         }
 
+        XCTAssertGreaterThanOrEqual(sitesFound, 5, """
+            The scan found \(sitesFound) hosting sites; there are at least five. \
+            The needles have gone stale — fix them before trusting this test again.
+            """)
         XCTAssertTrue(offenders.isEmpty, """
             SwiftUI host built without WindowSizing.pin — it will drive its window \
             from inside the layout pass and can crash the app the way 4.5.0 did:
