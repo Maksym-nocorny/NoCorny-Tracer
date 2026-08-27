@@ -1,5 +1,10 @@
 # Changelog
 
+## [4.5.1] - 2026-08-27
+### Fixed
+- **Recording with the camera on no longer crashes the app.** The camera bubble's window was being resized by SwiftUI from inside a layout pass, which sent macOS into a loop it aborts the app to escape. Windows are now sized by Tracer alone - the bubble, the toast and the onboarding card included.
+
+
 ## [4.5.0] - 2026-08-27
 ### Changed
 - **The bar behaves like a normal window again.** Switch to another app and Tracer goes behind it, the way any window does. Only the recording pill still floats above everything - and it stays invisible in your recordings, which is its whole job. The bar and drawers now show up in screenshots normally, so the "Show Tracer in screen captures" switch is gone: there is nothing left to switch.
