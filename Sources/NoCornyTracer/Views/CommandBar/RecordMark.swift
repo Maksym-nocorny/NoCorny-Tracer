@@ -23,7 +23,18 @@ struct RecordRingMark: View {
     /// on a machine that is busy recording). The ring wakes up when aimed at.
     var isSpinning: Bool = false
 
+    /// The ring's accumulated angle. ROUND 9 (boss's verdict on 4.4.1: the spin
+    /// «дуже дивна»): the offending part was the RETURN — the old code animated
+    /// the angle back to 0 on hover-out, so the ring visibly unwound. Now the
+    /// angle is never reset: hover-out freezes it exactly where it is, and the
+    /// next hover picks up from that same angle. Nothing in the mark's geometry
+    /// depends on the absolute angle (the dash period divides the circumference
+    /// exactly), so an arbitrary resting angle is indistinguishable from zero.
     @State private var spinAngle: Double = 0
+
+    /// One full turn, halved in round 9 (8s → 16s): the marching ants now
+    /// crawl at half speed, which reads as "alive", not "busy".
+    private static let spinPeriod: Double = 16
 
     static let ringBlue = Color(hex: 0x3E90FF)
 
@@ -103,16 +114,49 @@ struct RecordRingMark: View {
         }
         .frame(width: diameter, height: diameter)
         .onChange(of: isSpinning) { _, spinning in
-            if spinning {
-                withAnimation(.linear(duration: 8).repeatForever(autoreverses: false)) {
-                    spinAngle += 360
+            spinning ? startSpinning() : stopSpinning()
+        }
+        .onDisappear { spinTask?.cancel() }
+    }
+
+    // MARK: Spin (round 9: never rewinds)
+
+    @State private var spinTask: Task<Void, Never>?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// One animation chunk. The spin is driven in short LINEAR steps rather
+    /// than one `repeatForever` because a repeating animation keeps its
+    /// progress inside SwiftUI where the view cannot read it — the only way to
+    /// stop such a spin was to write the angle back, i.e. to rewind. With
+    /// chunks the @State angle IS the truth: stop scheduling and the ring
+    /// stands exactly where the last chunk left it. Linear→linear chunks abut
+    /// seamlessly, so the motion is indistinguishable from one long turn.
+    private static let spinChunk: Double = 0.5
+    private var degreesPerChunk: Double { 360 * Self.spinChunk / Self.spinPeriod }
+
+    private func startSpinning() {
+        guard !reduceMotion else { return }
+        spinTask?.cancel()
+        spinTask = Task { @MainActor in
+            while !Task.isCancelled {
+                withAnimation(.linear(duration: Self.spinChunk)) {
+                    spinAngle += degreesPerChunk
                 }
-            } else {
-                // The ants settle back to rest rather than freezing mid-crawl.
-                withAnimation(.easeOut(duration: 0.35)) {
-                    spinAngle = 0
-                }
+                try? await Task.sleep(nanoseconds: UInt64(Self.spinChunk * 1_000_000_000))
             }
+        }
+    }
+
+    /// Hover-out: a short glide to a halt from WHEREVER the ring currently is
+    /// (SwiftUI retargets from the live presentation value), and the angle
+    /// keeps its accumulated value forever after — the next hover continues
+    /// from there. No rewind, ever.
+    private func stopSpinning() {
+        spinTask?.cancel()
+        spinTask = nil
+        guard !reduceMotion else { return }
+        withAnimation(.easeOut(duration: 0.4)) {
+            spinAngle += degreesPerChunk / 2
         }
     }
 }

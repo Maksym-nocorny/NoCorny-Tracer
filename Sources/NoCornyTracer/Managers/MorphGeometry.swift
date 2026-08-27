@@ -50,16 +50,29 @@ enum MorphGeometry {
     /// (gap + banner). This is the value callers pass as `bannerHeight`.
     static var storageBannerExtent: CGFloat { bannerGap + storageBannerHeight }
 
-    /// Extra logical WIDTH of the bar row while the update chip is present
-    /// (round 7, hybrid A→B): the compact 38pt chip plus the 13pt gap it adds
-    /// between the settings button and the spacer. Bar 560 → 611.
-    static let updateChipExtent: CGFloat = 51
+    /// Extra logical WIDTH of the bar row while the update chip is present.
+    ///
+    /// ROUND 9 (boss's verdict on 4.4.1: «при ховері міняє розмір самого бару
+    /// в ширину, хоча в неї є запас до хрестика»): the bar reserves the chip's
+    /// FULL EXPANDED slot (87pt) the moment the chip appears, and holds that
+    /// width for as long as it is there — 560 → 631, once. Hover unrolls the
+    /// capsule 38→87 INSIDE the reserved slot, so the panel does not move by a
+    /// single pixel. The round-7 model (grow the panel by the 20pt the spacer
+    /// could not cover) is gone with its `updateChipHoverExtra`.
+    ///
+    /// The arithmetic: slot 87 + the 13pt gap it adds after the settings
+    /// button = 100, of which the row's flexible spacer donates its 29pt →
+    /// 71pt of panel growth.
+    static let updateChipExtent: CGFloat = 71
 
-    /// The hover remainder (round 7 correction): unrolling the chip 38→87
-    /// costs 49pt; the bar's flexible spacer donates its ~29pt first, and only
-    /// this remainder grows the panel (611 → 631) — with the same spring, so
-    /// no button left of the chip moves. See CommandBarView.barRowWidth.
-    static let updateChipHoverExtra: CGFloat = 20
+    /// The bar row's logical width — the ONE place the chip's width policy
+    /// lives, pure so "hover moves nothing" is a test, not a promise.
+    /// `chipHovering` is accepted and deliberately IGNORED: the slot is
+    /// reserved at full width, so a hover cannot change the answer.
+    static func barRowWidth(chipVisible: Bool, chipHovering: Bool = false) -> CGFloat {
+        _ = chipHovering
+        return Theme.Metrics.commandBarSize.width + (chipVisible ? updateChipExtent : 0)
+    }
 
     /// Transparent margin around the logical surface inside the panel, reserved for
     /// the SwiftUI shadow. 60pt comfortably covers radius 27.5 + y-offset 22.
@@ -77,9 +90,9 @@ enum MorphGeometry {
     /// 100+ minute timer outgrowing its 57-pt slot. It applies ONLY to
     /// `.recordingPill`; anchors and the perch flight stay computed from the base.
     ///
-    /// `chipExtraWidth` (round 7) widens the BAR ROW for the update chip
-    /// (`updateChipExtent` compact, plus `updateChipHoverExtra` while hovered;
-    /// 0 with no update pending). It applies to `.bar` AND `.barWithDrawer` —
+    /// `chipExtraWidth` widens the BAR ROW for the update chip: exactly
+    /// `updateChipExtent` while the chip is there, 0 otherwise — a hover never
+    /// changes it (round 9). It applies to `.bar` AND `.barWithDrawer` —
     /// the bar row shows the chip in both — and never to the pill, which
     /// carries no chip. Growth goes to the RIGHT of the held top-left anchor,
     /// same contract as the pill's extra width.

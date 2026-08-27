@@ -151,16 +151,17 @@ final class CommandBarWindowManager {
     /// `setRecordingPillContentWidth`; only `.recordingPill` frames consume it.
     private(set) var pillExtraWidth: CGFloat = 0
 
-    /// Extra logical width of the BAR ROW for the update chip (round 7):
-    /// `MorphGeometry.updateChipExtent` while a chip is visible, plus
-    /// `updateChipHoverExtra` while it is hover-expanded; 0 with no update
-    /// pending. Reported by CommandBarView via `setUpdateChipExtraWidth`.
+    /// Extra logical width of the BAR ROW for the update chip: exactly
+    /// `MorphGeometry.updateChipExtent` while the chip exists, 0 otherwise —
+    /// two values, nothing in between (round 9: the chip's hover unroll lives
+    /// inside a reserved slot and never reaches the panel).
     private(set) var chipExtraWidth: CGFloat = 0
 
-    /// True between a chip shrink (hover-out / chip gone) and its deferred
-    /// frame snap — same trick as the drawer close: the CONTENT springs down
-    /// inside the still-wide panel (the spare width is transparent), and the
-    /// frame snaps only after the spring has settled, changing no visible pixel.
+    /// True between the chip LEAVING and the deferred frame snap — the drawer
+    /// close trick: the chip's exit spring plays inside the still-wide panel
+    /// (the spare strip is transparent), and the frame snaps down only once
+    /// the spring has settled, changing no visible pixel. Snapping in the same
+    /// tick would clip the exit animation and yank the close cross left.
     private var pendingChipShrinkSnap = false
 
     /// updateChip spring (response 0.34) settles ≈ 0.55s; 0.6 snaps with margin.
@@ -313,15 +314,8 @@ final class CommandBarWindowManager {
             // ⌘, — the shortcut the Settings drawer's header advertises. Toggles
             // the drawer; inert mid-recording (the pill has no drawers).
             newPanel.onCmdComma = { [weak self] in
-                guard let self else { return }
-                switch self.surface {
-                case .barWithDrawer(.settings):
-                    self.morph(to: .bar)
-                case .bar, .barWithDrawer:
-                    self.morph(to: .barWithDrawer(.settings))
-                case .recordingPill:
-                    break
-                }
+                guard let self, let target = Self.cmdCommaTarget(from: self.surface) else { return }
+                self.morph(to: target)
             }
             PanelCaptureRegistry.register(newPanel)
             panel = newPanel
@@ -346,6 +340,10 @@ final class CommandBarWindowManager {
 
         applyPanelAppearance()
         panel.orderFrontRegardless()
+        // Round 9: a panel that comes up already wearing a drawer (tray →
+        // "Settings…" re-shows a hidden bar) takes the keyboard right away,
+        // so Esc works without a click. Bare bar / pill: never.
+        takeKeyboardIfNeeded()
         // Round 6 REGRESSION FIX («після апдейту авто не працює, поки не
         // перемкнеш тему»): everything above ran while the panel was still
         // ordered OUT — `applyPanelAppearance()` → `syncBackdropMonitor()` saw
@@ -387,6 +385,9 @@ final class CommandBarWindowManager {
     /// whatever surface is up, then drop the panel (a later `show()` rebuilds it).
     private func dismissPanel() {
         backdropMonitor.stop()   // no panel → nothing to sample under (4.1.0)
+        // Hiding the bar with a drawer open (close button, tray) hands the
+        // keyboard back too — round 9.
+        releaseKeyboardIfTaken()
         if let panel {
             if pendingDrawerCloseSnap || flightActive {
                 // Mid-close (round 5b) or mid-flight (round 5c): the surface
@@ -437,11 +438,92 @@ final class CommandBarWindowManager {
         old == .recordingPill || new == .recordingPill
     }
 
+    // MARK: Keyboard reach (round 9 — making the drawer's hint true)
+
+    /// What ⌘, should do from a surface — nil means "ignore the key". Pure so
+    /// the toggle is a test rather than a promise: the Settings drawer CLOSES
+    /// on a second ⌘, (it is a toggle, exactly as the header hint implies),
+    /// the Gallery drawer switches to Settings, and mid-take nothing happens
+    /// (the pill has no drawers).
+    nonisolated static func cmdCommaTarget(from surface: Surface) -> Surface? {
+        switch surface {
+        case .barWithDrawer(.settings): return .bar
+        case .bar, .barWithDrawer: return .barWithDrawer(.settings)
+        case .recordingPill: return nil
+        }
+    }
+
+    /// Whether a surface wants the panel to hold the KEYBOARD. Only drawers do:
+    /// they are the only surface with keyboard affordances (Esc closes, ⌘,
+    /// toggles — the Settings header advertises both). The bare bar and the
+    /// recording pill never take the keyboard: there is nothing to type into,
+    /// and mid-take stealing focus would be hostile.
+    nonisolated static func surfaceWantsKeyboard(_ surface: Surface) -> Bool {
+        if case .barWithDrawer = surface { return true }
+        return false
+    }
+
+    /// True while WE took the keyboard for a drawer, so the close can hand it
+    /// back to whatever the user was using.
+    private var tookKeyForDrawer = false
+
+    /// Round 9 (boss's verdict on 4.4.1: «підказка ⌘, · Esc to close не
+    /// працює»). The root, known since phase 3: this panel is nonactivating
+    /// with `becomesKeyOnlyIfNeeded`, so until the user clicked INSIDE the
+    /// drawer the panel was not key and every keystroke went to whatever app
+    /// was in front — the header promised shortcuts that did not exist.
+    ///
+    /// The honest fix is `makeKey()`, and it comes with a MEASURED price:
+    /// probing a nonactivating panel showed that a programmatic `makeKey()`
+    /// ACTIVATES the app (isActive false → true). That is unavoidable —
+    /// keyboard events go to the key window of the ACTIVE app, so there is no
+    /// "keys without activation" state to reach. The rejected alternatives are
+    /// worse: `addLocalMonitorForEvents` only sees events already routed to us
+    /// (i.e. nothing while we are inactive), and a global monitor / event tap
+    /// cannot CONSUME the key (Esc would also reach the other app) and would
+    /// demand Accessibility permission for a drawer shortcut.
+    ///
+    /// The activation is scoped so it can never surprise: it happens only for
+    /// DRAWERS (`surfaceWantsKeyboard`), which only ever open on an explicit
+    /// user gesture — clicking the gear/folder, the tray's "Settings…", or ⌘,
+    /// itself. Closing the drawer calls `NSApp.deactivate()`, handing the
+    /// keyboard straight back to the app the user came from.
+    private func takeKeyboardIfNeeded() {
+        guard Self.surfaceWantsKeyboard(surface) else { return }
+        takeKeyboard()
+    }
+
+    private func takeKeyboard() {
+        guard let panel, panel.isVisible, !panel.isKeyWindow else { return }
+        panel.makeKey()
+        tookKeyForDrawer = true
+    }
+
+    /// The counterpart: when the drawer goes away, give the keyboard back.
+    /// Skipped while a modal is up (the delete confirmation / Sparkle dialogs
+    /// activate deliberately and own the focus until dismissed).
+    private func releaseKeyboardIfTaken() {
+        guard tookKeyForDrawer else { return }
+        tookKeyForDrawer = false
+        guard NSApp.modalWindow == nil, NSApp.isActive else { return }
+        NSApp.deactivate()
+    }
+
     /// Switches the panel to another surface. The BAR anchor stays the stable
     /// reference: the pill flies to its own perch and back, and an upward drawer
     /// grows above the stationary bar (see `MorphGeometry.targetFrame`).
     func morph(to newSurface: Surface) {
         guard surface != newSurface else { return }
+        // Round 9: a drawer takes the keyboard the moment it opens (so Esc and
+        // ⌘, work without a preliminary click — the header hint stops lying),
+        // and hands it straight back when it closes or a take starts. Done up
+        // front because `morph` has several exit paths and neither call
+        // depends on the resulting frame.
+        switch (Self.surfaceWantsKeyboard(surface), Self.surfaceWantsKeyboard(newSurface)) {
+        case (false, true): takeKeyboard()
+        case (true, false): releaseKeyboardIfTaken()
+        default: break
+        }
         // Any surface change supersedes a drawer close still waiting for its
         // frame snap — the new morph reframes for itself. A half-faded closing
         // drawer is dropped on the spot (a ≤0.15s window, user-interrupted).
@@ -569,22 +651,23 @@ final class CommandBarWindowManager {
         reframe(animated: false)
     }
 
-    /// The bar row reports its update-chip width here (round 7): 0 (no chip),
-    /// `updateChipExtent` (compact), or extent + `updateChipHoverExtra`
-    /// (hover-expanded). The panel follows the drawer-close recipe, in both
-    /// directions the bar itself never stirs:
-    /// - GROW: the frame widens in the same tick (the new strip is transparent
-    ///   — the content is still narrow), then the row's own spring grows the
-    ///   glass into it. Compositor-path growth, like the pill flight: no
-    ///   tick-by-tick window resize.
-    /// - SHRINK: the row springs down first inside the still-wide panel; the
+    /// The bar row reports whether it currently carries the update chip
+    /// (round 9 — a BOOL, not a width: the only two widths are "no chip" and
+    /// "chip with its full reserved slot"; a hover cannot produce a third).
+    /// The panel follows the drawer-close recipe, and in both directions the
+    /// bar itself never stirs:
+    /// - APPEARS: the frame widens in the same tick (the new strip is
+    ///   transparent — the row's content is still narrow), then the row's own
+    ///   spring grows the glass into it. Compositor-path growth, like the pill
+    ///   flight: no tick-by-tick window resize.
+    /// - LEAVES: the row springs down first inside the still-wide panel; the
     ///   frame snap waits out the spring (`chipShrinkSnapDelay`) and then
     ///   changes no visible pixel.
-    func setUpdateChipExtraWidth(_ extra: CGFloat) {
-        let clamped = max(0, extra)
-        guard clamped != chipExtraWidth else { return }
-        let growing = clamped > chipExtraWidth
-        chipExtraWidth = clamped
+    func setUpdateChipSlotVisible(_ visible: Bool) {
+        let target = visible ? MorphGeometry.updateChipExtent : 0
+        guard target != chipExtraWidth else { return }
+        let growing = target > chipExtraWidth
+        chipExtraWidth = target
         // Mid drawer-close the panel is deliberately oversized for the removal
         // fade — the deferred drawer snap reframes with the new width itself.
         guard !pendingDrawerCloseSnap else { return }

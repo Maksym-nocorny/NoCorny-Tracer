@@ -210,9 +210,6 @@ struct CommandBarView: View {
     @State private var showCaptureMenu = false
     @State private var recordHovering = false
     @State private var captureHovering = false
-    /// The update chip's hover-unroll state (round 7, hybrid A→B): owned here
-    /// because the ROW pays for it — +`updateChipHoverExtra` of width.
-    @State private var chipExpanded = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var isRecording: Bool { appState.recordingManager.isRecording }
@@ -228,11 +225,14 @@ struct CommandBarView: View {
             divider
             libraryButton
             settingsButton
-            // The update chip (round 7): between settings and the spacer, so
-            // its hover-unroll eats the spacer's slack first and only the
-            // remainder widens the row — see barRowWidth.
+            // The update chip in its RESERVED SLOT (round 9): the row always
+            // holds the chip's full expanded width and the capsule unrolls
+            // INSIDE it, leading-aligned — so a hover moves nothing. The slot
+            // exists only while the chip does; appearing/leaving still resizes
+            // the panel (that is a change of the bar's contents, not a hover).
             if let version = pendingUpdateVersion {
-                UpdateChipView(version: version, isExpanded: $chipExpanded)
+                UpdateChipView(version: version)
+                    .frame(width: UpdateChipView.expandedWidth, alignment: .leading)
                     .transition(chipTransition)
             }
             Spacer(minLength: 0)
@@ -247,15 +247,16 @@ struct CommandBarView: View {
         .glassSurface(cornerRadius: Theme.Metrics.barCornerRadius)
         .floatingPanelShadow()
         // Scoped to chip events ONLY (the round-5 "no ambient animation on the
-        // bar" policy holds: barRowWidth changes exactly when the chip appears,
-        // unrolls or leaves). The same spring the chip itself springs on — the
-        // spacer compresses and the close cross glides with it as one motion.
+        // bar" policy holds: since round 9 barRowWidth changes exactly twice —
+        // when the chip appears and when it leaves; a hover never touches it).
+        // The same spring the chip itself springs on.
         .animation(reduceMotion ? nil : Theme.Anim.updateChip, value: barRowWidth)
-        // The panel must grow/shrink around the springing row: grow snaps the
-        // frame first (the new strip is transparent), shrink defers the snap
-        // past the spring — the drawer-close recipe, in the manager.
-        .onChange(of: barRowWidth, initial: true) { _, width in
-            manager.setUpdateChipExtraWidth(width - Theme.Metrics.commandBarSize.width)
+        // The panel grows/shrinks around the springing row when the chip
+        // APPEARS or LEAVES — never on hover (round 9). Grow snaps the frame
+        // first (the new strip is transparent), shrink defers the snap past
+        // the spring; the drawer-close recipe, in the manager.
+        .onChange(of: pendingUpdateVersion != nil, initial: true) { _, visible in
+            manager.setUpdateChipSlotVisible(visible)
         }
     }
 
@@ -278,14 +279,12 @@ struct CommandBarView: View {
         return version
     }
 
-    /// 560 base; +51 while the chip is present (its 38 + the 13 gap); +20 more
-    /// while it is hover-expanded — the rest of the 38→87 unroll comes out of
-    /// the flexible spacer (~29pt), so no control left of the chip ever moves.
+    /// 560 base; 631 while the chip is present — and NOTHING else moves it
+    /// (round 9). The width policy is the pure `MorphGeometry.barRowWidth`,
+    /// which has no hover term at all: the slot is reserved at full expanded
+    /// width the moment the chip appears.
     private var barRowWidth: CGFloat {
-        guard pendingUpdateVersion != nil else { return Theme.Metrics.commandBarSize.width }
-        var width = Theme.Metrics.commandBarSize.width + MorphGeometry.updateChipExtent
-        if chipExpanded { width += MorphGeometry.updateChipHoverExtra }
-        return width
+        MorphGeometry.barRowWidth(chipVisible: pendingUpdateVersion != nil)
     }
 
     /// Appearance per the handoff: spring scale 0.6→1 (`updateChip`) with a

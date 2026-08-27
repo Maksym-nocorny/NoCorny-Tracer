@@ -269,15 +269,42 @@ final class MorphGeometryTests: XCTestCase {
         XCTAssertEqual(wide.width, 341 + 38)
     }
 
-    // MARK: Update chip width (round 7, hybrid A→B: bar 560 → 611 → 631)
+    // MARK: Update chip width (round 9: RESERVED SLOT — bar 560 → 631, once)
 
-    /// The handoff's arithmetic, pinned: the compact chip adds its 38pt circle
-    /// plus one 13pt gap (560→611); the hover unroll to the 87pt capsule costs
-    /// 49pt, of which the row's ~29pt spacer pays first and only 20pt grow the
-    /// panel (611→631).
-    func testUpdateChipExtentsMatchTheHandoff() {
-        XCTAssertEqual(MorphGeometry.updateChipExtent, 51, "38pt chip + 13pt gap")
-        XCTAssertEqual(MorphGeometry.updateChipHoverExtra, 20, "(87 − 38) − ~29pt of spacer slack")
+    /// The reserved-slot arithmetic, pinned: the chip's full expanded slot
+    /// (87) plus the 13pt gap it adds after the settings button = 100, of
+    /// which the row's 29pt spacer pays 29 → 71pt of panel growth, 560 → 631.
+    func testUpdateChipExtentReservesTheExpandedSlot() {
+        XCTAssertEqual(MorphGeometry.updateChipExtent, 71, "87pt slot + 13pt gap − 29pt spacer")
+        XCTAssertEqual(MorphGeometry.barRowWidth(chipVisible: true), 631)
+        XCTAssertEqual(MorphGeometry.barRowWidth(chipVisible: false), 560)
+    }
+
+    /// THE round-9 verdict, as a test («панель НЕ ПОВИННА мінятись на ховері
+    /// взагалі, нуль пікселів»): with the chip visible, the row width is the
+    /// same number whether it is hovered or not — the unroll happens inside
+    /// the reserved slot, so hover cannot reach the panel.
+    func testHoverDoesNotChangeTheBarWidth() {
+        XCTAssertEqual(
+            MorphGeometry.barRowWidth(chipVisible: true, chipHovering: true),
+            MorphGeometry.barRowWidth(chipVisible: true, chipHovering: false)
+        )
+        XCTAssertEqual(MorphGeometry.barRowWidth(chipVisible: true, chipHovering: true), 631)
+        // And with no chip there is nothing to hover in the first place.
+        XCTAssertEqual(
+            MorphGeometry.barRowWidth(chipVisible: false, chipHovering: true),
+            MorphGeometry.barRowWidth(chipVisible: false, chipHovering: false)
+        )
+    }
+
+    /// The chip's compact capsule fits inside the reserved slot with the slack
+    /// the boss sees between it and the close cross — and the expanded capsule
+    /// fills that slot exactly, never past it.
+    func testCompactChipLeavesSlackInsideTheReservedSlot() {
+        XCTAssertEqual(UpdateChipView.expandedWidth, 87)
+        XCTAssertEqual(UpdateChipView.compactWidth, 38)
+        XCTAssertEqual(UpdateChipView.expandedWidth - UpdateChipView.compactWidth, 49,
+                       "the slack the hover unroll fills — inside the slot, not the panel")
     }
 
     /// The chip widens the bar row on BOTH bar surfaces (the row shows the chip
@@ -286,16 +313,11 @@ final class MorphGeometryTests: XCTestCase {
         let chip = MorphGeometry.updateChipExtent
         XCTAssertEqual(
             MorphGeometry.size(of: .bar, chipExtraWidth: chip),
-            CGSize(width: 611, height: 80)
-        )
-        XCTAssertEqual(
-            MorphGeometry.size(of: .bar, chipExtraWidth: chip + MorphGeometry.updateChipHoverExtra),
-            CGSize(width: 631, height: 80),
-            "hover-expanded: the 20pt remainder joins"
+            CGSize(width: 631, height: 80)
         )
         XCTAssertEqual(
             MorphGeometry.size(of: .barWithDrawer(.gallery), chipExtraWidth: chip).width,
-            611
+            631
         )
         XCTAssertEqual(
             MorphGeometry.size(of: .recordingPill, chipExtraWidth: chip),
@@ -321,7 +343,7 @@ final class MorphGeometryTests: XCTestCase {
         )
         XCTAssertEqual(withChip.minX, bare.minX, "the leading edge holds")
         XCTAssertEqual(withChip.maxY, bare.maxY, "the top edge holds")
-        XCTAssertEqual(withChip.width, bare.width + 51, "all growth goes right")
+        XCTAssertEqual(withChip.width, bare.width + 71, "all growth goes right")
         XCTAssertEqual(withChip.height, bare.height)
     }
 
@@ -336,7 +358,7 @@ final class MorphGeometryTests: XCTestCase {
             chipExtraWidth: MorphGeometry.updateChipExtent, visible: visible
         )
         XCTAssertEqual(withChip.maxX, visible.maxX, "the widened bar slid to the edge")
-        XCTAssertEqual(withChip.width, 611)
+        XCTAssertEqual(withChip.width, 631)
     }
 
     // MARK: Panel-frame animation policy (round 5: «хай плашка буде спокійною»)
@@ -356,6 +378,32 @@ final class MorphGeometryTests: XCTestCase {
         XCTAssertFalse(M.morphAnimates(from: .barWithDrawer(.settings), to: .bar), "drawer close snaps")
         XCTAssertFalse(M.morphAnimates(from: .barWithDrawer(.gallery), to: .barWithDrawer(.settings)),
                        "tab switch snaps (the frame doesn't even change)")
+    }
+
+    // MARK: Keyboard reach (round 9 — the drawer hint "⌘, · Esc to close")
+
+    /// ⌘, is a TOGGLE, exactly as the Settings header implies: it opens the
+    /// drawer, and a second press closes it. From the Gallery drawer it
+    /// switches tabs; mid-take it does nothing (the pill has no drawers).
+    func testCmdCommaTogglesTheSettingsDrawer() {
+        typealias M = CommandBarWindowManager
+        XCTAssertEqual(M.cmdCommaTarget(from: .bar), .barWithDrawer(.settings), "closed → opens")
+        XCTAssertEqual(M.cmdCommaTarget(from: .barWithDrawer(.settings)), .bar,
+                       "open → closes; the hint says 'Esc to close', ⌘, does it too")
+        XCTAssertEqual(M.cmdCommaTarget(from: .barWithDrawer(.gallery)), .barWithDrawer(.settings),
+                       "from the other drawer it switches tabs")
+        XCTAssertNil(M.cmdCommaTarget(from: .recordingPill), "mid-take there are no drawers")
+    }
+
+    /// Only drawers take the keyboard. The bare bar and the recording pill
+    /// never do: there is nothing to type into, and stealing focus mid-take
+    /// would be hostile.
+    func testOnlyDrawersWantTheKeyboard() {
+        typealias M = CommandBarWindowManager
+        XCTAssertTrue(M.surfaceWantsKeyboard(.barWithDrawer(.settings)))
+        XCTAssertTrue(M.surfaceWantsKeyboard(.barWithDrawer(.gallery)))
+        XCTAssertFalse(M.surfaceWantsKeyboard(.bar))
+        XCTAssertFalse(M.surfaceWantsKeyboard(.recordingPill))
     }
 
     // MARK: Recording pill perch (verdict 25.08: default = top-center)

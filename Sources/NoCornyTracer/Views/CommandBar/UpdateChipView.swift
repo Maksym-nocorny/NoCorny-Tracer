@@ -12,16 +12,15 @@ import SwiftUI
 /// spring). Collapse waits 0.25s after the cursor leaves, so grazing past the
 /// chip doesn't make it flap.
 ///
-/// WHERE THE 49pt OF EXPANSION COMES FROM (round 7 correction, stand-verified):
-/// the bar's flexible spacer donates its ~29pt first, and only the ~20pt
-/// remainder grows the panel (611→631) with the same spring —
-/// `MorphGeometry.updateChipHoverExtra`, wired through `barRowWidth` in
-/// CommandBarView. The "keep the panel constant and compress into the spacer"
-/// alternative was rejected: the row's other children are fixed-size, so the
-/// missing 20pt could only come out of the inter-button gaps — every control
-/// left of the chip would slide, exactly what the spec forbids. With panel
-/// growth the only control that moves is the close cross (rightward, on the
-/// same spring); everything under and left of the cursor is pixel-still.
+/// WHERE THE 49pt OF EXPANSION COMES FROM (round 9, the boss's 4.4.1 verdict
+/// «при ховері міняє розмір самого бару в ширину, хоча в неї є запас до
+/// хрестика»): from a RESERVED SLOT, not from the panel. The row holds
+/// `expandedWidth` (87) for as long as the chip exists — the panel goes
+/// 560→631 once, when the chip appears — and the compact 38pt capsule sits
+/// LEADING-aligned inside that slot, leaving the 49pt of slack the boss can
+/// see between the chip and the close cross. Hover fills exactly that slack:
+/// zero pixels of panel change, the cross and every control left of the chip
+/// pixel-still. The round-7 model (spacer 29 + 20pt of panel growth) is gone.
 ///
 /// Idle life (the designer's motion spec): every 2.5s a ~34pt diagonal white
 /// streak sweeps across in 0.9s (easeInOut; the capsule clip ramps it 0→22%→0)
@@ -37,12 +36,12 @@ import SwiftUI
 struct UpdateChipView: View {
     /// Appcast version ("4.3.0"; display normalizes a stray "v").
     let version: String
-    /// Owned by CommandBarView: the row widens by `updateChipHoverExtra`
-    /// while expanded, and the manager grows the panel to match.
-    @Binding var isExpanded: Bool
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    /// Round 9: the unroll is now PURELY internal to the reserved slot, so the
+    /// chip owns this state itself — the row no longer needs to know.
+    @State private var isExpanded = false
     @State private var isHovering = false
     @State private var collapseTask: Task<Void, Never>?
 
