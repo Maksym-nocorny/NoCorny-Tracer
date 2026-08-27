@@ -156,8 +156,11 @@ DESIGNATED_REQ="=designated => identifier \"$BUNDLE_ID\""
 #
 #   NOTARIZE=1                      enable the Developer ID + hardened-runtime + notarize flow
 #   SIGN_IDENTITY="Developer ID Application: Name (TEAMID)"   the Developer ID cert to sign with
+#   AC_API_KEY_PATH / AC_API_KEY_ID / AC_API_ISSUER   App Store Connect API key
+#                                   (.p8 on disk) — PREFERRED, because it cannot
+#                                   silently disappear the way a keychain profile can, OR
 #   NOTARY_PROFILE=<name>           a notarytool keychain profile created via
-#                                   `xcrun notarytool store-credentials` (preferred), OR
+#                                   `xcrun notarytool store-credentials`, OR
 #   AC_USERNAME / AC_PASSWORD / AC_TEAM_ID   an Apple ID + app-specific password + team id
 #
 # When NOTARIZE is unset, the existing ad-hoc/self-signed path is used unchanged and
@@ -395,14 +398,26 @@ if [ "$NOTARIZE" = "1" ]; then
     echo "🍏 Notarizing DMG (this can take several minutes)..."
     # Build the credential args for both notarytool invocations (submit AND log-on-failure)
     # so we can fetch the reject reason without re-typing them.
+    # An App Store Connect API key comes FIRST, and deliberately so. The keychain
+    # profile silently vanished twice in two days (4.4.0 and 4.4.2 both died here
+    # mid-release): notarytool keeps that profile in the data-protection keychain,
+    # which `security` cannot even enumerate, so the loss leaves no trace and no
+    # warning — it just fails the next release. A .p8 on disk cannot evaporate.
     NOTARY_CREDS=()
-    if [ -n "${NOTARY_PROFILE:-}" ]; then
+    if [ -n "${AC_API_KEY_PATH:-}" ] && [ -n "${AC_API_KEY_ID:-}" ] && [ -n "${AC_API_ISSUER:-}" ]; then
+        if [ ! -f "$AC_API_KEY_PATH" ]; then
+            echo "❌ AC_API_KEY_PATH points at a missing file: $AC_API_KEY_PATH"
+            exit 1
+        fi
+        NOTARY_CREDS=(--key "$AC_API_KEY_PATH" --key-id "$AC_API_KEY_ID" --issuer "$AC_API_ISSUER")
+    elif [ -n "${NOTARY_PROFILE:-}" ]; then
         NOTARY_CREDS=(--keychain-profile "$NOTARY_PROFILE")
     elif [ -n "${AC_USERNAME:-}" ] && [ -n "${AC_PASSWORD:-}" ] && [ -n "${AC_TEAM_ID:-}" ]; then
         NOTARY_CREDS=(--apple-id "$AC_USERNAME" --password "$AC_PASSWORD" --team-id "$AC_TEAM_ID")
     else
         echo "❌ NOTARIZE=1 but no notary credentials provided."
-        echo "   Set NOTARY_PROFILE=<profile> (from 'xcrun notarytool store-credentials'),"
+        echo "   Preferred: AC_API_KEY_PATH + AC_API_KEY_ID + AC_API_ISSUER (App Store Connect key),"
+        echo "   or NOTARY_PROFILE=<profile> (from 'xcrun notarytool store-credentials'),"
         echo "   or AC_USERNAME + AC_PASSWORD + AC_TEAM_ID (Apple ID app-specific password)."
         echo "   See scripts/setup_signing.sh for the one-time setup."
         exit 1
