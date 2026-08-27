@@ -1,5 +1,15 @@
 # Changelog
 
+## [4.5.0] - 2026-08-27
+### Changed
+- **The bar behaves like a normal window again.** Switch to another app and Tracer goes behind it, the way any window does. Only the recording pill still floats above everything - and it stays invisible in your recordings, which is its whole job. The bar and drawers now show up in screenshots normally, so the "Show Tracer in screen captures" switch is gone: there is nothing left to switch.
+- **Dark glass is properly blue.** It turns out macOS 26 glass tint carries only lightness, never colour - a pure blue tint renders neutral grey, which is why the bar kept looking grey no matter what we set, and only looked blue while something blue happened to sit behind it. The colour now comes from a layer under the glass, so the bar stays deep blue on any wallpaper, over a white window included. White text reads noticeably better than before, and the storage banner stays amber.
+
+### Fixed
+- The system window picker no longer offers Tracer's own windows as something to record.
+- The first click on the bar while another app is in front reaches the button again instead of only bringing Tracer forward.
+
+
 ## [4.4.2] - 2026-08-27
 ### Fixed
 - **Hovering the update button no longer resizes the bar.** The bar reserves the room once the button appears, and hovering simply unfolds the version label into the space that is already there.
