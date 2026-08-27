@@ -118,16 +118,32 @@ enum Theme {
             light: Color(hex: 0x0B1220, opacity: 0.09),
             dark: Color(hex: 0xFFFFFF, opacity: 0.15)
         )
-        /// Deep navy-black wash painted OVER the fallback blur (macOS < 26). This is
+        /// Deep navy wash painted OVER the fallback blur (macOS < 26). This is
         /// what kills the grey cast the old `.hudWindow` material gave the surfaces
         /// (verdict 24.08: "скло сіре") — the reference glass is dark and deep, not
         /// grey. Dark raised 0.52 → 0.70 in round 5 (бойова 4.0.0, «на білому фоні
         /// дарк тема стає майже невидимою»): the same luminance-floor policy as the
         /// 26+ glass — over a white window the blur lightens, and the wash must be
         /// strong enough to keep white text readable regardless of the backdrop.
+        ///
+        /// ROUND 11 — dark пере­міряно під варіант C: #05080F @0.70 → #0B1220 @0.78.
+        /// Тут, на відміну від macOS 26, tint РЕАЛЬНО несе відтінок, тому плита
+        /// НЕ ПОТРІБНА (вона дала б подвійну щільність) — достатньо взяти той
+        /// самий navy, що й плита, і підняти альфу. Число не вгадане: стенд
+        /// `r11_fallback` міряв усі кандидати проти цілі над темним І світлим
+        /// фоном, @0.78 лягло найближче (темний фон: ціль 19,24,36 проти
+        /// 18,23,36; світлий: ціль 35,40,51 проти 31,37,49). Старе #05080F @0.70
+        /// давало 15,18,24 — темніше за ціль і майже без синяви (+7.5 проти +14.5).
         static let glassBackdropTint = Color.adaptive(
             light: Color(hex: 0xFFFFFF, opacity: 0.22),
-            dark: Color(hex: 0x05080F, opacity: 0.70)
+            dark: Color(hex: 0x0B1220, opacity: 0.78)
+        )
+        /// Те саме для банера квоти: сама щільність, але тепла база (#17110A) —
+        /// щоб амберний wash поверх неї не тонув у синьому. Дзеркалить
+        /// `glassPlateBannerDark` на гілці macOS < 26.
+        static let glassBackdropTintBanner = Color.adaptive(
+            light: Color(hex: 0xFFFFFF, opacity: 0.22),
+            dark: Color(hex: 0x17110A, opacity: 0.78)
         )
         /// Tint handed to native Liquid Glass (macOS 26+). DARK IS DELIBERATELY DEEP:
         /// a 62% navy over the `.regular` frost — the frost supplies the luminance
@@ -141,10 +157,55 @@ enum Theme {
         /// (SDK checked, not guessed: `Glass` exposes only regular/clear/identity +
         /// tint/interactive, and NSGlassEffectView only style+tintColor — there is
         /// no luminosity knob, so variant+tint IS the whole instrument.)
+        ///
+        /// ROUND 10 — ЗАМІР, ЯКИЙ ПЕРЕКРЕСЛЮЄ ВЕСЬ АБЗАЦ ВИЩЕ (стенд r10, macOS
+        /// 26.5.2): `Glass.tint` НЕ ПЕРЕДАЄ ВІДТІНОК. Над нейтральним сірим
+        /// фоном (43,43,43) `.regular` віддає той самий нейтральний сірий, хоч
+        /// який колір йому дати — #0B1220 @0.62 → (50,51,51); #0B5BE0 @0.62 →
+        /// (50,51,51); ЧИСТО СИНІЙ #0000FF @0.62 → (48,48,48), синява рівно
+        /// нуль. Змінюється лише СВІТЛОТА, і то навпаки: більша альфа = світліше
+        /// (@0.45 → 46, @0.62 → 50, @0.95 → 57). Тобто «сіре скло», яке шеф
+        /// ловить із 24.08, не лікується підбором tint — його там просто немає,
+        /// а синім бар буває рівно тоді, коли синє те, що ЗА вікном.
+        /// Доказ: `shots/r10-diag-tint-dead.png` (вісім смуг, однаковий фон).
+        ///
+        /// Колір, який реально видно, треба класти ПЛИТОЮ між склом і вмістом
+        /// (`.background(shape.fill(...))` перед `glassEffect`) — вітрина
+        /// `shots/r10-tint-row.png` показує пʼять кандидатів на цьому рецепті.
+        /// Кандидати A-E, ВИБІР ШЕФА 27.08 — **C**, «той самий синій спалах»:
+        ///   A #0B1220 @0.62 tint, плити немає — як було, нейтрально-сіре
+        ///   B #0A1730 @0.55 плита — глибокий navy
+        /// → C #0B1220 @0.80 плита — «синій спалах», найщільніший  ← ОБРАНО
+        ///   D #162E51 @0.55 плита — кобальт бренду (navy + 22% accentUpdate)
+        ///   E #0C2145 @0.34 плита — синь тримається, фон читається
+        /// Tint лишається на місці: він і далі тримає люмінансну підлогу
+        /// `.regular` (саме за це його підняли в round 5), просто тону не несе.
+        static let glassTintDarkHex: UInt = 0x0B1220
+        static let glassTintDarkOpacity: Double = 0.62
+        /// Темна нога скляного тону одним місцем.
+        static let glassTintDark = Color(hex: glassTintDarkHex, opacity: glassTintDarkOpacity)
         static let liquidGlassTint = Color.adaptive(
             light: Color(hex: 0xFFFFFF, opacity: 0.10),
-            dark: Color(hex: 0x0B1220, opacity: 0.62)
+            dark: glassTintDark
         )
+        /// ПЛИТА КОЛЬОРУ (варіант C, вибір шефа 27.08) — те, що робить темне
+        /// скло справді синім. Лягає МІЖ склом і вмістом; `Glass.tint` на
+        /// macOS 26 несе лише світлоту, не відтінок (доведено замірами r10:
+        /// чистий синій #0000FF @0.62 через `.regular` дає (48,48,48) —
+        /// синява нуль), тому колір дає плита, а не tint.
+        /// Заміряно на стенді над однаковим фоном: скло C = (20,26,39),
+        /// білий текст 17.35:1, тьмяний таймер 3.80:1, зелена крапка 4.81:1 —
+        /// усе ВИЩЕ за старий сірий варіант A (10.69 / 3.14 / 3.11).
+        /// ТІЛЬКИ ТЕМНА СХЕМА: світле скло лишається airy-frost без плити.
+        static let glassPlateDarkHex: UInt = 0x0B1220
+        static let glassPlateDarkOpacity: Double = 0.80
+        static let glassPlateDark = Color(hex: glassPlateDarkHex, opacity: glassPlateDarkOpacity)
+        /// Плита банера квоти — та сама щільність, що й C, але АМБЕРНОЇ родини
+        /// (#17110A — той самий рівень темряви, що #0B1220, тільки теплий).
+        /// Навіщо окрема: банер висить впритул під баром, і якби він узяв
+        /// синю плиту, амберний wash 10-16% поверх неї не переважив би — банер
+        /// став би синім із жовтою рамкою замість попереджального теплого.
+        static let glassPlateBannerDark = Color(hex: 0x17110A, opacity: glassPlateDarkOpacity)
         /// 1pt divider inside the command bar.
         static let glassDivider = Color.adaptive(
             light: Color(hex: 0x0B1220, opacity: 0.05),
@@ -459,8 +520,13 @@ struct GlassSurfaceModifier: ViewModifier {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         if #available(macOS 26.0, *) {
             // .regular in BOTH schemes (round 5): the frost is the luminance
-            // floor; the tint is the tone. See the notes on `liquidGlassTint`.
+            // floor. ROUND 11 (вибір шефа 27.08 — варіант C): the TONE is no
+            // longer the tint's job — `Glass.tint` on macOS 26 carries only
+            // lightness, not hue (r10 measurements, see `liquidGlassTint`), so
+            // dark lays `glassPlateDark` BETWEEN the glass and the content.
+            // Light is untouched: its airy frost never had the problem.
             content
+                .background(colorScheme == .dark ? shape.fill(Theme.Colors.glassPlateDark) : nil)
                 .clipShape(shape)
                 .glassEffect(.regular.tint(Theme.Colors.liquidGlassTint), in: shape)
                 .overlay {

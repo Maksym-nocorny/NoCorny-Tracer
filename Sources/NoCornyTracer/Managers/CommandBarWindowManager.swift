@@ -1163,6 +1163,16 @@ final class CommandBarWindowManager {
     /// One bitmap of the content view AS CURRENTLY DRAWN (the old look), wrapped
     /// in a click-through image view covering the whole content view. Sized in
     /// points with the rep carrying the backing scale, so Retina stays sharp.
+    ///
+    /// ЗАМІР (стенд r10, macOS 26.5.2) — ЩО ЦЕЙ ЗНІМОК НАСПРАВДІ БЕРЕ:
+    /// `cacheDisplay` малює офскрін, а Liquid Glass семплить те, що ЗА ВІКНОМ,
+    /// тож скляна площина лягає в репу З НУЛЬОВОЮ АЛЬФОЮ. Знімок несе тільки
+    /// звичайний вміст — текст, кружки кнопок, мітку запису; сама поверхня
+    /// НЕ фейдиться, а перемикається кадром. Доказ у смугах стенда: смуга із
+    /// суцільною заливкою (не скло) плавно проявляється всі 0.45с, дві скляні
+    /// стрибають в одному кадрі. Тому кросфейд заспокоює ХРОМ, але не тон
+    /// панелі; якщо шеф колись поскаржиться, що «тема все одно клацає» —
+    /// шукати тут, а не в дебаунсі монітора.
     private static func snapshotOverlay(of contentView: NSView) -> NSImageView? {
         let bounds = contentView.bounds
         guard bounds.width > 0, bounds.height > 0,

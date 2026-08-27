@@ -82,8 +82,20 @@ private struct BannerGlass: ViewModifier {
         let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
         if #available(macOS 26.0, *) {
             if colorScheme == .dark {
+                // ROUND 11 (варіант C): the bar above now carries a colour PLATE,
+                // so the banner needs one too — otherwise the two surfaces that
+                // touch each other read as different materials. The banner's
+                // plate is AMBER-FAMILY on purpose (`glassPlateBannerDark`,
+                // #17110A at the same 0.80 density as the bar's navy): a navy
+                // plate here would out-vote the 10-16% amber wash and the
+                // warning banner would come out blue with a yellow rim.
                 content
-                    .background(shape.fill(wash))
+                    .background(
+                        ZStack {
+                            shape.fill(Theme.Colors.glassPlateBannerDark)
+                            shape.fill(wash)
+                        }
+                    )
                     .clipShape(shape)
                     .glassEffect(.regular.tint(Theme.Colors.liquidGlassTint), in: shape)
             } else {
@@ -96,8 +108,10 @@ private struct BannerGlass: ViewModifier {
                 .background(
                     ZStack {
                         // The macro's backdrop-blur over the wallpaper, then the amber wash.
+                        // ROUND 11: the warm base (`glassBackdropTintBanner`), not the
+                        // bar's navy — same reason as the 26+ plate above.
                         Theme.Glass.GlassBackground()
-                        Theme.Colors.glassBackdropTint
+                        Theme.Colors.glassBackdropTintBanner
                         wash
                     }
                 )
