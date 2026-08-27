@@ -16,7 +16,10 @@ struct CameraView: View {
                     .font(.system(size: 40))
             }
         }
-        .frame(width: 200, height: 200)
+        // Same constant the window is sized from (round 13): since the hosting
+        // view no longer drives the window, these two must agree by definition,
+        // not by coincidence.
+        .frame(width: CameraWindowManager.bubbleSide, height: CameraWindowManager.bubbleSide)
         .clipShape(Circle())
         .overlay(
             Circle()

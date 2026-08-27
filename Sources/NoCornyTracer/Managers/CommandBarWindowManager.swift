@@ -184,8 +184,10 @@ private final class CommandBarHostingController<Content: View>: NSHostingControl
         // own `sizingOptions` is not guaranteed to reach a view it did not make.
         // Getting this wrong would let SwiftUI drive the window size and fight
         // every frame the morph geometry computes — so it is pinned on the object
-        // that actually reports the size.
-        hosting.sizingOptions = []
+        // that actually reports the size. Round 13 moved the value itself into
+        // `WindowSizing`, where the 4.5.0 crash that this line was always
+        // protecting against is written down.
+        WindowSizing.pin(hosting)
         view = hosting
     }
 }
@@ -453,7 +455,7 @@ final class CommandBarWindowManager {
                 rootView: CommandBarRootView(appState: appState, manager: self)
             )
             // The panel's size is driven by morph(to:), never by the SwiftUI fitting size.
-            host.sizingOptions = []
+            WindowSizing.pin(host)
 
             let newPanel = CommandBarPanel(contentRect: .zero)
             newPanel.contentViewController = host

@@ -20,21 +20,44 @@ struct OnboardingView: View {
     /// previous run, so step 1 is skipped instead.)
     @State private var grantedThisSession = false
 
+    /// The card sizes of the two steps (Figma 86:551 / 87:561) and the ONE
+    /// window box that holds either of them.
+    ///
+    /// Round 13: the window used to be re-sized by SwiftUI whenever `step`
+    /// flipped — the same "hosting view moves its own window from inside the
+    /// layout pass" mechanism that crashed the camera bubble in 4.5.0. The
+    /// window is now fixed at the taller card plus the shadow apron, and the
+    /// card is CENTRED inside it, so the shorter cloud card lands exactly where
+    /// a window sized to it would have put it — 10pt of transparent margin is
+    /// the whole difference.
+    static let cardWidth: CGFloat = 560
+    static let permissionCardHeight: CGFloat = 320
+    static let cloudCardHeight: CGFloat = 300
+    /// Apron the shadow draws into (`.padding(60)` on each side).
+    static let shadowApron: CGFloat = 60
+    static var windowContentSize: NSSize {
+        NSSize(width: cardWidth + shadowApron * 2,
+               height: max(permissionCardHeight, cloudCardHeight) + shadowApron * 2)
+    }
+
     var body: some View {
         Group {
             switch step {
             case .permission:
                 permissionCard
-                    .frame(width: 560, height: 320)
+                    .frame(width: Self.cardWidth, height: Self.permissionCardHeight)
             case .cloud, .none:
                 cloudCard
-                    .frame(width: 560, height: 300)
+                    .frame(width: Self.cardWidth, height: Self.cloudCardHeight)
             }
         }
         .glassSurface(cornerRadius: 34)
         // Room for the shadow inside the transparent borderless window.
         .floatingPanelShadow()
-        .padding(60)
+        .padding(Self.shadowApron)
+        // The fixed window box — the card centres in it, and a step change can
+        // no longer ask the window to resize itself mid-layout (round 13).
+        .frame(width: Self.windowContentSize.width, height: Self.windowContentSize.height)
         .onAppear {
             step = initialStep
             // Permission already working when step 1 comes up → nothing to grant.

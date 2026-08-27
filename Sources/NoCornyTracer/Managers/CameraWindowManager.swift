@@ -110,19 +110,38 @@ final class CameraWindowManager {
         }
     }
 
+    /// The bubble is a FIXED circle — `CameraView` pins itself to it, and the
+    /// window never grows or shrinks. Named so the window and the view cannot
+    /// drift apart.
+    static let bubbleSide: CGFloat = 200
+
     private func showWindow(appState: AppState) {
         if window == nil {
             let cameraView = CameraView(cameraManager: appState.cameraManager)
             let hostingController = NSHostingController(rootView: cameraView)
+            // ROUND 13 — THE 4.5.0 CRASH FIX, and the reason this line is not a
+            // tidy-up: with SwiftUI's default `sizingOptions` this hosting view
+            // sets the bubble's window frame from INSIDE the display cycle's
+            // layout pass, which re-dirties the window's constraints and asks for
+            // another update-constraints pass — over and over. The bubble is a
+            // three-view window, so AppKit's runaway guard ("more Update
+            // Constraints in Window passes than there are views in the window")
+            // trips within a few passes and throws an uncaught NSGenericException
+            // → abort. Stand-proven both ways: see `WindowSizing`.
+            WindowSizing.pin(hostingController)
 
             let newWindow = CameraOverlayWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 200, height: 200),
+                contentRect: NSRect(x: 0, y: 0, width: Self.bubbleSide, height: Self.bubbleSide),
                 styleMask: [.borderless, .fullSizeContentView, .nonactivatingPanel],
                 backing: .buffered,
                 defer: false
             )
 
             newWindow.contentViewController = hostingController
+            // SwiftUI no longer reports a fitting size (that is the point), so the
+            // window's own content size is the single source of truth for the
+            // circle's dimensions.
+            newWindow.setContentSize(NSSize(width: Self.bubbleSide, height: Self.bubbleSide))
             newWindow.backgroundColor = .clear
             newWindow.isOpaque = false
             newWindow.hasShadow = true

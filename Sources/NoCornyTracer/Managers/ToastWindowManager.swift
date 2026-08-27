@@ -161,6 +161,13 @@ final class ToastWindowManager {
         dismissTimer = nil
 
         let hostingController = NSHostingController(rootView: rootView)
+        // ROUND 13 (the 4.5.0 camera crash, same class): SwiftUI may MEASURE the
+        // toast — `fittingSize` a few lines below is how the panel learns its
+        // size — but it must not set the window frame itself. A toast is up while
+        // a take is live, i.e. exactly when the panel machinery is busiest, and a
+        // hosting view that resizes its own window from inside the layout pass is
+        // what took the camera bubble down. See `WindowSizing`.
+        WindowSizing.pin(hostingController, to: WindowSizing.measuredByUsOnly)
 
         let panel: NSPanel
         if let window {
