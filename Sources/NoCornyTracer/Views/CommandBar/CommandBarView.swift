@@ -292,7 +292,12 @@ struct CommandBarView: View {
     /// row-width animation above. Reduce Motion: a plain fade.
     private var chipTransition: AnyTransition {
         guard !reduceMotion else { return .opacity }
-        return .scale(scale: 0.6)
+        // `.leading` anchor (round 9 review): the transition rides the 87pt
+        // RESERVED SLOT, not the 38pt capsule — scaling from the default
+        // centre would start the chip ~10pt right of its resting place and
+        // slide it left as it grows. The capsule is leading-aligned in the
+        // slot, so the pop-in must grow from that same edge.
+        return .scale(scale: 0.6, anchor: .leading)
             .animation(Theme.Anim.updateChip)
             .combined(with: .opacity.animation(.easeOut(duration: 0.12)))
     }

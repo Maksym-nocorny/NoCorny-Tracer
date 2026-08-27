@@ -402,11 +402,24 @@ final class CommandBarWindowManager {
                 cancelFlight()
             } else {
                 let logical = MorphGeometry.logicalFrame(forPanel: panel.frame)
-                persistAnchor(forLogicalFrame: logical)
+                // Intent, not the clamped resting frame — a bar pushed left by
+                // the chip's slot near the screen edge must not save that shove
+                // (round 9 review). A drag has already persisted its own truth.
+                persistAnchor(
+                    forLogicalFrame: logical,
+                    intended: surface == .recordingPill ? Self.savedPillAnchor() : barAnchor
+                )
             }
             panel.orderOut(nil)
         }
         panel = nil
+        // Round 9 review: a bar hidden WITH a drawer open used to keep
+        // `.barWithDrawer` in `surface`, so the next `show()` came up wearing
+        // the drawer and — since round 9 — took the keyboard for it, i.e. a
+        // tray click activated the app. The bar always comes back closed and
+        // quiet; a recording re-entry still overrides this in `show()`.
+        pendingChipShrinkSnap = false
+        if surface != .recordingPill { surface = .bar }
     }
 
     /// The pill view reports its laid-out width here (round 3): anything past the
@@ -499,13 +512,58 @@ final class CommandBarWindowManager {
         tookKeyForDrawer = true
     }
 
-    /// The counterpart: when the drawer goes away, give the keyboard back.
-    /// Skipped while a modal is up (the delete confirmation / Sparkle dialogs
-    /// activate deliberately and own the focus until dismissed).
+    /// Whether closing the drawer may hand the keyboard back — pure, because
+    /// getting it wrong resurrects the 4.0.0 «кнопка нічого не робить» bug on
+    /// a release channel.
+    ///
+    /// The round-9 first cut gated on `NSApp.modalWindow == nil`, which is
+    /// WRONG: `modalWindow` is only populated during `runModal()`, and the
+    /// windows that actually matter here are NOT modal. Sparkle 2.9.0 shows
+    /// "Checking for updates…" and its update alert as ordinary windows, and
+    /// the onboarding card is an ordinary window too. Sequence that broke:
+    /// Settings drawer → "Check for Updates" (the link activates the app so
+    /// the Sparkle window can come up) → the user closes the drawer to look at
+    /// that window → `deactivate()` sent the app AND its dialog behind the
+    /// frontmost app, i.e. the dead-button bug again.
+    ///
+    /// So the question is not "is something modal" but "is any window of OURS
+    /// still holding, or about to hold, the keyboard": deactivate only when the
+    /// key window is our own panel and no other keyable window of ours is on
+    /// screen (a window ordered front but not yet key counts — Sparkle's alert
+    /// spends a beat in exactly that state).
+    nonisolated static func shouldReleaseKeyboard(
+        keyWindowIsPanel: Bool,
+        hasOtherKeyableWindow: Bool,
+        isActive: Bool
+    ) -> Bool {
+        isActive && keyWindowIsPanel && !hasOtherKeyableWindow
+    }
+
+    /// The counterpart of `takeKeyboard`: when the drawer goes away, give the
+    /// keyboard back to the app the user came from — unless another window of
+    /// ours needs it (see `shouldReleaseKeyboard`).
     private func releaseKeyboardIfTaken() {
         guard tookKeyForDrawer else { return }
         tookKeyForDrawer = false
-        guard NSApp.modalWindow == nil, NSApp.isActive else { return }
+        guard let panel else { return }
+        let keyWindow = NSApp.keyWindow
+        // "Another window of ours that wants the keyboard": visible, keyable,
+        // not our own panel — and not one of our transient floating panels.
+        // The style mask is the clean separator, verified across the app: the
+        // toast and camera-bubble panels carry `.nonactivatingPanel` (they
+        // never want focus), while the windows that MUST block a deactivate —
+        // Sparkle's alerts and the onboarding card — do not.
+        let hasOtherKeyableWindow = NSApp.windows.contains { window in
+            window !== panel
+                && window.isVisible
+                && window.canBecomeKey
+                && !window.styleMask.contains(.nonactivatingPanel)
+        }
+        guard Self.shouldReleaseKeyboard(
+            keyWindowIsPanel: keyWindow == nil || keyWindow === panel,
+            hasOtherKeyableWindow: hasOtherKeyableWindow,
+            isActive: NSApp.isActive
+        ) else { return }
         NSApp.deactivate()
     }
 
@@ -575,9 +633,9 @@ final class CommandBarWindowManager {
             //    REMOVAL only animates when the transaction of the state change
             //    carries the animation — a bare `surface = …` yanks the old
             //    surface in a single frame.
-            let target = beginFlight(toSurface: newSurface, panel: panel)
+            let flight = beginFlight(toSurface: newSurface, panel: panel)
             withAnimation(Theme.Anim.surface) { surface = newSurface }
-            persistAnchor(forLogicalFrame: target)
+            persistAnchor(forLogicalFrame: flight.target, intended: flight.intended)
             backdropMonitor.sampleSoon()
             if newSurface == .bar { drawerOpensUp = false }
             return
@@ -611,27 +669,50 @@ final class CommandBarWindowManager {
             // snap runs after `drawerCloseSnapDelay`, when nothing visible is
             // left to clip — burst-proven invisible (shots r5a-*).
             pendingDrawerCloseSnap = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + Self.drawerCloseSnapDelay) { [weak self] in
-                MainActor.assumeIsolated {
-                    guard let self, self.pendingDrawerCloseSnap else { return }
-                    self.pendingDrawerCloseSnap = false
-                    guard self.surface == .bar else { return }
-                    // The drawer leaves the tree only NOW, at opacity 0 — its
-                    // removal (and the glass teardown) has nothing visible left.
-                    self.closingDrawerTab = nil
-                    self.reframe(animated: false)
-                    // Back to the default top pin only once the bar-sized panel
-                    // is in place — content fills it exactly, so the flip cannot
-                    // move a pixel.
-                    self.drawerOpensUp = false
-                }
-            }
+            scheduleDrawerCloseSnap(after: Self.drawerCloseSnapDelay)
             return
         }
 
         reframe(animated: false)
         if newSurface == .bar {
             drawerOpensUp = false
+        }
+    }
+
+    /// The drawer close's deferred frame snap. Split out (round 9 review)
+    /// because it can RE-ARM itself: when the update chip is also mid-exit its
+    /// longer deferral must own the reframe (snapping here would clip the
+    /// chip's collapse), and rather than bailing out — which could strand the
+    /// panel at drawer size if that chip snap were then cancelled by the chip
+    /// coming straight back — this waits out the remaining time and tries
+    /// again. Whoever runs last does the single reframe; the snap always
+    /// happens exactly once.
+    private func scheduleDrawerCloseSnap(after delay: TimeInterval) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.pendingDrawerCloseSnap else { return }
+                guard self.surface == .bar else {
+                    self.pendingDrawerCloseSnap = false
+                    return
+                }
+                if self.pendingChipShrinkSnap {
+                    // The chip's exit spring is still running inside this same
+                    // oversized panel — come back when it has settled.
+                    self.scheduleDrawerCloseSnap(
+                        after: Self.chipShrinkSnapDelay - Self.drawerCloseSnapDelay
+                    )
+                    return
+                }
+                self.pendingDrawerCloseSnap = false
+                // The drawer leaves the tree only NOW, at opacity 0 — its
+                // removal (and the glass teardown) has nothing visible left.
+                self.closingDrawerTab = nil
+                self.reframe(animated: false)
+                // Back to the default top pin only once the bar-sized panel
+                // is in place — content fills it exactly, so the flip cannot
+                // move a pixel.
+                self.drawerOpensUp = false
+            }
         }
     }
 
@@ -668,25 +749,37 @@ final class CommandBarWindowManager {
         guard target != chipExtraWidth else { return }
         let growing = target > chipExtraWidth
         chipExtraWidth = target
-        // Mid drawer-close the panel is deliberately oversized for the removal
-        // fade — the deferred drawer snap reframes with the new width itself.
-        guard !pendingDrawerCloseSnap else { return }
         // Mid-flight (bar→pill) the union frame rules; the pill ignores chip
         // width and the return morph reframes from scratch.
         guard !flightActive, surface != .recordingPill else { return }
         if growing {
             pendingChipShrinkSnap = false
+            // Mid drawer-close the panel is deliberately oversized for the
+            // removal fade — reframing now would clip it, and the deferred
+            // drawer snap picks the new width up within its 0.35s anyway.
+            guard !pendingDrawerCloseSnap else { return }
             reframe(animated: false)
             return
         }
+        // SHRINK. Round 9 review: this used to bail out under
+        // `pendingDrawerCloseSnap` WITHOUT arming its own snap, so a drawer
+        // closing within ~0.2s of the chip leaving got its 0.35s snap applied
+        // to a chip whose exit spring still had 0.25s to run — the chip's
+        // collapse was clipped. Both deferrals are armed now and the LAST one
+        // does the single reframe (see the drawer snap's guard).
         pendingChipShrinkSnap = true
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.chipShrinkSnapDelay) { [weak self] in
             MainActor.assumeIsolated {
                 guard let self, self.pendingChipShrinkSnap else { return }
                 self.pendingChipShrinkSnap = false
-                guard !self.pendingDrawerCloseSnap, !self.flightActive,
-                      self.surface != .recordingPill else { return }
+                guard !self.flightActive, self.surface != .recordingPill else { return }
+                // The drawer's own snap fires first (0.35 < 0.6) and, seeing
+                // this flag, left the frame alone — so this one reframe lands
+                // both the width and the height.
+                self.pendingDrawerCloseSnap = false
+                self.closingDrawerTab = nil
                 self.reframe(animated: false)
+                self.drawerOpensUp = false
             }
         }
     }
@@ -713,8 +806,8 @@ final class CommandBarWindowManager {
         if animated, panel.isVisible {
             // Same-surface animated reframe (the pill widening under a long
             // timer): starts — or retargets — a flight toward the fresh target.
-            let target = beginFlight(toSurface: surface, panel: panel)
-            persistAnchor(forLogicalFrame: target)
+            let flight = beginFlight(toSurface: surface, panel: panel)
+            persistAnchor(forLogicalFrame: flight.target, intended: flight.intended)
             backdropMonitor.sampleSoon()
             return
         }
@@ -734,7 +827,7 @@ final class CommandBarWindowManager {
         // pill landing, say).
         cancelFlight()
         panel.setFrame(MorphGeometry.panelFrame(forLogical: target), display: true)
-        persistAnchor(forLogicalFrame: target)
+        persistAnchor(forLogicalFrame: target, intended: anchor)
         // The surface now sits over different desktop real estate — let the Auto
         // theme re-judge it (debounced; a no-op while the monitor sleeps).
         backdropMonitor.sampleSoon()
@@ -773,8 +866,12 @@ final class CommandBarWindowManager {
     /// value — valid as long as the union's top-left (the offset's coordinate
     /// base) stays put; when a retarget would move the base (pill widening
     /// against the screen edge — ultra-rare), the flight snaps out instead.
+    /// Returns the target frame AND the anchor it was computed from — the
+    /// caller persists the INTENT, never the clamped frame (round 9 review).
     @discardableResult
-    private func beginFlight(toSurface: Surface, panel: CommandBarPanel) -> CGRect {
+    private func beginFlight(
+        toSurface: Surface, panel: CommandBarPanel
+    ) -> (target: CGRect, intended: CGPoint) {
         let visible = currentVisibleFrame(for: panel)
         let anchor = anchorFor(surface: toSurface, visible: visible)
         let target = MorphGeometry.targetFrame(
@@ -791,7 +888,7 @@ final class CommandBarWindowManager {
             guard MorphGeometry.unionKeepsTopLeft(current: current, adding: target) else {
                 cancelFlight()
                 panel.setFrame(MorphGeometry.panelFrame(forLogical: target), display: true)
-                return target
+                return (target, anchor)
             }
             let union = current.union(target)
             if union != current {
@@ -799,7 +896,7 @@ final class CommandBarWindowManager {
                 panel.setFrame(MorphGeometry.panelFrame(forLogical: union), display: true)
             }
             launchFlightSpring(toward: MorphGeometry.contentOffset(of: target, in: union))
-            return target
+            return (target, anchor)
         }
 
         let union = current.union(target)
@@ -821,7 +918,7 @@ final class CommandBarWindowManager {
             guard let self, self.flightActive, self.flightGeneration == generation else { return }
             self.launchFlightSpring(toward: destination)
         }
-        return target
+        return (target, anchor)
     }
 
     /// Animates `flightOffset` to `destination` and, once the spring has fully
@@ -972,12 +1069,20 @@ final class CommandBarWindowManager {
     /// updates ONLY its own perch (used by this and future takes); every other
     /// surface updates the bar anchor — recovered through `MorphGeometry.barAnchor`
     /// because an upward drawer's frame has the bar at its bottom.
-    private func persistAnchor(forLogicalFrame logical: CGRect) {
+    ///
+    /// `intended` (round 9 review) is the anchor the placement was COMPUTED
+    /// from, before `targetFrame`'s slide-into-bounds clamp. Programmatic
+    /// reframes pass it, and it is what gets saved: a bar near the right edge
+    /// that widens by the chip's 71pt slot gets clamped LEFT for display, and
+    /// persisting that clamped position used to walk the anchor left for good
+    /// — the bar stayed shifted after the chip disappeared. A user DRAG passes
+    /// nothing: there the on-screen frame IS the intent.
+    private func persistAnchor(forLogicalFrame logical: CGRect, intended: CGPoint? = nil) {
         if surface == .recordingPill {
-            Self.savePillAnchor(CGPoint(x: logical.minX, y: logical.maxY))
+            Self.savePillAnchor(intended ?? CGPoint(x: logical.minX, y: logical.maxY))
             return
         }
-        let anchor = MorphGeometry.barAnchor(
+        let anchor = intended ?? MorphGeometry.barAnchor(
             forSurfaceFrame: logical, surface: surface, opensUp: drawerOpensUp
         )
         barAnchor = anchor

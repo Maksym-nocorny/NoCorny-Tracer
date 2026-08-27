@@ -139,7 +139,14 @@ struct RecordRingMark: View {
         spinTask?.cancel()
         spinTask = Task { @MainActor in
             while !Task.isCancelled {
-                withAnimation(.linear(duration: Self.spinChunk)) {
+                // The chunk animation deliberately OUTLASTS the sleep (×1.2):
+                // `Task.sleep` wakes no earlier than its deadline, so equal
+                // durations let the ring finish its chunk and stand still for
+                // the scheduling jitter — a micro-stall twice a second, the
+                // very "дивно" this rewrite exists to remove. Overlapping
+                // means the next chunk always retargets from a MOVING value,
+                // and linear→linear retargeting keeps the speed constant.
+                withAnimation(.linear(duration: Self.spinChunk * 1.2)) {
                     spinAngle += degreesPerChunk
                 }
                 try? await Task.sleep(nanoseconds: UInt64(Self.spinChunk * 1_000_000_000))

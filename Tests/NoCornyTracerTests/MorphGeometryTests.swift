@@ -395,6 +395,32 @@ final class MorphGeometryTests: XCTestCase {
         XCTAssertNil(M.cmdCommaTarget(from: .recordingPill), "mid-take there are no drawers")
     }
 
+    /// Handing the keyboard back on drawer close is allowed ONLY when nothing
+    /// else of ours wants it. The round-9 first cut asked `NSApp.modalWindow
+    /// == nil`, which is blind to Sparkle: its "Checking for updates…" and
+    /// update alert are NON-modal windows, so closing the drawer to look at
+    /// the dialog sent the app (and the dialog) behind the frontmost app —
+    /// the 4.0.0 dead-button bug, on a release channel. The onboarding card is
+    /// non-modal too.
+    func testKeyboardIsOnlyReleasedWhenNoOtherWindowOfOursWantsIt() {
+        typealias M = CommandBarWindowManager
+        XCTAssertTrue(M.shouldReleaseKeyboard(
+            keyWindowIsPanel: true, hasOtherKeyableWindow: false, isActive: true
+        ), "the quiet case: our panel had the keys, nothing else is up")
+
+        XCTAssertFalse(M.shouldReleaseKeyboard(
+            keyWindowIsPanel: false, hasOtherKeyableWindow: false, isActive: true
+        ), "something else of ours already took the keys — a Sparkle alert")
+
+        XCTAssertFalse(M.shouldReleaseKeyboard(
+            keyWindowIsPanel: true, hasOtherKeyableWindow: true, isActive: true
+        ), "a Sparkle window is up but not yet key — deactivating would bury it")
+
+        XCTAssertFalse(M.shouldReleaseKeyboard(
+            keyWindowIsPanel: true, hasOtherKeyableWindow: false, isActive: false
+        ), "not active — there is nothing to hand back")
+    }
+
     /// Only drawers take the keyboard. The bare bar and the recording pill
     /// never do: there is nothing to type into, and stealing focus mid-take
     /// would be hostile.
