@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import Sparkle
+import SwiftUI
 
 /// The pure decision behind the "Relaunch to update" chip (4.2.0): whether the
 /// chip exists on the surfaces (tray menu, Settings drawer), what it says, and
@@ -63,8 +64,13 @@ struct UpdateChipState: Equatable {
 ///    the chip too — a Sparkle window never appears for scheduled checks. This
 ///    matters doubly here: for a regular app that is almost never active
 ///    (nonactivating panels) those windows would open BEHIND everything anyway.
-/// 4. The manual "Check for Updates" flow stays fully Sparkle-standard — an
-///    explicit click may show a dialog (see `requestUserInitiatedCheck`).
+/// 4. **One door** (round 14): the bar chip, the drawer row and the tray item
+///    all call `handleUpdateRequest()`, which routes on `userCheckAction` —
+///    install / mid-take toast / ask Sparkle. A staged update NEVER reaches
+///    `-[SPUUpdater checkForUpdates]`, because that call returns silently while
+///    an update session is alive, which is how "Check for Updates does nothing"
+///    shipped in 4.5.0/4.5.1. The full source citation lives on
+///    `userCheckAction`.
 @Observable
 final class UpdateCoordinator: NSObject, SPUUpdaterDelegate, SPUStandardUserDriverDelegate {
 
@@ -232,36 +238,117 @@ final class UpdateCoordinator: NSObject, SPUUpdaterDelegate, SPUStandardUserDriv
         pendingUpdateVersion = version
     }
 
-    // MARK: - The chip's click (tray menu item + drawer row)
+    // MARK: - The one door (chip click · drawer link · tray item)
 
     /// What the surfaces render right now — nil hides the chip.
     var chipState: UpdateChipState? {
         UpdateChipState.decide(pendingVersion: pendingUpdateVersion, isRecording: isRecording())
     }
 
-    func installPendingUpdate() {
-        guard let chip = chipState else { return }
+    /// What a user's update click should DO. Pure, and it is the whole of round
+    /// 14 — the three states are the three things the button may ever mean.
+    enum UserCheckAction: Equatable {
+        /// An update is staged and no take is running: install and relaunch now.
+        case install
+        /// An update is staged but a recording is live: a relaunch would end the
+        /// take, so the click explains instead.
+        case toastWaitForTake
+        /// Nothing is staged — go ask Sparkle, and make the answer visible.
+        case askSparkle
+    }
+
+    /// ROUND 14 — БОЙОВИЙ ВЕРДИКТ 4.5.1 («у мене 4.5.0, натискаю Check for
+    /// Updates — нічого не відбувається»).
+    ///
+    /// Причина в Sparkle 2.9.0 і вона структурна, а не косметична. Коли тихий
+    /// цикл застейджив оновлення, `SPUAutomaticUpdateDriver` питає наш
+    /// `updater:willInstallUpdateOnQuit:immediateInstallationBlock:`; ми
+    /// повертаємо `true`, і тоді (SPUAutomaticUpdateDriver.m:121-125) Sparkle
+    /// НЕ викликає `abortUpdate` — драйвер лишається живий до кінця життя
+    /// процесу. А `-[SPUUpdater checkForUpdates]` починається так
+    /// (SPUUpdater.m:713-720):
+    ///
+    ///     if (_sessionInProgress) {
+    ///         SULog(SULogLevelError, @"Error: -checkForUpdates called but
+    ///                                   .sessionInProgress == YES");
+    ///         return;                       // ← мовчки, жодного вікна
+    ///     }
+    ///     if (_driver != nil) { return; }   // ← так само мовчки
+    ///
+    /// І аварійний вихід зверху теж не спрацьовує: `checkForUpdates` показав би
+    /// вже відкрите вікно через `showUpdateInFocus`, але тільки при
+    /// `_driver.showingUpdate`, а `SPUAutomaticUpdateDriver.showingUpdate`
+    /// повертає `NO` (SPUAutomaticUpdateDriver.m:99-102). Тобто натиснута
+    /// кнопка гарантовано не робить НІЧОГО і нічого не каже — рівно те, що
+    /// бачив шеф.
+    ///
+    /// ЛІКУЄТЬСЯ НЕ ПРАПОРЦЕМ, А МАРШРУТОМ: коли оновлення вже стейджнуте,
+    /// `checkForUpdates` нам взагалі не потрібен — треба ті самі двері, що й у
+    /// чіпа. Коли не стейджнуте — питаємо Sparkle, але спершу перевіряємо, що
+    /// він у стані слухати.
+    ///
+    /// ЩО З «GENTLE REMINDERS» — ПЕРЕВІРЕНО ПО ДЖЕРЕЛУ, ВОНИ НЕ ВИННІ. Наш
+    /// `standardUserDriverShouldHandleShowingScheduledUpdate → false` питається
+    /// рівно в одній гілці — `setUpActiveUpdateAlertForScheduledUpdate:` при
+    /// `updateItem != nil` (SPUStandardUserDriver.m:292-295). А викликається
+    /// вона так (там же, :447):
+    ///
+    ///     [self setUpActiveUpdateAlertForScheduledUpdate:
+    ///         (state.userInitiated ? nil : appcastItem) state:state];
+    ///
+    /// тобто на КОЖНІЙ ручній перевірці `updateItem` == nil, делегата не
+    /// питають, а вікно активують і показують одразу (:184-192). Діалог
+    /// «You're up to date» (`showUpdateNotFoundWithError:`, :618) — звичайний
+    /// `NSAlert`, делегата теж не питає. Прапорець «поточна перевірка ручна»
+    /// не потрібен: подавлення на ручному шляху немає взагалі.
+    static func userCheckAction(pending: String?, isRecording: Bool) -> UserCheckAction {
+        // Built ON the chip's decision, not beside it: the button and the chip
+        // are the same door and must never disagree about what a click means.
+        guard let chip = UpdateChipState.decide(pendingVersion: pending, isRecording: isRecording)
+        else { return .askSparkle }
         switch chip.clickAction {
-        case .explainRecordingBlock:
+        case .installAndRelaunch: return .install
+        case .explainRecordingBlock: return .toastWaitForTake
+        }
+    }
+
+    /// THE single entry point behind every update control — the bar chip, the
+    /// Settings drawer's row (chip or "Check for Updates"), and the tray item.
+    /// Static so it still answers when `shared` is somehow gone: no coordinator
+    /// simply means nothing is staged, which is the `askSparkle` branch.
+    ///
+    /// The contract this method exists to keep: A CLICK ALWAYS PRODUCES
+    /// SOMETHING VISIBLE — an install, a toast, or a Sparkle window. Never
+    /// silence.
+    static func handleUpdateRequest() {
+        let coordinator = shared
+        let action = userCheckAction(
+            pending: coordinator?.pendingUpdateVersion,
+            isRecording: coordinator?.isRecording() ?? false
+        )
+        switch action {
+        case .toastWaitForTake:
             AppState.shared?.presentToast?(ToastContent(
                 icon: "arrow.triangle.2.circlepath",
                 iconColor: Theme.Colors.pausedAmber,
                 message: "The update installs after this recording finishes"
             ))
-        case .installAndRelaunch:
+        case .install:
             LogManager.shared.log(
-                "⬆️ Updater: relaunch-to-update clicked (\(pendingUpdateVersion ?? "?"))"
+                "⬆️ Updater: relaunch-to-update clicked (\(coordinator?.pendingUpdateVersion ?? "?"))"
             )
-            if let install = immediateInstallHandler {
+            if let install = coordinator?.immediateInstallHandler {
                 // Staged install + relaunch, no UI (SPUAutomaticUpdateDriver).
                 install()
             } else {
                 // The chip came from a scheduled announcement without a staged
-                // install (major upgrade / info-only / auto-download off): fall
-                // back to the focused user-initiated flow — Sparkle resumes the
-                // update with its standard dialog, in front.
-                Self.requestUserInitiatedCheck()
+                // install (major upgrade / info-only / auto-download off): there
+                // is nothing to install immediately, so Sparkle's own focused
+                // flow is the right — and visible — answer.
+                askSparkle()
             }
+        case .askSparkle:
+            askSparkle()
         }
     }
 
@@ -305,7 +392,7 @@ final class UpdateCoordinator: NSObject, SPUUpdaterDelegate, SPUStandardUserDriv
     func handleBarChipClick() {
         let resolved = Self.resolve(preview: previewVersion, realPending: pendingUpdateVersion)
         guard resolved.isPreview else {
-            installPendingUpdate()
+            Self.handleUpdateRequest()
             return
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) { [weak self] in
@@ -319,7 +406,7 @@ final class UpdateCoordinator: NSObject, SPUUpdaterDelegate, SPUStandardUserDriv
         }
     }
 
-    // MARK: - Manual check (the drawer's "Check for Updates" link)
+    // MARK: - Asking Sparkle (the `askSparkle` branch)
 
     /// Activation FIRST, and unconditionally: Sparkle only self-activates for
     /// LSUIElement apps, and this regular-but-never-active panel app otherwise
@@ -327,7 +414,13 @@ final class UpdateCoordinator: NSObject, SPUUpdaterDelegate, SPUStandardUserDriv
     /// the update dialog) opened BEHIND the frontmost app — the 4.0.0 "button
     /// does nothing" bug. The click is explicit user intent, so stealing focus
     /// is the correct move.
-    static func requestUserInitiatedCheck() {
+    ///
+    /// Round 14 added the two guards below. Both cover states where
+    /// `-[SPUUpdater checkForUpdates]` returns without showing anything (see
+    /// `userCheckAction` for the source citations) — and a button that answers
+    /// with silence is the bug we are here to close, so each one answers with a
+    /// toast instead.
+    private static func askSparkle() {
         LogManager.shared.log("⬆️ Updater: update check requested")
         NSApp.activate(ignoringOtherApps: true)
         guard let controller = (NSApp.delegate as? AppDelegate)?.updaterController
@@ -336,8 +429,38 @@ final class UpdateCoordinator: NSObject, SPUUpdaterDelegate, SPUStandardUserDriv
                 "⬆️ Updater: no updater controller at click — check not started",
                 type: .error
             )
+            presentCheckToast(
+                icon: "exclamationmark.triangle.fill",
+                color: Theme.Colors.pausedAmber,
+                message: "Updates are unavailable right now"
+            )
+            return
+        }
+        // `sessionInProgress` is EXACTLY the flag Sparkle's own guard reads
+        // before returning silently, so asking it first turns the dead click
+        // into an honest answer. In practice this is our own 5-minute
+        // background poll still in the air — a few seconds, not a fault.
+        guard !controller.updater.sessionInProgress else {
+            LogManager.shared.log(
+                "⬆️ Updater: click landed during an update session — Sparkle would ignore it"
+            )
+            presentCheckToast(
+                icon: "arrow.triangle.2.circlepath",
+                color: Theme.Colors.accentUpdate,
+                message: "Already checking for updates — one moment"
+            )
             return
         }
         controller.checkForUpdates(nil)
     }
+
+    private static func presentCheckToast(icon: String, color: Color, message: String) {
+        AppState.shared?.presentToast?(ToastContent(
+            icon: icon,
+            iconColor: color,
+            message: message,
+            duration: 4
+        ))
+    }
+
 }

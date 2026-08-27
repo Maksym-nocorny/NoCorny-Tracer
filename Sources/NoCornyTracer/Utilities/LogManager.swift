@@ -126,6 +126,37 @@ final class LogManager {
         }
     }
     
+    /// A line written BEFORE returning, on the calling thread.
+    ///
+    /// ROUND 14: `log(_:)` hands the file write to a background queue, which is
+    /// right for every normal line and useless for the one case that matters most
+    /// — the last thing the app says before `abort()`. The uncaught-exception
+    /// handler has microseconds and no run loop, so it writes here instead.
+    ///
+    /// Why this exists at all: the 4.5.0/4.5.1 crash was an uncaught
+    /// `NSGenericException` whose reason names the offending window, and the
+    /// `.ips` reports do not carry that text. Two releases were spent fixing the
+    /// wrong window because of it; the reason was recoverable only from
+    /// `log show`. From now on it lands in our own log, next to what the app was
+    /// doing at the time.
+    /// The append is written out here rather than through `appendToFile`
+    /// deliberately: that path also runs log rotation, and rotation moves files
+    /// and mutates state that belongs to `logQueue`. A dying process gets the
+    /// three lines it needs and touches nothing else.
+    func logImmediately(_ message: String, type: OSLogType = .fault) {
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+        let logLine = "[\(timestamp)] ☠️ FAULT: \(sanitize(message))\n"
+        logger.log(level: type, "\(logLine)")
+        guard let data = logLine.data(using: .utf8) else { return }
+        if let handle = try? FileHandle(forWritingTo: logFileURL) {
+            defer { try? handle.close() }
+            try? handle.seekToEnd()
+            try? handle.write(contentsOf: data)
+        } else {
+            try? data.write(to: logFileURL)
+        }
+    }
+
     /// High-level error logging with context
     func log(error: Error, message: String) {
         let details = """

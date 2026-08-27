@@ -119,16 +119,6 @@ final class CameraWindowManager {
         if window == nil {
             let cameraView = CameraView(cameraManager: appState.cameraManager)
             let hostingController = NSHostingController(rootView: cameraView)
-            // ROUND 13 — THE 4.5.0 CRASH FIX, and the reason this line is not a
-            // tidy-up: with SwiftUI's default `sizingOptions` this hosting view
-            // sets the bubble's window frame from INSIDE the display cycle's
-            // layout pass, which re-dirties the window's constraints and asks for
-            // another update-constraints pass — over and over. The bubble is a
-            // three-view window, so AppKit's runaway guard ("more Update
-            // Constraints in Window passes than there are views in the window")
-            // trips within a few passes and throws an uncaught NSGenericException
-            // → abort. Stand-proven both ways: see `WindowSizing`.
-            WindowSizing.pin(hostingController)
 
             let newWindow = CameraOverlayWindow(
                 contentRect: NSRect(x: 0, y: 0, width: Self.bubbleSide, height: Self.bubbleSide),
@@ -137,10 +127,14 @@ final class CameraWindowManager {
                 defer: false
             )
 
-            newWindow.contentViewController = hostingController
-            // SwiftUI no longer reports a fitting size (that is the point), so the
-            // window's own content size is the single source of truth for the
-            // circle's dimensions.
+            // ROUND 14: the bubble was never the window that crashed (the four
+            // production reports all name `CommandBarPanel`), but the rule is the
+            // class, not the culprit — no hosting view is a window's content view
+            // anywhere in this app, so SwiftUI has no window to resize from inside
+            // a layout pass. See `WindowSizing`.
+            WindowSizing.install(hostingController, in: newWindow)
+            // SwiftUI reports no fitting size (that is the point), so the window's
+            // own content size is the single source of truth for the circle.
             newWindow.setContentSize(NSSize(width: Self.bubbleSide, height: Self.bubbleSide))
             newWindow.backgroundColor = .clear
             newWindow.isOpaque = false

@@ -768,14 +768,19 @@ struct DrawerSettingsView: View {
                         .fill(Theme.Colors.statusGreen)
                         .frame(width: 5, height: 5)
                     linkButton(chip.title) {
-                        UpdateCoordinator.shared?.installPendingUpdate()
+                        UpdateCoordinator.handleUpdateRequest()
                     }
                 }
             } else {
                 linkButton("Check for Updates") {
-                    // Activation lives inside: without it every Sparkle window
-                    // opened BEHIND the frontmost app (the 4.0.0 dead button).
-                    UpdateCoordinator.requestUserInitiatedCheck()
+                    // THE SAME DOOR as the chip above and the tray item (round
+                    // 14). It decides on the live pending state rather than on
+                    // which label this row happens to be wearing — a staged
+                    // update handed to Sparkle's checkForUpdates is answered
+                    // with silence, which is how this button died in 4.5.0.
+                    // Activation still lives inside: without it every Sparkle
+                    // window opened BEHIND the frontmost app (the 4.0.0 bug).
+                    UpdateCoordinator.handleUpdateRequest()
                 }
             }
             linkButton("Show Logs") {

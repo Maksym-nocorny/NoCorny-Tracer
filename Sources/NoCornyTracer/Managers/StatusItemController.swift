@@ -414,7 +414,9 @@ final class StatusItemController: NSObject {
     /// The "Relaunch to update vX.Y.Z" chip: staged install + relaunch, or the
     /// mid-take explanation — the coordinator decides.
     @objc private func relaunchToUpdate() {
-        UpdateCoordinator.shared?.installPendingUpdate()
+        // The one door (round 14) — same call the drawer row and the bar chip
+        // make, and static so a missing coordinator still gets an answer.
+        UpdateCoordinator.handleUpdateRequest()
     }
 
     @objc private func stopRecording() {

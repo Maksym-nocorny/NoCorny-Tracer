@@ -28,7 +28,7 @@ import SwiftUI
 /// steady, the streak cycles every 1.2s, and — per the correction — NO scale:
 /// a 1.02 zoom would fight the width unroll. Click: a white ring-wave expands
 /// to ~120% of the chip's width over 0.28s (stroke, 45%→0) while the chip dips
-/// to 0.94 for 0.08s, then the existing `installPendingUpdate()` runs. The
+/// to 0.94 for 0.08s, then `UpdateCoordinator.handleUpdateRequest()` runs. The
 /// click works from BOTH states — expansion is never a precondition.
 ///
 /// Reduce Motion: expansion is instant, no appearance spring, no streak, no

@@ -3,57 +3,275 @@ import SwiftUI
 import AppKit
 @testable import NoCornyTracer
 
-/// ROUND 13 — the regression net under the 4.5.0 production crash («застосунок
-/// вилітає, якщо увімкнути запис З КАМЕРОЮ», two reports on 27.08).
+/// ROUND 14 — the regression net under a production crash that has now shipped
+/// TWICE, because round 13's net was made of the wrong material.
 ///
-/// The crash was an uncaught `NSGenericException` raised inside the display
-/// cycle, verbatim:
+/// The crash: an uncaught `NSGenericException` raised inside the display cycle.
+/// The `.ips` reports do not carry the exception's text; the unified log does,
+/// and all four reports (4.5.0 ×2, 4.5.1 ×2) say the same thing:
 ///
 ///     The window has been marked as needing another Update Constraints in
 ///     Window pass, but it has already had more Update Constraints in Window
 ///     passes than there are views in the window.
+///     <NoCornyTracer.CommandBarPanel: 0x…> {{1494, 1066}, {486, 199}}
 ///
-/// Cause: the camera bubble's `NSHostingController` was created with SwiftUI's
-/// DEFAULT `sizingOptions`, so SwiftUI drove the window's frame from inside the
-/// layout pass; each write re-dirtied the window's constraints and asked for
-/// another update-constraints pass, and the bubble is a three-view window, so
-/// AppKit's runaway guard tripped almost immediately.
+/// THE COMMAND BAR. Round 13 read a stand's exception instead of the
+/// battlefield's, hardened the camera bubble, and shipped 4.5.1 — which crashed
+/// identically, because it also believed two things that are simply not true of
+/// AppKit, and its tests could not tell:
 ///
-/// The class is invisible in review — a `NSHostingController(rootView:)` that
-/// forgets one line looks exactly like one that does not — so it is pinned by a
-/// SOURCE INVENTORY rather than by a promise. Two halves:
-/// 1. the policy itself (`WindowSizing.mayResizeWindow`), pure and testable;
-/// 2. every hosting site in the app, read out of the source.
+/// 1. that `sizingOptions = []` stops SwiftUI from writing the window frame.
+///    It does not always: `NSHostingView.windowDidLayout` gates the write on an
+///    internal window-size bridge, and 4.5.1 shipped the pin and crashed anyway.
+/// 2. that `.intrinsicContentSize` still publishes a size through `fittingSize`.
+///    It does not — see `testFittingSizeIsEmptyUnlessSwiftUIOwnsTheWindow`.
+///
+/// Both errors survived round 13 because its tests asserted OUR POLICY and
+/// SCANNED OUR SOURCE TEXT. Nothing in them ever asked AppKit a question. So the
+/// tests below are behavioural: they build real windows, ask AppKit what it did,
+/// and only then believe it.
 final class HostingWindowSizingTests: XCTestCase {
 
-    // MARK: - The policy
-
-    /// The two option sets this app is allowed to hand SwiftUI. Neither may
-    /// resize a window — that is the whole invariant.
-    func testAllowedOptionsNeverResizeTheWindow() {
-        XCTAssertFalse(WindowSizing.mayResizeWindow(WindowSizing.ownedByUs))
-        XCTAssertFalse(WindowSizing.mayResizeWindow(WindowSizing.measuredByUsOnly))
-        XCTAssertTrue(WindowSizing.ownedByUs.isEmpty)
-        XCTAssertEqual(WindowSizing.measuredByUsOnly, .intrinsicContentSize)
+    /// A view with an opinion about its own size, so "did the window follow the
+    /// content" has an unambiguous answer.
+    private struct Boxed: View {
+        var body: some View {
+            Color.clear.frame(width: 123, height: 45)
+        }
     }
 
-    /// The values that DID crash 4.5.0, so the predicate is a real test and not
-    /// a tautology over two constants we happen to have chosen.
-    func testSwiftUIDefaultsAreRecognisedAsWindowDrivers() {
-        XCTAssertTrue(WindowSizing.mayResizeWindow(.standardBounds),
-                      "standardBounds is SwiftUI's default and is what shipped in 4.5.0")
-        XCTAssertTrue(WindowSizing.mayResizeWindow(.preferredContentSize))
-        XCTAssertTrue(WindowSizing.mayResizeWindow(.minSize))
-        XCTAssertTrue(WindowSizing.mayResizeWindow(.maxSize))
-        XCTAssertTrue(WindowSizing.mayResizeWindow([.intrinsicContentSize, .maxSize]),
-                      "one bad flag in a set is enough — the guard is not all-or-nothing")
+    /// A size no content in this app would ever ask for, handed to the window on
+    /// purpose: if SwiftUI owns the frame, it snaps away from this.
+    private static let forced = NSSize(width: 486, height: 199)
+
+    @MainActor
+    private func makeWindow() -> NSWindow {
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: Self.forced),
+            styleMask: [.borderless, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        return window
     }
 
-    // MARK: - The pin actually reaches the view
+    /// Runs the AppKit layout the crash happens inside, so the assertions below
+    /// are about what AppKit DID, not about what we asked for.
+    @MainActor
+    private func pumpLayout(_ window: NSWindow) {
+        window.orderFront(nil)
+        for _ in 0..<4 {
+            window.contentView?.layoutSubtreeIfNeeded()
+            window.layoutIfNeeded()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        }
+    }
 
-    /// `NSHostingController.sizingOptions` and `NSHostingView.sizingOptions` are
-    /// two different objects' properties, and AppKit asks the VIEW. Setting only
-    /// the controller is the shape of the bug that ships.
+    // MARK: - The wall
+
+    /// THE INVARIANT, stated as behaviour: a window built through
+    /// `WindowSizing.install` keeps the size WE gave it — even when the host is
+    /// handed SwiftUI's own default options, the value that shipped in 4.5.0.
+    ///
+    /// This is the test round 13 did not have. Its equivalent asserted that our
+    /// constants were in a list; this one hands SwiftUI the loaded gun and checks
+    /// the window afterwards.
+    @MainActor
+    func testInstalledHostCannotResizeItsWindowEvenWithSwiftUIDefaults() {
+        let window = makeWindow()
+        let controller = NSHostingController(rootView: Boxed())
+        WindowSizing.install(controller, in: window, sizing: .standardBounds)
+        window.setContentSize(Self.forced)
+
+        pumpLayout(window)
+
+        XCTAssertEqual(window.frame.size.width, Self.forced.width, accuracy: 0.5,
+                       "SwiftUI resized the window — the wall is not holding")
+        XCTAssertEqual(window.frame.size.height, Self.forced.height, accuracy: 0.5,
+                       "SwiftUI resized the window — the wall is not holding")
+    }
+
+    /// The control experiment, and the reason the test above is not a tautology:
+    /// the SAME host, wired the way every window in this app was wired before
+    /// round 14, DOES move the window. If this ever stops failing to hold our
+    /// size, AppKit changed and the test above proves nothing any more.
+    @MainActor
+    func testHostAsContentViewControllerStillDrivesTheWindow() {
+        let window = makeWindow()
+        let controller = NSHostingController(rootView: Boxed())
+        controller.sizingOptions = .standardBounds
+        window.contentViewController = controller
+        window.setContentSize(Self.forced)
+        // XCTest shares one process, so this deliberately-broken window would
+        // otherwise be found by `testNoLiveWindowIsDrivenBySwiftUI` and fail it.
+        defer {
+            window.contentViewController = NSViewController()
+            window.orderOut(nil)
+        }
+
+        pumpLayout(window)
+
+        XCTAssertNotEqual(window.frame.size.width, Self.forced.width, accuracy: 0.5,
+                          """
+                          Control experiment: a hosting view installed as contentViewController \
+                          is supposed to drag the window to its own size. It did not, so the \
+                          companion test proves nothing — re-derive the invariant before trusting it.
+                          """)
+    }
+
+    /// `install` must leave NO window with a hosting view as its content view —
+    /// that is the whole rule, and it is checkable on a live window rather than
+    /// by grepping for a call.
+    @MainActor
+    func testInstallKeepsTheHostOutOfContentView() throws {
+        let window = makeWindow()
+        let controller = NSHostingController(rootView: Boxed())
+        WindowSizing.install(controller, in: window)
+
+        let content = try XCTUnwrap(window.contentView)
+        XCTAssertFalse(WindowSizing.isSwiftUIHost(content),
+                       "window.contentView is a SwiftUI host: \(type(of: content))")
+        XCTAssertTrue(controller.view.isDescendant(of: content),
+                      "the host must still be IN the window, just not be its content view")
+        XCTAssertTrue(controller.parent === window.contentViewController,
+                      "the host must be a child view controller, or nothing retains it")
+    }
+
+    /// The host must FILL the window, and keep filling it when the window's frame
+    /// changes afterwards. Starting from `.zero` is not a corner case: that is
+    /// exactly how `CommandBarPanel` is born, and it is the case an autoresizing
+    /// mask gets wrong (it scales against the old size, which is zero).
+    @MainActor
+    func testHostFillsTheWindowIncludingFromAZeroStart() {
+        let window = NSWindow(contentRect: .zero,
+                              styleMask: [.borderless, .fullSizeContentView],
+                              backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let controller = NSHostingController(rootView: Boxed())
+        WindowSizing.install(controller, in: window)
+
+        window.setFrame(NSRect(x: 100, y: 100, width: 486, height: 199), display: true)
+        pumpLayout(window)
+
+        XCTAssertEqual(controller.view.frame.size.width, 486, accuracy: 0.5,
+                       "the host did not follow the window — content would be clipped or float")
+        XCTAssertEqual(controller.view.frame.size.height, 199, accuracy: 0.5)
+
+        window.setContentSize(NSSize(width: 200, height: 60))
+        pumpLayout(window)
+        XCTAssertEqual(controller.view.frame.size.width, 200, accuracy: 0.5,
+                       "the host must shrink with the window too — this is the pill after a morph")
+    }
+
+    /// Re-rooting the same window (the toast re-presents into one panel, the
+    /// onboarding card re-presents per step) must not leak the old host back into
+    /// the content view.
+    @MainActor
+    func testReinstallingKeepsTheWallUp() throws {
+        let window = makeWindow()
+        WindowSizing.install(NSHostingController(rootView: Boxed()), in: window)
+        let second = NSHostingController(rootView: Boxed())
+        WindowSizing.install(second, in: window)
+
+        let content = try XCTUnwrap(window.contentView)
+        XCTAssertFalse(WindowSizing.isSwiftUIHost(content))
+        XCTAssertTrue(second.view.isDescendant(of: content))
+    }
+
+    /// The host detector has to see through generics: `NSHostingView` is generic,
+    /// so `is NSHostingView<X>` only ever recognises ONE content type, and a
+    /// detector that misses the others would make the audit below silently empty.
+    @MainActor
+    func testHostDetectorRecognisesAnyHostingView() {
+        XCTAssertTrue(WindowSizing.isSwiftUIHost(NSHostingController(rootView: Boxed()).view))
+        XCTAssertTrue(WindowSizing.isSwiftUIHost(NSHostingController(rootView: AnyView(Boxed())).view))
+        XCTAssertTrue(WindowSizing.isSwiftUIHost(NSHostingView(rootView: Text("x"))))
+        XCTAssertFalse(WindowSizing.isSwiftUIHost(WindowSizing.HostContainerView()))
+        XCTAssertFalse(WindowSizing.isSwiftUIHost(NSView()))
+        XCTAssertFalse(WindowSizing.isSwiftUIHost(nil))
+    }
+
+    /// The RUNTIME inventory that replaces round 13's source scan: whatever
+    /// windows exist, none of them may be SwiftUI-driven. A new window added a
+    /// year from now fails here the first time a test opens it — no needle to go
+    /// stale, no text to match.
+    @MainActor
+    func testNoLiveWindowIsDrivenBySwiftUI() {
+        let window = makeWindow()
+        WindowSizing.install(NSHostingController(rootView: Boxed()), in: window)
+        window.orderFront(nil)
+        defer { window.orderOut(nil) }
+
+        let offenders = WindowSizing.windowsDrivenBySwiftUI()
+        XCTAssertTrue(offenders.isEmpty, """
+            These windows let SwiftUI resize them from inside a layout pass, which \
+            is what crashed 4.5.0 and 4.5.1:
+            \(offenders.map { "\(type(of: $0)) \($0.frame)" }.joined(separator: "\n"))
+            """)
+    }
+
+    // MARK: - Measuring
+
+    /// WHY `WindowSizing.measure` EXISTS. `fittingSize` is not a property of the
+    /// content, it is a property of the OPTION SET: it reports under
+    /// `.intrinsicContentSize` and `.standardBounds` and is empty under `[]`. So
+    /// a window that wants to read its content's size has to keep a second,
+    /// weaker option set alive for the sole purpose of reading a number — which
+    /// is exactly the second rule round 14 removes.
+    ///
+    /// This test is also the one that caught round 14's own measuring mistake:
+    /// the stand had been probing `NSHostingSizingOptions(rawValue: 4)` believing
+    /// it was `.intrinsicContentSize`. It is `.maxSize`. Hence the raw values
+    /// asserted below — a stand that names a constant by its number will get this
+    /// wrong again otherwise.
+    func testSizingOptionRawValuesAreWhatTheStandsAssume() {
+        XCTAssertEqual(NSHostingSizingOptions.minSize.rawValue, 1)
+        XCTAssertEqual(NSHostingSizingOptions.intrinsicContentSize.rawValue, 2)
+        XCTAssertEqual(NSHostingSizingOptions.maxSize.rawValue, 4)
+        XCTAssertEqual(NSHostingSizingOptions.preferredContentSize.rawValue, 16)
+        XCTAssertEqual(NSHostingSizingOptions.standardBounds.rawValue, 7)
+    }
+
+    @MainActor
+    func testFittingSizeDependsOnTheOptionSetAndIsEmptyUnderOurs() {
+        let ours = NSHostingController(rootView: Boxed())
+        ours.sizingOptions = WindowSizing.ownedByUs
+        XCTAssertEqual(ours.view.fittingSize, .zero,
+                       "under [] SwiftUI publishes nothing — which is why measurement is detached")
+
+        let reporting = NSHostingController(rootView: Boxed())
+        reporting.sizingOptions = .intrinsicContentSize
+        XCTAssertEqual(reporting.view.fittingSize.width, 123, accuracy: 0.5,
+                       "if this stops reporting, the round-13 toast pin was ALSO broken and the history above is wrong")
+    }
+
+    /// …and the reading that does work, on a host that is in no window at all.
+    @MainActor
+    func testMeasureReportsTheContentSizeWithoutAWindow() {
+        let size = WindowSizing.measure(Boxed())
+        XCTAssertEqual(size.width, 123, accuracy: 0.5)
+        XCTAssertEqual(size.height, 45, accuracy: 0.5)
+    }
+
+    /// The toast sizes and CENTRES its panel from this number, so a zero would
+    /// not merely shrink the panel — it would park it half a toast off centre.
+    /// Both of the panel's two contents are covered because they measure very
+    /// differently (a hugging capsule vs a fixed 320 card).
+    @MainActor
+    func testToastContentsMeasureNonZero() {
+        let capsule = WindowSizing.measure(
+            AnyView(Text("Uploaded — link copied").frame(height: 44).fixedSize())
+        )
+        XCTAssertGreaterThan(capsule.width, 0)
+        XCTAssertGreaterThan(capsule.height, 0)
+    }
+
+    // MARK: - The pin (defence in depth, no longer the guarantee)
+
+    /// The pin still reaches both objects. It is kept because it costs nothing
+    /// and makes SwiftUI stop WANTING the window — but 4.5.1 proved it is not
+    /// the guarantee, so it is tested as a helper, not as the invariant.
     @MainActor
     func testPinReachesControllerAndItsView() throws {
         let controller = NSHostingController(rootView: Text("x"))
@@ -66,48 +284,20 @@ final class HostingWindowSizingTests: XCTestCase {
         XCTAssertEqual(hosting.sizingOptions, [])
     }
 
-    /// The measuring variant still lets us READ a size (the toast and the
-    /// onboarding card both size their window from `fittingSize`) while keeping
-    /// SwiftUI's hands off the window.
-    /// `AnyView`, because that is exactly how the toast is rooted — a measuring
-    /// pin that returned zero there would ship an invisible toast, which is a
-    /// worse bug than the crash it replaces.
-    @MainActor
-    func testMeasuringPinKeepsFittingSizeButNotTheWindow() {
-        let controller = NSHostingController(
-            rootView: AnyView(Color.clear.frame(width: 123, height: 45))
-        )
-        WindowSizing.pin(controller, to: WindowSizing.measuredByUsOnly)
-        XCTAssertFalse(WindowSizing.mayResizeWindow(controller.sizingOptions))
-        XCTAssertEqual(controller.view.fittingSize.width, 123, accuracy: 0.5)
-        XCTAssertEqual(controller.view.fittingSize.height, 45, accuracy: 0.5)
+    /// The predicate still names the dangerous sets — it feeds the audit's
+    /// message. `[]` is not "safe", it is merely "not asking".
+    func testSwiftUIDefaultsAreRecognisedAsWindowDrivers() {
+        XCTAssertTrue(WindowSizing.mayResizeWindow(.standardBounds),
+                      "standardBounds is SwiftUI's default and is what shipped in 4.5.0")
+        XCTAssertTrue(WindowSizing.mayResizeWindow(.preferredContentSize))
+        XCTAssertTrue(WindowSizing.mayResizeWindow(.minSize))
+        XCTAssertTrue(WindowSizing.mayResizeWindow(.maxSize))
+        XCTAssertTrue(WindowSizing.mayResizeWindow([.intrinsicContentSize, .maxSize]),
+                      "one bad flag in a set is enough — the guard is not all-or-nothing")
+        XCTAssertFalse(WindowSizing.mayResizeWindow(WindowSizing.ownedByUs))
     }
 
-    /// The mirror image: the OWNING pin reports nothing, so any window using it
-    /// has to carry its own size. Forgetting that is how the camera bubble ends
-    /// up 0×0 (stand run E) — the window shrinks to zero when the content view
-    /// controller is attached and nobody puts it back any more.
-    @MainActor
-    func testOwningPinReportsNoSizeAtAll() {
-        let controller = NSHostingController(
-            rootView: AnyView(Color.clear.frame(width: 123, height: 45))
-        )
-        WindowSizing.pin(controller)
-        XCTAssertEqual(controller.view.fittingSize, .zero,
-                       "with sizingOptions = [] SwiftUI reports nothing — the window must size itself")
-    }
-
-    /// So the camera bubble's window is sized by us, in code, and not by hope.
-    func testCameraWindowSetsItsOwnContentSize() throws {
-        let manager = try String(
-            contentsOf: Self.sourceRoot.appendingPathComponent("Managers/CameraWindowManager.swift"),
-            encoding: .utf8
-        )
-        XCTAssertTrue(manager.contains("setContentSize"),
-                      "the bubble collapses to 0×0 without an explicit content size (stand run E)")
-    }
-
-    // MARK: - Source inventory
+    // MARK: - Source inventory (narrow, and honest about what it can prove)
 
     private static let sourceRoot = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()   // Tests/NoCornyTracerTests
@@ -128,64 +318,36 @@ final class HostingWindowSizingTests: XCTestCase {
         return out
     }
 
-    /// EVERY place the app builds a SwiftUI host must hand the size back to us,
-    /// through `WindowSizing` and nowhere else. A new window added a year from
-    /// now fails here on the day it is written, not on the day a user records
-    /// with the camera on.
-    func testEveryHostingSiteHandsTheSizeBackToUs() throws {
-        // How far after the construction the pin may live: enough for the
-        // `let x = NSHostingController(...)` / comment / pin idiom, tight enough
-        // that "somewhere later in the file" does not count.
-        let reach = 12
+    /// The one thing a text scan CAN prove, and the reason it survived round 13's
+    /// demotion: `contentViewController` is the single door through which a host
+    /// becomes a window's content view, and `WindowSizing` is the only file
+    /// allowed to open it. A new window that wires itself up by hand fails here
+    /// the day it is written, before anyone has to record with a camera to find
+    /// out. The behavioural tests above are what prove the rule WORKS; this only
+    /// proves nobody walked around it.
+    func testOnlyWindowSizingAssignsAWindowsContent() throws {
         var offenders: [String] = []
-        // A silent zero would make this test pass forever while checking
-        // nothing — the pattern going stale is exactly how an inventory test
-        // rots. Today's five sites: camera bubble, the bar's view and
-        // controller, onboarding, toast.
-        var sitesFound = 0
-
-        for (url, lines) in try swiftSources() {
-            // The helper itself is where the pinning is implemented.
-            if url.lastPathComponent == "WindowSizing.swift" { continue }
-
+        for (url, lines) in try swiftSources() where url.lastPathComponent != "WindowSizing.swift" {
             for (index, line) in lines.enumerated() {
-                // Generic arguments are stripped BEFORE matching, then the call
-                // paren is required. Matching the bare name would catch the
-                // `class CommandBarHostingView<C>: NSHostingView<C>` declaration
-                // (it did); keeping the paren in the needle would miss a site
-                // spelled `NSHostingController<CameraView>(rootView:)`. Flatten
-                // first, and both spellings land where they should.
-                let flat = line.replacingOccurrences(
-                    of: "<[^>]*>", with: "", options: .regularExpression
-                )
-                let isConstruction = flat.contains("NSHostingController(")
-                    || flat.contains("NSHostingView(")
-                    || flat.contains("CommandBarHostingView(")
-                    || flat.contains("CommandBarHostingController(")
-                guard isConstruction, !line.hasPrefix("//"),
-                      !line.trimmingCharacters(in: .whitespaces).hasPrefix("///") else { continue }
-
-                sitesFound += 1
-                let window = lines[index..<min(index + reach, lines.count)].joined(separator: "\n")
-                guard !window.contains("WindowSizing.pin") else { continue }
-                offenders.append("\(url.lastPathComponent):\(index + 1) — \(line.trimmingCharacters(in: .whitespaces))")
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                guard !trimmed.hasPrefix("//"), !trimmed.hasPrefix("///") else { continue }
+                // The leading dot matters: `let contentView = panel.contentView`
+                // is a READ, and matching it made this test fail on innocent code.
+                guard trimmed.contains(".contentViewController =")
+                        || trimmed.contains(".contentView =") else { continue }
+                offenders.append("\(url.lastPathComponent):\(index + 1) — \(trimmed)")
             }
         }
-
-        XCTAssertGreaterThanOrEqual(sitesFound, 5, """
-            The scan found \(sitesFound) hosting sites; there are at least five. \
-            The needles have gone stale — fix them before trusting this test again.
-            """)
         XCTAssertTrue(offenders.isEmpty, """
-            SwiftUI host built without WindowSizing.pin — it will drive its window \
-            from inside the layout pass and can crash the app the way 4.5.0 did:
+            A window's content is being assigned outside WindowSizing.install. That is \
+            how a SwiftUI host becomes a window's content view again, and it is what \
+            crashed 4.5.0 and 4.5.1:
             \(offenders.joined(separator: "\n"))
             """)
     }
 
-    /// Nobody may set `sizingOptions` by hand any more: one spelling, one place,
-    /// one story. (A raw `sizingOptions =` outside `WindowSizing` is how the
-    /// invariant quietly grows a second, weaker copy.)
+    /// `sizingOptions` keeps one spelling in one place, so the invariant cannot
+    /// quietly grow a second, weaker copy.
     func testSizingOptionsIsOnlySetThroughTheHelper() throws {
         var offenders: [String] = []
         for (url, lines) in try swiftSources() where url.lastPathComponent != "WindowSizing.swift" {
@@ -201,11 +363,21 @@ final class HostingWindowSizingTests: XCTestCase {
             """)
     }
 
-    // MARK: - The camera bubble's fixed size
+    // MARK: - The sizes the windows now have to carry themselves
+
+    /// So the camera bubble's window is sized by us, in code, and not by hope.
+    func testCameraWindowSetsItsOwnContentSize() throws {
+        let manager = try String(
+            contentsOf: Self.sourceRoot.appendingPathComponent("Managers/CameraWindowManager.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(manager.contains("setContentSize"),
+                      "the bubble collapses to 0×0 without an explicit content size")
+    }
 
     /// The bubble's window and its SwiftUI content are sized from ONE constant
-    /// now that SwiftUI no longer reconciles them (round 13). A drift here shows
-    /// up as a clipped or floating circle, silently.
+    /// now that SwiftUI no longer reconciles them. A drift here shows up as a
+    /// clipped or floating circle, silently.
     func testCameraBubbleUsesOneSizeConstant() throws {
         let view = try String(
             contentsOf: Self.sourceRoot.appendingPathComponent("Views/CameraView.swift"),

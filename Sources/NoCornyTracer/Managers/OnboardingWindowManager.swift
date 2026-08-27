@@ -104,20 +104,18 @@ final class OnboardingWindowManager {
             manager: self,
             initialStep: step
         )
+        // ROUND 14: measured detached, placed by us, installed behind the wall.
+        // The card CHANGES HEIGHT between steps (320 → 300), which is exactly the
+        // "SwiftUI resizes its own window mid-layout" shape that crashed the
+        // command bar — `OnboardingView` boxes both steps into one fixed window
+        // and centres the card inside it, and `WindowSizing.install` makes sure
+        // SwiftUI has no window to argue with. See `WindowSizing`.
+        let fitting = WindowSizing.measure(view)
         let host = NSHostingController(rootView: view)
-        // ROUND 13 (the 4.5.0 camera crash, same class): SwiftUI measures the
-        // card, we place the window. The card CHANGES HEIGHT between steps
-        // (320 → 300), which is precisely the "SwiftUI resizes its own window
-        // mid-layout" shape that crashed the camera bubble — so `OnboardingView`
-        // now boxes both steps into one fixed window and centres the card inside
-        // it, and the window size below never has to move again. See
-        // `WindowSizing`.
-        WindowSizing.pin(host, to: WindowSizing.measuredByUsOnly)
 
         let window: OnboardingWindow
         if let existing = self.window {
             window = existing
-            window.contentViewController = host
         } else {
             window = OnboardingWindow(
                 contentRect: .zero,
@@ -125,7 +123,6 @@ final class OnboardingWindowManager {
                 backing: .buffered,
                 defer: false
             )
-            window.contentViewController = host
             window.backgroundColor = .clear
             window.isOpaque = false
             window.hasShadow = false            // the SwiftUI card draws its own
@@ -149,6 +146,9 @@ final class OnboardingWindowManager {
             self.window = window
         }
 
+        // Re-presenting at another step re-roots the card in the same window.
+        WindowSizing.install(host, in: window)
+
         // Esc closes only once the screen permission exists — before that the card
         // is the app's front door and dismissing it would strand the user.
         window.onEsc = { [weak self, weak permissionsManager] in
@@ -165,16 +165,15 @@ final class OnboardingWindowManager {
 
         // One size for both steps (round 13) — the card centres itself inside it,
         // so the shorter cloud card simply gets 10pt more transparent margin
-        // above and below. `fittingSize` is still the measurement, it is just
-        // asserted against the box rather than trusted blindly: a card that
-        // outgrew the box would be clipped, and that must fail loudly in DEBUG
-        // rather than ship as a cropped front door.
+        // above and below. The measurement is asserted against the box rather
+        // than trusted blindly: a card that outgrew the box would be clipped, and
+        // that must fail loudly in DEBUG rather than ship as a cropped front door.
+        // ROUND 14: the reading is `WindowSizing.measure` (above, taken on a
+        // detached probe) instead of `host.view.fittingSize`, so this window can
+        // carry the same `[]` pin as every other one in the app.
         let box = OnboardingView.windowContentSize
-        #if DEBUG
-        let fitting = host.view.fittingSize
         assert(fitting.width <= box.width + 0.5 && fitting.height <= box.height + 0.5,
                "onboarding card \(fitting) no longer fits its window box \(box)")
-        #endif
         window.setContentSize(box)
         window.center()
         NSApp.activate(ignoringOtherApps: true)

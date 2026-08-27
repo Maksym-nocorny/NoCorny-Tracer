@@ -160,19 +160,26 @@ final class ToastWindowManager {
         dismissTimer?.invalidate()
         dismissTimer = nil
 
+        // ROUND 14: the panel is measured on a DETACHED probe
+        // (`WindowSizing.measure`) and placed by us, and the live host is walled
+        // off from the window (`WindowSizing.install`) so SwiftUI cannot write a
+        // frame from inside a layout pass — the loop that crashed the command bar
+        // in 4.5.0 and again in 4.5.1.
+        //
+        // The measurement moved for tidiness, not because it was broken: round
+        // 13's `.intrinsicContentSize` did report a correct `fittingSize` here.
+        // But it was a SECOND option set to remember, kept alive only so two
+        // windows could read a number, and a second rule is how the first one
+        // rots. The detached reading works under `[]`, so every host in the app
+        // can now carry the same one. Same numbers either way — 189×60 for the
+        // capsule, 352×114 for the noise card (stand r14, run 5).
+        let fitting = WindowSizing.measure(rootView)
+
         let hostingController = NSHostingController(rootView: rootView)
-        // ROUND 13 (the 4.5.0 camera crash, same class): SwiftUI may MEASURE the
-        // toast — `fittingSize` a few lines below is how the panel learns its
-        // size — but it must not set the window frame itself. A toast is up while
-        // a take is live, i.e. exactly when the panel machinery is busiest, and a
-        // hosting view that resizes its own window from inside the layout pass is
-        // what took the camera bubble down. See `WindowSizing`.
-        WindowSizing.pin(hostingController, to: WindowSizing.measuredByUsOnly)
 
         let panel: NSPanel
         if let window {
             panel = window
-            panel.contentViewController = hostingController
         } else {
             panel = ToastPanel(
                 contentRect: NSRect(x: 0, y: 0, width: 340, height: 120),
@@ -180,7 +187,6 @@ final class ToastWindowManager {
                 backing: .buffered,
                 defer: false
             )
-            panel.contentViewController = hostingController
             panel.backgroundColor = .clear
             panel.isOpaque = false
             panel.hasShadow = true
@@ -202,15 +208,18 @@ final class ToastWindowManager {
             window = panel
         }
 
+        // One panel, new content per toast — and the content goes in behind the
+        // wall, never as the panel's own content view.
+        WindowSizing.install(hostingController, in: panel)
+
         // The toast follows the same resolved PANEL look as the command bar —
         // with Auto (4.1.0) that is the backdrop monitor's verdict.
         panel.appearance = appState.panelAppearance
 
-        // Size to the SwiftUI content, then position near top-center of the active
+        // Size to the measured content, then position near top-center of the active
         // screen. The 8 here plus the toastEntrance headroom (16, transparent) puts
         // the visible glass 24 under the top edge — same spot as before the
         // slide-in was added.
-        let fitting = hostingController.view.fittingSize
         panel.setContentSize(fitting)
         if let visible = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame {
             let origin = NSPoint(

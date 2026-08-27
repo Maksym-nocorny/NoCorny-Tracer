@@ -176,17 +176,23 @@ private final class CommandBarHostingView<Content: View>: NSHostingView<Content>
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
+/// ROUND 14, MEASURED AND LEFT ALONE ON PURPOSE: this `loadView` override NEVER
+/// RUNS. `NSHostingController` is generic, a generic Swift subclass cannot expose
+/// `@objc` members, and `NSHostingController` hands back its own view without
+/// going through `-loadView` at all — stand r14 run 6 read `panel.contentView`
+/// back as a plain `NSHostingView<…>`, and none of the prints inside this method
+/// ever fired. So `CommandBarHostingView` above has never been instantiated in
+/// any shipped build, and the `acceptsFirstMouse` behaviour its comment describes
+/// has never actually been in effect.
+///
+/// It is kept exactly as it is because deleting it or making it work would both
+/// CHANGE click behaviour, and round 14 is a crash fix, not a redesign. Whether
+/// the bar should really answer first-mouse is a decision for the shef, not a
+/// side effect of an incident. The pin here is harmless either way; the wall that
+/// actually stops SwiftUI is `WindowSizing.install` at the call site.
 private final class CommandBarHostingController<Content: View>: NSHostingController<Content> {
     override func loadView() {
         let hosting = CommandBarHostingView(rootView: rootView)
-        // Set HERE, not only on the controller: substituting the view in
-        // `loadView` is what lets the subclass exist at all, and the controller's
-        // own `sizingOptions` is not guaranteed to reach a view it did not make.
-        // Getting this wrong would let SwiftUI drive the window size and fight
-        // every frame the morph geometry computes — so it is pinned on the object
-        // that actually reports the size. Round 13 moved the value itself into
-        // `WindowSizing`, where the 4.5.0 crash that this line was always
-        // protecting against is written down.
         WindowSizing.pin(hosting)
         view = hosting
     }
@@ -454,11 +460,19 @@ final class CommandBarWindowManager {
             let host = CommandBarHostingController(
                 rootView: CommandBarRootView(appState: appState, manager: self)
             )
-            // The panel's size is driven by morph(to:), never by the SwiftUI fitting size.
-            WindowSizing.pin(host)
 
             let newPanel = CommandBarPanel(contentRect: .zero)
-            newPanel.contentViewController = host
+            // ROUND 14 — THIS IS THE WINDOW THE PRODUCTION CRASH NAMES. All four
+            // reports (4.5.0 ×2, 4.5.1 ×2) blew AppKit's update-constraints guard
+            // on `CommandBarPanel` at the bar∪pill union frame, a second or so
+            // into a take, because SwiftUI was writing this panel's frame from
+            // inside its layout pass. 4.5.1 already pinned `sizingOptions = []`
+            // here and it crashed anyway: the pin is a request, and the window
+            // size bridge behind `updateAnimatedWindowSize` does not have to
+            // honour it. `install` is the wall — the host becomes a CHILD of a
+            // plain content view, so there is no window for SwiftUI to touch.
+            // The panel's size is driven by morph(to:) and nothing else.
+            WindowSizing.install(host, in: newPanel)
             panelDelegate.manager = self
             newPanel.delegate = panelDelegate
             // Esc closes an open drawer, and on the recording pill opens the inline

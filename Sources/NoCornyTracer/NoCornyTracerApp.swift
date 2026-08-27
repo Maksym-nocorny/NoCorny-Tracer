@@ -105,6 +105,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor var cameraWindowManager: CameraWindowManager?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        Self.recordUncaughtExceptions()
         updaterController = Self.bootstrapUpdaterController
 
         // URL handler for Tracer browser sign-in (nocornytracer://...).
@@ -123,6 +124,30 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self.setupStatusItemController()
             self.bootstrapCommandBar()
             self.presentOnboardingAtLaunchIfNeeded()
+            // ROUND 14: with every window up, check the invariant the production
+            // crash broke — no window may have a SwiftUI host as its content
+            // view, or SwiftUI can resize it from inside a layout pass. Fails the
+            // build's own runs in DEBUG; in release it leaves a line in the log,
+            // so the next report names the window instead of costing a day.
+            WindowSizing.auditWindows()
+        }
+    }
+
+    /// ROUND 14 — so the next crash names itself.
+    ///
+    /// The 4.5.0/4.5.1 crash was an uncaught ObjC exception, and AppKit's abort
+    /// path runs this handler before `abort()`. Its `reason` is the only place
+    /// the OFFENDING WINDOW is written down — and the `.ips` crash reports do not
+    /// carry it. Recovering it took a `log show` dig through the unified log, and
+    /// not having it cost two releases spent hardening the wrong window. One line
+    /// in our own log, next to what the app was doing at the time, is cheap.
+    private static func recordUncaughtExceptions() {
+        NSSetUncaughtExceptionHandler { exception in
+            let frames = exception.callStackSymbols.prefix(24).joined(separator: "\n")
+            LogManager.shared.logImmediately("""
+            Uncaught \(exception.name.rawValue): \(exception.reason ?? "no reason given")
+            \(frames)
+            """)
         }
     }
 
