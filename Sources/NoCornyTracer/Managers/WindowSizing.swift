@@ -51,8 +51,8 @@ import ObjectiveC
 /// anyway. So round 14 stops asking and takes the channel away.
 ///
 /// THE WALL: **no hosting view is ever a window's `contentView`.** A plain shell
-/// view controller owns the content rect; the SwiftUI host is its CHILD, filling
-/// it by autoresizing mask. SwiftUI then has no window to write — it only ever
+/// view controller owns the content rect; the SwiftUI host is its CHILD, laid
+/// out to fill it. SwiftUI then has no window to write — it only ever
 /// sees a subview's bounds. Stand-measured (r14, runs 8/9) across every option
 /// set including SwiftUI's own default — a window handed a size its content does
 /// not want, then pumped through real layout passes:
@@ -70,6 +70,21 @@ import ObjectiveC
 /// and it is what makes SwiftUI stop wanting the window — but the invariant that
 /// is actually enforceable, and that `HostingWindowSizingTests` checks by
 /// building real windows rather than by reading source text, is the wall.
+///
+/// IF 4.5.2 CRASHES TOO — the next suspect, carried over from round 13 and worth
+/// more now than when it was written. The bar mutates its LIVE window's
+/// `styleMask` mid-morph (`CommandBarPanel.apply`, called from
+/// `applyWindowTraits` on the first line of `morph`): the pill is a
+/// `.nonactivatingPanel` and the bar is not, so every bar↔pill transition swaps
+/// the mask on a visible window, and changing a style mask rebuilds the window's
+/// frame view — the very `NSNextStepFrame` whose `setFrameSize` sits in the
+/// crash's KVO chain. Round 13 measured that DEFERRING the mutation off the
+/// layout pass (`DispatchQueue.main.async`) does not help, and correctly noted
+/// that deferring is not removing, so nothing about the mask is ruled out. It
+/// lines up with everything we know: the crash lands in the bar→pill flight, on
+/// the panel whose mask has just been swapped. If the wall below is not enough,
+/// start there — take the mask flip off the live window (two panels, or one mask
+/// for both personalities) rather than re-litigating sizing options.
 ///
 /// MEASURING, once SwiftUI is behind the wall. `fittingSize` is only filled in
 /// under `.intrinsicContentSize` and `.standardBounds`; under `[]` and `.maxSize`
@@ -177,8 +192,14 @@ enum WindowSizing {
 
         window.contentViewController = shell
 
-        assert(!isSwiftUIHost(window.contentView),
-               "a hosting view reached window.contentView — SwiftUI can resize this window from inside its layout pass (round 14)")
+        // The audit runs HERE, not once at launch. Three of the four windows are
+        // built lazily — the camera bubble when the toggle goes on, the toast on
+        // its first message, the onboarding card on first launch — and the bar's
+        // own bootstrap retries asynchronously, so a single check in
+        // `applicationDidFinishLaunching` inspects an app that has at most one
+        // window and usually none. Every window passes through this function
+        // exactly once, which makes it the only place the check cannot be missed.
+        auditWindows()
         return controller
     }
 
@@ -190,16 +211,40 @@ enum WindowSizing {
     /// `.intrinsicContentSize` or `.standardBounds` to report at all, and asking
     /// two windows to keep a different option set just to read a number is how
     /// the rule grows a second copy. Verified to return the same sizes the toast
-    /// (189×60) and the noise card (352×114) were reading before.
+    /// (189×60) and the noise card (352×116) were reading before.
     ///
     /// Callers size the window from this and then place it themselves. Main
     /// thread, like every other AppKit call around it — deliberately NOT
     /// `@MainActor`, because the window managers that need it (`present`) are
     /// plain methods reached through their own `onMain` hop.
-    static func measure<Content: View>(_ view: Content) -> CGSize {
+    ///
+    /// NEVER RETURNS A NON-FINITE SIZE. An unbounded proposal is what asks a tree
+    /// for its ideal size, and every tree this app measures today refuses to grow
+    /// into it (`.fixedSize()` on the toast capsule, a hard `.frame(width: 320)`
+    /// on the noise card). A greedy one — anything with a bare `Spacer()` — would
+    /// answer `infinity`, and infinity goes straight into `setContentSize` and
+    /// into the centring arithmetic that places the panel. So a greedy tree is
+    /// caught in DEBUG and, in release, measured again against a real bound
+    /// instead of poisoning a window frame.
+    static func measure<Content: View>(_ view: Content, bound: CGSize? = nil) -> CGSize {
         let probe = NSHostingController(rootView: view)
         probe.sizingOptions = []
-        return probe.sizeThatFits(in: CGSize(width: CGFloat.infinity, height: CGFloat.infinity))
+        let ideal = probe.sizeThatFits(in: CGSize(width: CGFloat.infinity, height: CGFloat.infinity))
+        if ideal.width.isFinite, ideal.height.isFinite { return ideal }
+
+        assertionFailure("""
+            \(Content.self) has no ideal size — it grows into whatever it is offered \
+            (a bare Spacer will do it). Give it a frame or a fixedSize; an infinite \
+            measurement would be handed to setContentSize.
+            """)
+        let limit = bound
+            ?? (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame.size
+            ?? CGSize(width: 1280, height: 800)
+        let bounded = probe.sizeThatFits(in: limit)
+        return CGSize(
+            width: bounded.width.isFinite ? bounded.width : limit.width,
+            height: bounded.height.isFinite ? bounded.height : limit.height
+        )
     }
 
     // MARK: - The runtime audit (what the tests assert, and DEBUG shouts about)
@@ -225,15 +270,16 @@ enum WindowSizing {
     /// SwiftUI can resize from inside a layout pass. Must always be empty.
     /// Read at RUNTIME on purpose: round 13's inventory scanned source text and
     /// passed while the shipped app crashed.
-    @MainActor
+    ///
+    /// Main thread, like `measure` and for the same reason: `install` is reached
+    /// from plain manager methods that hop to main themselves.
     static func windowsDrivenBySwiftUI() -> [NSWindow] {
         NSApplication.shared.windows.filter { isSwiftUIHost($0.contentView) }
     }
 
-    /// Called after the app has its windows up. Fails loudly in DEBUG; in
-    /// release it leaves a line in the log so the next report names the window
-    /// instead of making us read a disassembly for it.
-    @MainActor
+    /// Fails loudly in DEBUG; in release it leaves a line in the log so the next
+    /// report names the window instead of making us read a disassembly for it.
+    /// Called from `install` (every window, every time) and once more at launch.
     static func auditWindows() {
         let offenders = windowsDrivenBySwiftUI()
         guard !offenders.isEmpty else { return }

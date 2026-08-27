@@ -172,7 +172,7 @@ final class ToastWindowManager {
         // windows could read a number, and a second rule is how the first one
         // rots. The detached reading works under `[]`, so every host in the app
         // can now carry the same one. Same numbers either way — 189×60 for the
-        // capsule, 352×114 for the noise card (stand r14, run 5).
+        // capsule, 352×116 for the noise card (stand r14, run 5).
         let fitting = WindowSizing.measure(rootView)
 
         let hostingController = NSHostingController(rootView: rootView)
@@ -260,7 +260,12 @@ final class ToastWindowManager {
 
 /// The glanceable capsule (macro 88:762: height 44, radius 22, icon 13, text 12).
 /// Width hugs the text so "Uploaded" and a longer failure line both sit right.
-private struct InfoToastView: View {
+///
+/// Internal rather than private (round 14) so `HostingWindowSizingTests` can
+/// measure the REAL view. A test that measures a hand-written stand-in pins the
+/// stand-in, not the thing that ships — which is how round 13's suite stayed
+/// green through two crashing releases.
+struct InfoToastView: View {
     let content: ToastContent
 
     var body: some View {
@@ -321,7 +326,8 @@ private extension View {
 // MARK: - Noise suggestion view (moved verbatim from NoiseSuggestionWindowManager)
 
 /// The compact suggestion card shown inside the floating panel.
-private struct NoiseSuggestionToastView: View {
+/// Internal for the same reason as `InfoToastView` — the size test measures it.
+struct NoiseSuggestionToastView: View {
     @Bindable var appState: AppState
 
     var body: some View {

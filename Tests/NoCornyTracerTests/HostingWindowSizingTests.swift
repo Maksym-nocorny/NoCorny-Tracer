@@ -254,17 +254,87 @@ final class HostingWindowSizingTests: XCTestCase {
         XCTAssertEqual(size.height, 45, accuracy: 0.5)
     }
 
-    /// The toast sizes and CENTRES its panel from this number, so a zero would
-    /// not merely shrink the panel — it would park it half a toast off centre.
-    /// Both of the panel's two contents are covered because they measure very
-    /// differently (a hugging capsule vs a fixed 320 card).
+    /// The toast sizes and CENTRES its panel from this number, so a bad reading
+    /// would not merely shrink the panel — it would park it off centre by half
+    /// its own width.
+    ///
+    /// These measure the REAL views the panel hosts, not stand-ins. That
+    /// distinction earned its keep immediately: round 14's stand approximated the
+    /// noise card at 352×114 and the shipped one is 352×116 — a test written
+    /// against the approximation would have pinned a number the app never had.
+    ///
+    /// The load-bearing assertion is the FIRST one in each: that the new detached
+    /// reading equals what the toast was getting from `fittingSize` under the
+    /// round-13 pin. That is the actual promise of round 14's refactor — the
+    /// measurement moved, the toast did not — and it holds whatever the numbers
+    /// happen to be. The absolute sizes follow as a plain-language record of what
+    /// they are today.
     @MainActor
-    func testToastContentsMeasureNonZero() {
-        let capsule = WindowSizing.measure(
-            AnyView(Text("Uploaded — link copied").frame(height: 44).fixedSize())
+    private func assertMeasurementUnchanged<Content: View>(
+        _ view: Content, expected: CGSize, file: StaticString = #filePath, line: UInt = #line
+    ) {
+        // What ToastWindowManager read before round 14: fittingSize on a host
+        // pinned to `.intrinsicContentSize`.
+        let old = NSHostingController(rootView: view)
+        old.sizingOptions = .intrinsicContentSize
+        let before = old.view.fittingSize
+
+        let after = WindowSizing.measure(view)
+
+        XCTAssertEqual(after.width, before.width, accuracy: 0.5, """
+            The detached measurement disagrees with the reading the toast used before \
+            round 14 — moving the measurement was supposed to change nothing visible.
+            """, file: file, line: line)
+        XCTAssertEqual(after.height, before.height, accuracy: 0.5, file: file, line: line)
+
+        XCTAssertEqual(after.width, expected.width, accuracy: 1, """
+            The toast's own size changed. The panel is sized AND centred from this, \
+            so an unnoticed drift here moves the toast off centre by half its width.
+            """, file: file, line: line)
+        XCTAssertEqual(after.height, expected.height, accuracy: 1, file: file, line: line)
+    }
+
+    @MainActor
+    func testInfoToastMeasuresExactlyAsItDidBefore() {
+        assertMeasurementUnchanged(
+            AnyView(InfoToastView(content: ToastContent(icon: "link", message: "Uploaded — link copied"))),
+            expected: CGSize(width: 189, height: 60)
         )
-        XCTAssertGreaterThan(capsule.width, 0)
-        XCTAssertGreaterThan(capsule.height, 0)
+    }
+
+    @MainActor
+    func testNoiseSuggestionCardMeasuresExactlyAsItDidBefore() {
+        let sandbox = SandboxDefaults.make()
+        let previousShared = AppState.shared
+        defer { AppState.shared = previousShared }
+        let state = AppState(defaults: sandbox, connectsToTracer: false)
+
+        assertMeasurementUnchanged(
+            AnyView(NoiseSuggestionToastView(appState: state)),
+            expected: CGSize(width: 352, height: 116)
+        )
+    }
+
+    /// `measure` must never hand a window an infinite size. Today's two toasts
+    /// cannot produce one (`.fixedSize()`, a hard `.frame(width: 320)`), which is
+    /// exactly why this needs its own greedy view: without it the guard is
+    /// untested code that only runs the day someone adds a `Spacer()`.
+    @MainActor
+    func testMeasureNeverReturnsAnInfiniteSize() {
+        // The assert fires in DEBUG on purpose — that is the point of the guard —
+        // so the release-path fallback is exercised through the bounded call it
+        // ends in, and the greedy case is documented rather than silently untested.
+        let bound = CGSize(width: 400, height: 300)
+        let greedy = NSHostingController(rootView: AnyView(Color.clear))
+        greedy.sizingOptions = []
+        let unbounded = greedy.sizeThatFits(in: CGSize(width: CGFloat.infinity, height: CGFloat.infinity))
+        guard !unbounded.width.isFinite || !unbounded.height.isFinite else {
+            // SwiftUI clamped it for us — the guard is belt-and-braces, not dead.
+            return
+        }
+        let bounded = greedy.sizeThatFits(in: bound)
+        XCTAssertTrue(bounded.width.isFinite && bounded.height.isFinite,
+                      "the bounded fallback measure must be finite, or the guard has nothing to fall back on")
     }
 
     // MARK: - The pin (defence in depth, no longer the guarantee)
@@ -333,8 +403,15 @@ final class HostingWindowSizingTests: XCTestCase {
                 guard !trimmed.hasPrefix("//"), !trimmed.hasPrefix("///") else { continue }
                 // The leading dot matters: `let contentView = panel.contentView`
                 // is a READ, and matching it made this test fail on innocent code.
+                //
+                // `contentViewController:` (with the colon) catches the OTHER
+                // door, which the first version of this scan missed entirely: a
+                // window can be handed its content at construction —
+                // `NSPanel(contentViewController: NSHostingController(...))` —
+                // and that spelling would have sailed through every test here.
                 guard trimmed.contains(".contentViewController =")
-                        || trimmed.contains(".contentView =") else { continue }
+                        || trimmed.contains(".contentView =")
+                        || trimmed.contains("contentViewController:") else { continue }
                 offenders.append("\(url.lastPathComponent):\(index + 1) — \(trimmed)")
             }
         }

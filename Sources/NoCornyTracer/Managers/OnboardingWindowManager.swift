@@ -110,7 +110,6 @@ final class OnboardingWindowManager {
         // command bar — `OnboardingView` boxes both steps into one fixed window
         // and centres the card inside it, and `WindowSizing.install` makes sure
         // SwiftUI has no window to argue with. See `WindowSizing`.
-        let fitting = WindowSizing.measure(view)
         let host = NSHostingController(rootView: view)
 
         let window: OnboardingWindow
@@ -168,12 +167,18 @@ final class OnboardingWindowManager {
         // above and below. The measurement is asserted against the box rather
         // than trusted blindly: a card that outgrew the box would be clipped, and
         // that must fail loudly in DEBUG rather than ship as a cropped front door.
-        // ROUND 14: the reading is `WindowSizing.measure` (above, taken on a
-        // detached probe) instead of `host.view.fittingSize`, so this window can
-        // carry the same `[]` pin as every other one in the app.
+        // ROUND 14: the reading is `WindowSizing.measure` (a detached probe)
+        // instead of `host.view.fittingSize`, so this window can carry the same
+        // `[]` pin as every other one in the app. It stays inside `#if DEBUG`
+        // because only the assert consumes it — a release build would otherwise
+        // pay for a whole extra SwiftUI layout of the card and then throw the
+        // number away.
         let box = OnboardingView.windowContentSize
+        #if DEBUG
+        let fitting = WindowSizing.measure(view)
         assert(fitting.width <= box.width + 0.5 && fitting.height <= box.height + 0.5,
                "onboarding card \(fitting) no longer fits its window box \(box)")
+        #endif
         window.setContentSize(box)
         window.center()
         NSApp.activate(ignoringOtherApps: true)

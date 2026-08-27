@@ -141,6 +141,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// carry it. Recovering it took a `log show` dig through the unified log, and
     /// not having it cost two releases spent hardening the wrong window. One line
     /// in our own log, next to what the app was doing at the time, is cheap.
+    ///
+    /// KNOWN GAP, ON THE LIST rather than fixed here: this catches roughly half
+    /// the shapes this crash takes. The 27.08 reports came down both routes —
+    /// `objc_exception_rethrow` → `abort()` (SIGABRT), which passes through this
+    /// handler, and `+[NSApplication _crashOnException:]` (SIGTRAP), which does
+    /// not. The cheap complement is to write the window inventory into the log at
+    /// every launch, so the state is on record before the crash rather than
+    /// during it.
     private static func recordUncaughtExceptions() {
         NSSetUncaughtExceptionHandler { exception in
             let frames = exception.callStackSymbols.prefix(24).joined(separator: "\n")
