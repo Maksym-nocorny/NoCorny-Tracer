@@ -3,20 +3,49 @@ import AppKit
 
 // MARK: - Panel
 
-/// The borderless floating panel that hosts the command bar.
+/// The borderless panel that hosts the command bar — and, on the same window,
+/// the recording pill.
 ///
-/// `.nonactivatingPanel` + `canBecomeKey` is the NoiseSuggestionWindowManager recipe:
-/// clicking the bar's buttons works without activating the whole app and yanking focus
-/// out of whatever the user is recording. `hasShadow` is off because the SwiftUI content
-/// draws the redesign's own shadow (`.floatingPanelShadow()`); `sharingType = .none`
-/// keeps the bar out of screen captures — including our own recordings.
+/// ROUND 12 (вердикт шефа 26.08: «я перемикаюсь на інше вікно, а трейсер не
+/// зникає, бо він завжди поверх»). Until now this panel had ONE personality —
+/// floating, on every Space, never captured — and wore it on every surface. That
+/// is right for the pill and wrong for everything else: the bar and its drawers
+/// are the app's ordinary window and must behave like one. So the panel now
+/// changes personality with the surface (`CommandBarWindowManager.windowTraits`):
+///
+/// - BAR / DRAWERS: `level = .normal`, no `.nonactivatingPanel`, no
+///   `canJoinAllSpaces`, `sharingType = .readOnly`. Switch apps and it goes
+///   BEHIND them like any window; click it and the app activates like any window;
+///   screenshots and recordings see it, which is now correct and expected.
+/// - RECORDING PILL: `level = .floating`, `.nonactivatingPanel`,
+///   `canJoinAllSpaces + fullScreenAuxiliary`, `sharingType = .none`. It is the
+///   only control surface of a live take, so it stays on top, follows the user
+///   across Spaces, never steals focus from what is being recorded, and NEVER
+///   joins the capture — the one sacred invariant of this file.
+///
+/// `hidesOnDeactivate` is false on both: going behind another app is the point,
+/// vanishing is not. `hasShadow` is off because the SwiftUI content draws the
+/// redesign's own shadow (`.floatingPanelShadow()`), and `canBecomeKey` is
+/// overridden because a borderless window refuses the keyboard otherwise.
+///
+/// ЗАМІР (стенд r12, macOS 26.5.2) — ЧОМУ ОДНЕ ВІКНО, А НЕ ДВА. Мутація
+/// `styleMask` на живому вікні виявилась безкоштовною: 12 перемикань
+/// `.nonactivatingPanel` туди-сюди по 0.15с дали 35 ПОБАЙТОВО ОДНАКОВИХ кадрів
+/// бурсту — ані мигання, ані тайтлбару, ані втрати вмісту; сам виклик ~0.1мс, і
+/// borderless, прозорість, тінь, рамка, `contentView`, `canBecomeKey` переживають
+/// його без єдиної зміни. Рівень, `collectionBehavior` і `sharingType` теж
+/// перемикаються на місці. Два окремі вікна натомість знесли б композиторний
+/// політ round 5c: він тримається на тому, що ОДНЕ вікно бере union обох
+/// кінцевих рамок і возить вміст усередині нього — між двома вікнами такого
+/// не зробиш, лишився б кросфейд.
 final class CommandBarPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 
     /// Esc fallback for the drawers: fires when the panel is key and nothing in the
-    /// SwiftUI hierarchy consumed the key (`.onExitCommand` needs focus inside the
-    /// drawer, which a nonactivating panel often doesn't have). Set by the manager.
+    /// SwiftUI hierarchy consumed the key (`.onExitCommand` needs focus INSIDE the
+    /// drawer, which a bar the user merely clicked once does not hand out). Set by
+    /// the manager.
     var onEsc: (() -> Void)?
     /// ⌘, toggles the Settings drawer (the hint the drawer header shows). Only
     /// works while the panel is key — same reach as Esc above.
@@ -82,22 +111,82 @@ final class CommandBarPanel: NSPanel {
     init(contentRect: NSRect) {
         super.init(
             contentRect: contentRect,
-            styleMask: [.borderless, .fullSizeContentView, .nonactivatingPanel],
+            styleMask: Self.styleMask(nonactivating: false),
             backing: .buffered,
             defer: false
         )
-        isFloatingPanel = true
-        level = .floating
-        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         isMovableByWindowBackground = true
         backgroundColor = .clear
         isOpaque = false
         hasShadow = false
-        sharingType = .none
-        // NSPanel hides itself when the app deactivates by default — the bar must stay.
-        hidesOnDeactivate = false
         isReleasedWhenClosed = false
-        becomesKeyOnlyIfNeeded = true
+        // NSPanel hides itself when the app deactivates by default. That must NOT
+        // happen on either personality: an ordinary window stays on screen when you
+        // switch apps (it just stops being in front), and the pill stays put because
+        // it is the only way to stop the take.
+        hidesOnDeactivate = false
+        // The manager re-dresses the panel for the real surface before it is ordered
+        // in; the bar's traits are the honest starting point.
+        apply(CommandBarWindowManager.windowTraits(for: .bar, takeLive: false))
+    }
+
+    /// The style mask of each personality. `.borderless` is the ABSENCE of
+    /// `.titled` (its raw value is 0), so both variants stay chromeless — the
+    /// r12 stand confirms `titled == false` through every flip.
+    static func styleMask(nonactivating: Bool) -> NSWindow.StyleMask {
+        let base: NSWindow.StyleMask = [.borderless, .fullSizeContentView]
+        return nonactivating ? base.union(.nonactivatingPanel) : base
+    }
+
+    /// Re-dresses the live panel for a surface. Returns whether the window LEVEL
+    /// changed, because that is the one trait whose flip needs a follow-up: a
+    /// panel demoted out of the floating band lands wherever the z-order says,
+    /// which for a returning bar means "behind whatever is in front".
+    @discardableResult
+    func apply(_ traits: CommandBarWindowManager.WindowTraits) -> Bool {
+        let levelChanged = level != traits.level
+        let mask = Self.styleMask(nonactivating: traits.nonactivating)
+        if styleMask != mask { styleMask = mask }
+        // `isFloatingPanel` is a level setter in disguise (and it resets
+        // `hidesOnDeactivate` along the way), so it goes FIRST and the explicit
+        // values below have the last word.
+        isFloatingPanel = traits.level == .floating
+        level = traits.level
+        hidesOnDeactivate = false
+        collectionBehavior = traits.collectionBehavior
+        sharingType = traits.sharingType
+        becomesKeyOnlyIfNeeded = traits.becomesKeyOnlyIfNeeded
+        return levelChanged
+    }
+}
+
+// MARK: - Hosting controller (first-mouse click-through)
+
+/// Hosts the bar's SwiftUI tree and answers YES to `acceptsFirstMouse`.
+///
+/// Round 12 side effect worth paying for. While the bar was a `.nonactivatingPanel`
+/// its buttons fired on the first click no matter which app was in front — the
+/// panel never took activation, so there was no activation click to swallow. An
+/// ORDINARY window works the other way: the first click on an inactive app's
+/// window activates the app, and by default the control under the cursor never
+/// sees it. On a compact control bar that reads as "the record button needs two
+/// clicks". `acceptsFirstMouse` restores the one-click feel while keeping the
+/// activation the verdict asked for.
+private final class CommandBarHostingView<Content: View>: NSHostingView<Content> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
+private final class CommandBarHostingController<Content: View>: NSHostingController<Content> {
+    override func loadView() {
+        let hosting = CommandBarHostingView(rootView: rootView)
+        // Set HERE, not only on the controller: substituting the view in
+        // `loadView` is what lets the subclass exist at all, and the controller's
+        // own `sizingOptions` is not guaranteed to reach a view it did not make.
+        // Getting this wrong would let SwiftUI drive the window size and fight
+        // every frame the morph geometry computes — so it is pinned on the object
+        // that actually reports the size.
+        hosting.sizingOptions = []
+        view = hosting
     }
 }
 
@@ -123,13 +212,86 @@ private final class CommandBarPanelDelegate: NSObject, NSWindowDelegate {
 
 // MARK: - Manager
 
-/// Owns the floating command-bar panel and morphs it between surfaces
-/// (bar / bar+drawer / recording pill). Phase-2 scaffolding: the panel
-/// coexists with the old main window until phase 7 dismantles the latter.
+/// Owns the command-bar panel and morphs it between surfaces (bar / bar+drawer /
+/// recording pill). Since round 12 it also owns the panel's PERSONALITY: the bar
+/// and its drawers are an ordinary window, only the recording pill floats above
+/// everything and hides from screen capture (see `windowTraits`). There is no
+/// main window any more — phase 7 removed it.
 @Observable @MainActor
 final class CommandBarWindowManager {
     typealias Surface = CommandBarSurface
     typealias DrawerTab = CommandBarDrawerTab
+
+    // MARK: - Window personality (round 12)
+
+    /// The window traits one surface demands — see `CommandBarPanel`'s docs for
+    /// the verdict behind the split. A plain value so the policy is a TEST, not
+    /// a promise: getting `sharingType` wrong on the pill would put Tracer's own
+    /// controls into the user's recording.
+    struct WindowTraits: Equatable {
+        let level: NSWindow.Level
+        let sharingType: NSWindow.SharingType
+        let collectionBehavior: NSWindow.CollectionBehavior
+        /// `.nonactivatingPanel` in the style mask: clicks do not activate the app.
+        let nonactivating: Bool
+        /// NSPanel's "a click only makes me key if something inside needs typing".
+        let becomesKeyOnlyIfNeeded: Bool
+    }
+
+    /// Surface → window personality. Two rows, and the difference between them is
+    /// the whole of round 12:
+    ///
+    /// - The RECORDING PILL is the control surface of a live take. It floats above
+    ///   everything (you must be able to stop a take from inside any app), joins
+    ///   every Space (the take follows the user), refuses to activate the app on a
+    ///   click (focus belongs to whatever is being recorded), and is invisible to
+    ///   screen capture.
+    /// - Everything else is an ORDINARY WINDOW: normal level, its own Space, a
+    ///   click activates the app, and it is visible to screenshots and recordings.
+    ///
+    /// `takeLive` forces the never-captured half even on the bar. The screen
+    /// stream starts — and the writer ARMS — several awaits before
+    /// `RecordingManager.isRecording` flips, so a panel that only hid itself on
+    /// the pill morph would land in the opening frames of every recording. The
+    /// flag closes that head; the surface rule owns the rest of the take.
+    nonisolated static func windowTraits(for surface: Surface, takeLive: Bool) -> WindowTraits {
+        if surface == .recordingPill {
+            return WindowTraits(
+                level: .floating,
+                sharingType: .none,
+                collectionBehavior: [.canJoinAllSpaces, .fullScreenAuxiliary],
+                nonactivating: true,
+                becomesKeyOnlyIfNeeded: true
+            )
+        }
+        return WindowTraits(
+            level: .normal,
+            sharingType: takeLive ? NSWindow.SharingType.none : .readOnly,
+            // No `canJoinAllSpaces` and no `fullScreenAuxiliary`: an ordinary
+            // window lives on its own Space and does not hover over a fullscreen
+            // app. That is exactly the "стоп бути завжди поверх" the verdict asked for.
+            collectionBehavior: [],
+            nonactivating: false,
+            becomesKeyOnlyIfNeeded: false
+        )
+    }
+
+    /// True while a take is live OR being prepared (see `windowTraits`).
+    ///
+    /// DERIVED, never cached — and that is a bug fix, not a preference. A stored
+    /// flag has exactly one writer, the SwiftUI root's `.onChange`, and that root
+    /// dies with the panel: "Hide pill (recording continues)" tears the panel
+    /// down mid-take, so a cached `true` would never be cleared, and the next
+    /// tray → "Settings…" would find `takeLive` still true and refuse the drawer
+    /// its keyboard — the round-9 «⌘, · Esc не працює» bug, resurrected. The
+    /// mirror case is just as bad: a take started from the tray while the bar was
+    /// hidden would leave a cached `false` and bring the bar up capturable over a
+    /// live stream. Reading the recorder at the moment the traits are applied has
+    /// no stale state to go wrong.
+    private var takeIsLive: Bool {
+        guard let recorder = appState?.recordingManager else { return false }
+        return recorder.isStarting || recorder.isRecording
+    }
 
     /// The surface currently shown. The SwiftUI root switches on this.
     private(set) var surface: Surface = .bar
@@ -287,7 +449,7 @@ final class CommandBarWindowManager {
         }
 
         if panel == nil {
-            let host = NSHostingController(
+            let host = CommandBarHostingController(
                 rootView: CommandBarRootView(appState: appState, manager: self)
             )
             // The panel's size is driven by morph(to:), never by the SwiftUI fitting size.
@@ -298,8 +460,10 @@ final class CommandBarWindowManager {
             panelDelegate.manager = self
             newPanel.delegate = panelDelegate
             // Esc closes an open drawer, and on the recording pill opens the inline
-            // discard confirmation (the panel must be key for Esc to arrive at all —
-            // the known nonactivating-panel limit from phase 3). On the bare bar: nothing.
+            // discard confirmation. The panel must be key for Esc to arrive at all:
+            // on the bar that comes with the click that opened the drawer, and the
+            // pill — deliberately never key — relies on the drawer path instead.
+            // On the bare bar: nothing.
             newPanel.onEsc = { [weak self] in
                 guard let self else { return }
                 switch self.surface {
@@ -317,7 +481,6 @@ final class CommandBarWindowManager {
                 guard let self, let target = Self.cmdCommaTarget(from: self.surface) else { return }
                 self.morph(to: target)
             }
-            PanelCaptureRegistry.register(newPanel)
             panel = newPanel
         }
         guard let panel else { return }
@@ -339,11 +502,18 @@ final class CommandBarWindowManager {
         panel.setFrame(MorphGeometry.panelFrame(forLogical: target), display: true)
 
         applyPanelAppearance()
+        // Round 12: dress the window for the surface it is about to show BEFORE it
+        // is ordered in — a panel coming up as the pill (a take started while the
+        // bar was hidden) must already be `sharingType = .none` on its first frame.
+        applyWindowTraits(for: surface)
         panel.orderFrontRegardless()
-        // Round 9: a panel that comes up already wearing a drawer (tray →
-        // "Settings…" re-shows a hidden bar) takes the keyboard right away,
-        // so Esc works without a click. Bare bar / pill: never.
-        takeKeyboardIfNeeded()
+        // Round 9: a panel that comes up already wearing a drawer takes the
+        // keyboard right away, so Esc works without a click. Bare bar / pill:
+        // never. In practice `dismissPanel` resets the surface to `.bar`, so the
+        // tray's "Settings…" arrives here as a bar and the drawer's own `morph`
+        // does the asking a beat later — this call is the belt for any future
+        // door that shows a drawer directly.
+        takeKeyboard(for: surface)
         // Round 6 REGRESSION FIX («після апдейту авто не працює, поки не
         // перемкнеш тему»): everything above ran while the panel was still
         // ordered OUT — `applyPanelAppearance()` → `syncBackdropMonitor()` saw
@@ -362,7 +532,12 @@ final class CommandBarWindowManager {
     /// the only control surface of a live take and has no close button anyway —
     /// its OWN way out is `hideRecordingPill()` below.
     func hide() {
-        guard appState?.recordingManager.isRecording != true else { return }
+        // `takeIsLive`, not `isRecording`: the guard has to cover the START HEAD
+        // too. Between the record button and `isRecording` flipping there are
+        // several awaits, and a close click landing in that window used to tear
+        // the panel down before the pill ever appeared — leaving a running take
+        // with no visible control surface at all.
+        guard !takeIsLive else { return }
         dismissPanel()
     }
 
@@ -385,9 +560,6 @@ final class CommandBarWindowManager {
     /// whatever surface is up, then drop the panel (a later `show()` rebuilds it).
     private func dismissPanel() {
         backdropMonitor.stop()   // no panel → nothing to sample under (4.1.0)
-        // Hiding the bar with a drawer open (close button, tray) hands the
-        // keyboard back too — round 9.
-        releaseKeyboardIfTaken()
         if let panel {
             if pendingDrawerCloseSnap || flightActive {
                 // Mid-close (round 5b) or mid-flight (round 5c): the surface
@@ -476,101 +648,69 @@ final class CommandBarWindowManager {
         return false
     }
 
-    /// True while WE took the keyboard for a drawer, so the close can hand it
-    /// back to whatever the user was using.
-    private var tookKeyForDrawer = false
-
-    /// Round 9 (boss's verdict on 4.4.1: «підказка ⌘, · Esc to close не
-    /// працює»). The root, known since phase 3: this panel is nonactivating
-    /// with `becomesKeyOnlyIfNeeded`, so until the user clicked INSIDE the
-    /// drawer the panel was not key and every keystroke went to whatever app
-    /// was in front — the header promised shortcuts that did not exist.
-    ///
-    /// The honest fix is `makeKey()`, and it comes with a MEASURED price:
-    /// probing a nonactivating panel showed that a programmatic `makeKey()`
-    /// ACTIVATES the app (isActive false → true). That is unavoidable —
-    /// keyboard events go to the key window of the ACTIVE app, so there is no
-    /// "keys without activation" state to reach. The rejected alternatives are
-    /// worse: `addLocalMonitorForEvents` only sees events already routed to us
-    /// (i.e. nothing while we are inactive), and a global monitor / event tap
-    /// cannot CONSUME the key (Esc would also reach the other app) and would
-    /// demand Accessibility permission for a drawer shortcut.
-    ///
-    /// The activation is scoped so it can never surprise: it happens only for
-    /// DRAWERS (`surfaceWantsKeyboard`), which only ever open on an explicit
-    /// user gesture — clicking the gear/folder, the tray's "Settings…", or ⌘,
-    /// itself. Closing the drawer calls `NSApp.deactivate()`, handing the
-    /// keyboard straight back to the app the user came from.
-    private func takeKeyboardIfNeeded() {
-        guard Self.surfaceWantsKeyboard(surface) else { return }
-        takeKeyboard()
+    /// Whether the panel should reach for the keyboard, given the surface it is
+    /// about to wear and whether a take is live. Pure, because the second half is
+    /// a SAFETY invariant, not a nicety: nothing may activate this app while the
+    /// user is recording — stealing focus would land in their video.
+    nonisolated static func shouldTakeKeyboard(for surface: Surface, takeLive: Bool) -> Bool {
+        !takeLive && surfaceWantsKeyboard(surface)
     }
 
-    private func takeKeyboard() {
-        guard let panel, panel.isVisible, !panel.isKeyWindow else { return }
-        panel.makeKey()
-        tookKeyForDrawer = true
+    /// Round 9 (boss's verdict on 4.4.1: «підказка ⌘, · Esc to close не працює»)
+    /// — SIMPLIFIED by round 12.
+    ///
+    /// The old problem was that this panel was permanently nonactivating with
+    /// `becomesKeyOnlyIfNeeded`, so until the user clicked INSIDE the drawer the
+    /// panel was not key and the header advertised shortcuts that did not exist.
+    /// Round 12 dissolves most of that: on the bar and its drawers the panel is
+    /// now an ordinary window, so a plain CLICK makes it key and Esc / ⌘, work
+    /// from the first second without any trickery.
+    ///
+    /// What is still needed is the door that opens a drawer WITHOUT touching the
+    /// panel — the tray's "Settings…" on a hidden bar. There the app can be
+    /// inactive, and keyboard events only ever reach the key window of the ACTIVE
+    /// app, so activation is the honest (and only) way in. It stays scoped to
+    /// drawers, which never open by themselves.
+    ///
+    /// What ROUND 12 DELETED is the counterpart: `releaseKeyboardIfTaken()` and
+    /// its `NSApp.deactivate()`. Two reasons, either one sufficient. (1) It is now
+    /// actively harmful: the bar sits at `.normal` level, so deactivating the app
+    /// drops it behind whatever is in front — close the drawer and the bar
+    /// disappears under Chrome. (2) It is no longer ours to give back: the app is
+    /// active because the user CLICKED our window, exactly like any other app, and
+    /// no ordinary Mac app deactivates itself when you close a panel. Losing it
+    /// also retires the whole `shouldReleaseKeyboard` / Sparkle "dead button"
+    /// hazard class that round 9 had to reason its way around.
+    private func takeKeyboard(for surface: Surface) {
+        guard Self.shouldTakeKeyboard(for: surface, takeLive: takeIsLive) else { return }
+        guard let panel, panel.isVisible else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        panel.makeKeyAndOrderFront(nil)
     }
 
-    /// Whether closing the drawer may hand the keyboard back — pure, because
-    /// getting it wrong resurrects the 4.0.0 «кнопка нічого не робить» bug on
-    /// a release channel.
-    ///
-    /// The round-9 first cut gated on `NSApp.modalWindow == nil`, which is
-    /// WRONG: `modalWindow` is only populated during `runModal()`, and the
-    /// windows that actually matter here are NOT modal. Sparkle 2.9.0 shows
-    /// "Checking for updates…" and its update alert as ordinary windows, and
-    /// the onboarding card is an ordinary window too. Sequence that broke:
-    /// Settings drawer → "Check for Updates" (the link activates the app so
-    /// the Sparkle window can come up) → the user closes the drawer to look at
-    /// that window → `deactivate()` sent the app AND its dialog behind the
-    /// frontmost app, i.e. the dead-button bug again.
-    ///
-    /// So the question is not "is something modal" but "is any window of OURS
-    /// still holding, or about to hold, the keyboard": deactivate only when the
-    /// key window is our own panel and no other keyable window of ours is on
-    /// screen (a window ordered front but not yet key counts — Sparkle's alert
-    /// spends a beat in exactly that state).
-    nonisolated static func shouldReleaseKeyboard(
-        keyWindowIsPanel: Bool,
-        hasOtherKeyableWindow: Bool,
-        isActive: Bool
-    ) -> Bool {
-        isActive && keyWindowIsPanel && !hasOtherKeyableWindow
+    // MARK: Window personality (round 12)
+
+    /// Dresses the live panel for `surface`. Called before every surface swap and
+    /// whenever the take state changes.
+    private func applyWindowTraits(for surface: Surface) {
+        guard let panel else { return }
+        let levelChanged = panel.apply(Self.windowTraits(for: surface, takeLive: takeIsLive))
+        // A level change re-sorts the window across the whole z-order, and the
+        // demotion is the one that bites: the pill lived in the floating band, so
+        // the bar it turns back into would land UNDER whatever app is in front and
+        // read as "Tracer vanished after my recording". Ordering it front once puts
+        // the returning bar where the user can see it WITHOUT taking focus — and
+        // from that moment it behaves like any window and yields to the next app
+        // the user clicks, which is the entire point of the verdict.
+        if levelChanged, panel.isVisible { panel.orderFrontRegardless() }
     }
 
-    /// The counterpart of `takeKeyboard`: when the drawer goes away, give the
-    /// keyboard back to the app the user came from — unless another window of
-    /// ours needs it (see `shouldReleaseKeyboard`).
-    private func releaseKeyboardIfTaken() {
-        guard tookKeyForDrawer else { return }
-        guard let panel else {
-            tookKeyForDrawer = false
-            return
-        }
-        let keyWindow = NSApp.keyWindow
-        // "Another window of ours that wants the keyboard": visible, keyable,
-        // not our own panel — and not one of our transient floating panels.
-        // The style mask is the clean separator, verified across the app: the
-        // toast and camera-bubble panels carry `.nonactivatingPanel` (they
-        // never want focus), while the windows that MUST block a deactivate —
-        // Sparkle's alerts and the onboarding card — do not.
-        let hasOtherKeyableWindow = NSApp.windows.contains { window in
-            window !== panel
-                && window.isVisible
-                && window.canBecomeKey
-                && !window.styleMask.contains(.nonactivatingPanel)
-        }
-        // The flag survives a skipped release on purpose: a Sparkle dialog or the
-        // onboarding card is holding the keyboard right now, and the debt to hand
-        // it back is still ours to settle the next time a drawer closes.
-        guard Self.shouldReleaseKeyboard(
-            keyWindowIsPanel: keyWindow == nil || keyWindow === panel,
-            hasOtherKeyableWindow: hasOtherKeyableWindow,
-            isActive: NSApp.isActive
-        ) else { return }
-        tookKeyForDrawer = false
-        NSApp.deactivate()
+    /// The SwiftUI root pokes this when `isStarting || isRecording` changes. It
+    /// carries no value on purpose — the state is read from the recorder itself
+    /// (`takeIsLive`); this is only the "look again now" signal, so that the bar
+    /// leaves the capture at the head of a take without waiting for a morph.
+    func refreshWindowTraits() {
+        applyWindowTraits(for: surface)
     }
 
     /// Switches the panel to another surface. The BAR anchor stays the stable
@@ -578,15 +718,18 @@ final class CommandBarWindowManager {
     /// grows above the stationary bar (see `MorphGeometry.targetFrame`).
     func morph(to newSurface: Surface) {
         guard surface != newSurface else { return }
-        // Round 9: a drawer takes the keyboard the moment it opens (so Esc and
-        // ⌘, work without a preliminary click — the header hint stops lying),
-        // and hands it straight back when it closes or a take starts. Done up
-        // front because `morph` has several exit paths and neither call
-        // depends on the resulting frame.
-        switch (Self.surfaceWantsKeyboard(surface), Self.surfaceWantsKeyboard(newSurface)) {
-        case (false, true): takeKeyboard()
-        case (true, false): releaseKeyboardIfTaken()
-        default: break
+        // ROUND 12, AND IT GOES FIRST: the window's personality follows the
+        // surface, and the pill's half of it must be in place BEFORE the pill
+        // paints a single frame — that is what keeps Tracer's own controls out of
+        // the user's recording. `morph` has several exit paths and none of this
+        // depends on the resulting frame, so it is settled up front.
+        applyWindowTraits(for: newSurface)
+        // Round 9: a drawer takes the keyboard the moment it opens, so Esc and ⌘,
+        // work without a preliminary click. Only on the OPENING edge — a tab
+        // switch is already ours. (The hand-back half died in round 12; see
+        // `takeKeyboard`.)
+        if !Self.surfaceWantsKeyboard(surface), Self.surfaceWantsKeyboard(newSurface) {
+            takeKeyboard(for: newSurface)
         }
         // Any surface change supersedes a drawer close still waiting for its
         // frame snap — the new morph reframes for itself. A half-faded closing

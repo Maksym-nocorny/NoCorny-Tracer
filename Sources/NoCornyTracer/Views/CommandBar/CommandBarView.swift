@@ -130,6 +130,17 @@ struct CommandBarRootView: View {
         .onChange(of: appState.recordingManager.isRecording) { _, isRecording in
             manager.morph(to: isRecording ? .recordingPill : .bar)
         }
+        // Round 12: the panel must be out of screen capture for the WHOLE take,
+        // not merely while the pill is up. The stream starts — and the writer arms
+        // — several awaits BEFORE `isRecording` flips, so a bar that only hid on
+        // the pill morph would be recorded at the head of every take. `isStarting`
+        // covers exactly that head; the pill's own traits own the rest.
+        .onChange(
+            of: appState.recordingManager.isStarting || appState.recordingManager.isRecording,
+            initial: true
+        ) { _, _ in
+            manager.refreshWindowTraits()
+        }
         // Keep the panel's frame in sync with the banner: the quota can cross the
         // threshold mid-session (an upload finishing refreshes used/allocated).
         .onChange(of: storageLevel != .ok, initial: true) { _, visible in
@@ -311,8 +322,8 @@ struct CommandBarView: View {
                     await appState.stopRecording()
                 } else {
                     // Same start path as RecordingControlsView, deliberately WITHOUT the
-                    // old window's orderOut — the bar stays up (it never joins captures:
-                    // the panel's sharingType is .none).
+                    // old window's orderOut — the bar stays up, and round 12's
+                    // `setTakeLive` has already taken it out of capture for the take.
                     try? await appState.startRecording()
                 }
             }

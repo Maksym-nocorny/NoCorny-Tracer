@@ -315,8 +315,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Reopen (Dock click)
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        // A Dock click summons the command bar — there is no main window any more,
-        // and the floating panels don't count as "visible windows" to AppKit anyway.
+        // A Dock click summons the command bar — there is no main window any more.
+        // `flag` is deliberately ignored: since round 12 the bar IS an ordinary
+        // visible window, so a Dock click on a bar that is merely buried behind
+        // another app would otherwise do nothing. `show()` is idempotent and
+        // re-orders the existing panel to the front, which is exactly the answer
+        // in both cases. (The app never auto-quits on the last window closing —
+        // `applicationShouldTerminateAfterLastWindowClosed` is left at AppKit's
+        // false, and hiding the bar is a hide, not a quit.)
         Task { @MainActor [weak self] in
             self?.presentCommandBar()
         }

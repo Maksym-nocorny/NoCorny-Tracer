@@ -158,19 +158,10 @@ struct DrawerSettingsView: View {
                 settingRow(icon: "speaker.wave.2", label: "Record system audio") {
                     DrawerToggle(isOn: $appState.recordSystemAudio)
                 }
-
-                hairline
-
-                // Round 6 (package 4): the DEBUG-only "capturable panels" switch,
-                // legalized. Off = the bar and friends stay out of captures
-                // (sharingType .none); on = they join screenshots and recordings.
-                settingRow(
-                    icon: "camera.viewfinder",
-                    label: "Show Tracer in screen captures",
-                    subtext: "Panels appear in screenshots and in your recordings"
-                ) {
-                    DrawerToggle(isOn: $appState.panelsCapturable)
-                }
+                // Round 12 dropped "Show Tracer in screen captures" from this
+                // section: the bar is an ordinary window and simply joins captures,
+                // and the recording pill is hidden from them unconditionally. The
+                // switch had nothing left to switch.
             }
             // Same rule as the old Settings: capture parameters are fixed mid-recording.
             .disabled(isRecording)

@@ -181,19 +181,22 @@ final class ToastWindowManager {
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
             // Toasts appear DURING recording, while the app is usually inactive —
             // and must never join the capture themselves.
+            //
+            // Round 12 left this window exactly as it was, deliberately. The
+            // verdict of 26.08 demoted the command BAR to an ordinary window
+            // because it is a place the user works in; a toast is a NOTIFICATION —
+            // it must be seen over whatever is in front, it must not steal focus,
+            // it disappears on its own, and "Uploaded — link copied" flashing
+            // inside the user's video would be a defect. Floating,
+            // nonactivating and never captured is the correct shape for it.
             panel.hidesOnDeactivate = false
             panel.sharingType = .none
             panel.isReleasedWhenClosed = false
-            // ToastWindowManager predates strict isolation annotations; it runs
-            // on the main thread (it builds NSPanels) but is not @MainActor.
-            MainActor.assumeIsolated {
-                PanelCaptureRegistry.register(panel)
-            }
             window = panel
         }
 
-        // The toast follows the resolved PANEL look like every other floating
-        // panel — with Auto (4.1.0) that is the backdrop monitor's verdict.
+        // The toast follows the same resolved PANEL look as the command bar —
+        // with Auto (4.1.0) that is the backdrop monitor's verdict.
         panel.appearance = appState.panelAppearance
 
         // Size to the SwiftUI content, then position near top-center of the active

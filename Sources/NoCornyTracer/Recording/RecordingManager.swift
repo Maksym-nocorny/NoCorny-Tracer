@@ -44,7 +44,13 @@ final class RecordingManager {
 
     /// Set synchronously before the first await in startRecording so a double
     /// trigger during the async start can't launch a second concurrent capture.
-    private var isStarting = false
+    ///
+    /// Readable (round 12) because it is also the only signal for "a take is
+    /// being prepared": the screen stream starts and the writer ARMS inside this
+    /// window, several awaits before `isRecording` flips, and the command bar has
+    /// to be out of screen capture for all of it — otherwise the bar lands in the
+    /// opening frames of every recording.
+    private(set) var isStarting = false
     /// Mirror of `isStarting`. `isRecording` stays true across every await in the stop
     /// sequence - closing the writer, finishing the sidecar, finalising the file - so a
     /// second stop arriving in that window (the button, the hotkey, the menu item, the quit

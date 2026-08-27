@@ -118,21 +118,15 @@ final class AppState {
             defaults.set(recordSystemAudio, forKey: "recordSystemAudio")
         }
     }
-    /// Whether Tracer's own panels appear in screen captures (round 6, package 4 —
-    /// Settings → RECORDING → "Show Tracer in screen captures"). Off by default:
-    /// the panels ship with `sharingType = .none` and stay out of screenshots and
-    /// the user's own recordings. The state itself is applied to the panels by
-    /// PanelCaptureRegistry; this property owns persistence and is the single
-    /// writer (the DEBUG tray dupe toggles it here too, so all doors stay in sync).
-    var panelsCapturable: Bool = false {
-        didSet {
-            defaults.set(panelsCapturable, forKey: PanelCaptureRegistry.defaultsKey)
-            let capturable = panelsCapturable
-            MainActor.assumeIsolated {
-                PanelCaptureRegistry.setCapturable(capturable)
-            }
-        }
-    }
+    // ROUND 12 removed "Show Tracer in screen captures" (`panelsCapturable`) and
+    // the PanelCaptureRegistry behind it. The setting existed because EVERY panel
+    // hid from capture, which the verdict of 26.08 undid: the bar and its drawers
+    // are an ordinary window and are simply visible to captures now, while the
+    // recording pill is invisible ALWAYS — it is the one control that may never
+    // end up inside the take it is controlling, so there is nothing left to
+    // toggle. The persisted `panelsCapturable` key is ignored from here on; a
+    // silent migration, because the setting has no successor to carry a value to.
+
     /// Which engine transcribes. Defaults to the cloud so nothing changes for anyone
     /// already using the app; on-device is opt-in until its model is downloaded, which is
     /// a deliberate 1.5 GB decision rather than something that happens on first launch.
@@ -317,14 +311,6 @@ final class AppState {
         self.launchAtLogin = defaults.bool(forKey: "launchAtLogin")
         self.reduceBackgroundNoise = defaults.bool(forKey: "reduceBackgroundNoise")
         self.recordSystemAudio = defaults.bool(forKey: "recordSystemAudio")
-        // didSet does not fire in init — apply the persisted capture-visibility
-        // state to the registry explicitly, so panels created at launch already
-        // come up with the right sharing type (round 6, package 4).
-        self.panelsCapturable = defaults.bool(forKey: PanelCaptureRegistry.defaultsKey)
-        let capturableAtLaunch = self.panelsCapturable
-        MainActor.assumeIsolated {
-            PanelCaptureRegistry.setCapturable(capturableAtLaunch)
-        }
         self.diarizationEnabled = defaults.bool(forKey: "diarizationEnabled")
         if let speakersRaw = defaults.string(forKey: "expectedSpeakers"),
            let speakers = ExpectedSpeakers(rawValue: speakersRaw) {

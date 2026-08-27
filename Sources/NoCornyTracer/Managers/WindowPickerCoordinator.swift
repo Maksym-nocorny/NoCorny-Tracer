@@ -39,6 +39,17 @@ final class WindowPickerCoordinator: NSObject {
         // One-shot pick: we never keep a stream attached to the picker, so there is no
         // "change what you're sharing" flow for the system UI to offer.
         configuration.allowsChangingSelectedContent = false
+        // ROUND 12: keep Tracer's own windows OUT of the picker. Until now this was
+        // free — every panel was `sharingType = .none`, so ScreenCaptureKit could
+        // not see them at all. The command bar is an ordinary, capturable window
+        // now, which means the system picker would happily offer "record the Tracer
+        // bar" — and that pick is a trap: the moment the take starts, the bar goes
+        // `.none` for the duration, so `startCapture` re-looks the window up, finds
+        // nothing, and refuses with `windowUnavailable` naming our own window. The
+        // fallback menu next door already filters our PID for the same reason.
+        if let bundleID = Bundle.main.bundleIdentifier {
+            configuration.excludedBundleIDs = [bundleID]
+        }
 
         let picker = SCContentSharingPicker.shared
         picker.defaultConfiguration = configuration

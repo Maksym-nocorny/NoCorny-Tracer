@@ -395,41 +395,106 @@ final class MorphGeometryTests: XCTestCase {
         XCTAssertNil(M.cmdCommaTarget(from: .recordingPill), "mid-take there are no drawers")
     }
 
-    /// Handing the keyboard back on drawer close is allowed ONLY when nothing
-    /// else of ours wants it. The round-9 first cut asked `NSApp.modalWindow
-    /// == nil`, which is blind to Sparkle: its "Checking for updates…" and
-    /// update alert are NON-modal windows, so closing the drawer to look at
-    /// the dialog sent the app (and the dialog) behind the frontmost app —
-    /// the 4.0.0 dead-button bug, on a release channel. The onboarding card is
-    /// non-modal too.
-    func testKeyboardIsOnlyReleasedWhenNoOtherWindowOfOursWantsIt() {
-        typealias M = CommandBarWindowManager
-        XCTAssertTrue(M.shouldReleaseKeyboard(
-            keyWindowIsPanel: true, hasOtherKeyableWindow: false, isActive: true
-        ), "the quiet case: our panel had the keys, nothing else is up")
-
-        XCTAssertFalse(M.shouldReleaseKeyboard(
-            keyWindowIsPanel: false, hasOtherKeyableWindow: false, isActive: true
-        ), "something else of ours already took the keys — a Sparkle alert")
-
-        XCTAssertFalse(M.shouldReleaseKeyboard(
-            keyWindowIsPanel: true, hasOtherKeyableWindow: true, isActive: true
-        ), "a Sparkle window is up but not yet key — deactivating would bury it")
-
-        XCTAssertFalse(M.shouldReleaseKeyboard(
-            keyWindowIsPanel: true, hasOtherKeyableWindow: false, isActive: false
-        ), "not active — there is nothing to hand back")
-    }
-
     /// Only drawers take the keyboard. The bare bar and the recording pill
     /// never do: there is nothing to type into, and stealing focus mid-take
     /// would be hostile.
+    ///
+    /// (Round 12 retired `shouldReleaseKeyboard` and the test that pinned it:
+    /// the drawer no longer hands the keyboard back with `NSApp.deactivate()`,
+    /// because at `.normal` level that would drop the bar behind the frontmost
+    /// app — and because an app the user CLICKED into has nothing to hand back.
+    /// The Sparkle "dead button" hazard it guarded against goes with it.)
     func testOnlyDrawersWantTheKeyboard() {
         typealias M = CommandBarWindowManager
         XCTAssertTrue(M.surfaceWantsKeyboard(.barWithDrawer(.settings)))
         XCTAssertTrue(M.surfaceWantsKeyboard(.barWithDrawer(.gallery)))
         XCTAssertFalse(M.surfaceWantsKeyboard(.bar))
         XCTAssertFalse(M.surfaceWantsKeyboard(.recordingPill))
+    }
+
+    /// Nothing may activate this app while a take is live — an activation
+    /// mid-recording puts our chrome (and the focus change) into the user's
+    /// video. Drawers cannot open mid-take anyway, so this is the belt to that
+    /// braces: even asked, the answer is no.
+    func testKeyboardIsNeverTakenWhileATakeIsLive() {
+        typealias M = CommandBarWindowManager
+        XCTAssertTrue(M.shouldTakeKeyboard(for: .barWithDrawer(.settings), takeLive: false),
+                      "the tray's Settings… on an idle app: activate and take the keys")
+        XCTAssertFalse(M.shouldTakeKeyboard(for: .barWithDrawer(.settings), takeLive: true),
+                       "the same drawer while recording: hands off")
+        XCTAssertFalse(M.shouldTakeKeyboard(for: .bar, takeLive: false), "the bare bar never asks")
+        XCTAssertFalse(M.shouldTakeKeyboard(for: .recordingPill, takeLive: true),
+                       "and the pill least of all")
+    }
+
+    // MARK: Window personality (round 12 — «а то я перемикаюсь на інше вікно,
+    // а трейсер не зникає, бо він завжди поверх»)
+
+    /// The bar and its drawers are an ORDINARY WINDOW: normal level (so another
+    /// app's window covers them), no `canJoinAllSpaces` (they live on their own
+    /// Space), a click activates the app, and screen captures see them.
+    func testBarAndDrawersWearAnOrdinaryWindow() {
+        typealias M = CommandBarWindowManager
+        for surface in [CommandBarSurface.bar,
+                        .barWithDrawer(.settings),
+                        .barWithDrawer(.gallery)] {
+            let traits = M.windowTraits(for: surface, takeLive: false)
+            XCTAssertEqual(traits.level, .normal, "\(surface): goes behind other apps' windows")
+            XCTAssertEqual(traits.sharingType, .readOnly, "\(surface): joins screenshots")
+            XCTAssertFalse(traits.collectionBehavior.contains(.canJoinAllSpaces),
+                           "\(surface): an ordinary window stays on its Space")
+            XCTAssertFalse(traits.collectionBehavior.contains(.fullScreenAuxiliary),
+                           "\(surface): and does not hover over a fullscreen app")
+            XCTAssertFalse(traits.nonactivating, "\(surface): a click activates the app")
+            XCTAssertFalse(traits.becomesKeyOnlyIfNeeded,
+                           "\(surface): a click makes it key, so Esc and ⌘, work at once")
+        }
+    }
+
+    /// The recording pill keeps every one of the old panel's superpowers — it is
+    /// the only control of a live take. `sharingType == .none` is the sacred one:
+    /// the pill must never appear inside the recording it is controlling.
+    func testRecordingPillStaysFloatingAndUncapturable() {
+        typealias M = CommandBarWindowManager
+        for takeLive in [true, false] {
+            let traits = M.windowTraits(for: .recordingPill, takeLive: takeLive)
+            XCTAssertEqual(traits.level, .floating, "on top of every app")
+            XCTAssertEqual(traits.sharingType, .none, "NEVER in the capture")
+            XCTAssertTrue(traits.collectionBehavior.contains(.canJoinAllSpaces),
+                          "the take follows the user across Spaces")
+            XCTAssertTrue(traits.collectionBehavior.contains(.fullScreenAuxiliary),
+                          "including over a fullscreen app")
+            XCTAssertTrue(traits.nonactivating, "stopping a take must not steal focus")
+            XCTAssertTrue(traits.becomesKeyOnlyIfNeeded, "the pill never becomes the key window")
+        }
+    }
+
+    /// The head of a take: the screen stream is running and the writer is ARMED
+    /// several awaits before `isRecording` flips, so the bar has to leave the
+    /// capture on `isStarting` — otherwise Tracer's own bar is the first thing in
+    /// every recording. Everything else about the bar stays ordinary.
+    func testBarLeavesCaptureWhileATakeIsStarting() {
+        typealias M = CommandBarWindowManager
+        let arming = M.windowTraits(for: .bar, takeLive: true)
+        XCTAssertEqual(arming.sharingType, .none, "out of the capture before the first frame")
+        XCTAssertEqual(arming.level, .normal, "but still an ordinary window in every other way")
+        XCTAssertFalse(arming.nonactivating)
+        XCTAssertEqual(M.windowTraits(for: .bar, takeLive: false).sharingType, .readOnly,
+                       "and it comes back into captures when the take ends")
+    }
+
+    /// The style mask stays CHROMELESS on both personalities — `.borderless` is
+    /// the absence of `.titled`, and round 12 flips `.nonactivatingPanel` on a
+    /// live window (stand r12: 12 flips, zero changed pixels).
+    func testBothPersonalitiesStayBorderless() {
+        let plain = CommandBarPanel.styleMask(nonactivating: false)
+        let panelish = CommandBarPanel.styleMask(nonactivating: true)
+        XCTAssertFalse(plain.contains(.titled), "no titlebar on the ordinary window")
+        XCTAssertFalse(panelish.contains(.titled), "nor on the pill")
+        XCTAssertTrue(plain.contains(.fullSizeContentView))
+        XCTAssertTrue(panelish.contains(.fullSizeContentView))
+        XCTAssertFalse(plain.contains(.nonactivatingPanel), "the bar activates on a click")
+        XCTAssertTrue(panelish.contains(.nonactivatingPanel), "the pill does not")
     }
 
     // MARK: Recording pill perch (verdict 25.08: default = top-center)

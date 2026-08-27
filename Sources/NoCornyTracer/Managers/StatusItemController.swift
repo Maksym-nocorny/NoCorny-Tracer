@@ -496,19 +496,9 @@ final class StatusItemController: NSObject {
         add("Storage banner: low", #selector(previewBannerLow))
         add("Storage banner: full", #selector(previewBannerFull))
         submenu.addItem(.separator())
-        // Design-review escape hatch (verdict 25.08), since round 6 a DUPE of the
-        // product setting (Settings → RECORDING → "Show Tracer in screen
-        // captures"): same state, same persistence — it toggles
-        // AppState.panelsCapturable, so both doors always agree.
-        let capturable = NSMenuItem(
-            title: "Capturable panels (design review)",
-            action: #selector(previewToggleCapturablePanels),
-            keyEquivalent: ""
-        )
-        capturable.target = self
-        capturable.state = PanelCaptureRegistry.isCapturable ? .on : .off
-        submenu.addItem(capturable)
-        submenu.addItem(.separator())
+        // Round 12 removed "Capturable panels (design review)": the bar is an
+        // ordinary window and shows up in captures by itself, so a design review
+        // needs no escape hatch, and the pill's invisibility is not negotiable.
         add("Reset preview", #selector(previewReset))
 
         let root = NSMenuItem(title: "UI Preview", action: nil, keyEquivalent: "")
@@ -573,10 +563,5 @@ final class StatusItemController: NSObject {
         UpdateCoordinator.shared?.setChipPreview(enabled: false)
     }
 
-    @objc private func previewToggleCapturablePanels() {
-        // Through AppState — the single writer — so the flip persists and the
-        // Settings drawer's toggle shows the same state.
-        AppState.shared?.panelsCapturable.toggle()
-    }
     #endif
 }

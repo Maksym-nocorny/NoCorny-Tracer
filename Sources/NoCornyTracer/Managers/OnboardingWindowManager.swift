@@ -123,12 +123,21 @@ final class OnboardingWindowManager {
             window.hasShadow = false            // the SwiftUI card draws its own
             window.isMovableByWindowBackground = true
             window.isReleasedWhenClosed = false
-            window.level = .floating            // above the old main window, like the bar
-            window.collectionBehavior = [.fullScreenAuxiliary]
-            // Same rule as every other floating panel of the redesign: the app's own
-            // chrome never joins a screen capture.
-            window.sharingType = .none
-            PanelCaptureRegistry.register(window)
+            // ROUND 12 (вердикт шефа 26.08). This card used to float above every
+            // app and hide from capture, «like the bar» — and the bar itself has
+            // since stopped doing both. The onboarding card is a window the user
+            // READS AND WORKS IN, not a control for a live take: it is shown
+            // active and key (see below), so an ordinary level costs it nothing,
+            // and switching to another app should send it behind, exactly like
+            // any window. Being visible to a screenshot is likewise correct now —
+            // it is how a user reports a problem with the front door.
+            //
+            // The recording pill remains the ONLY always-on-top, never-captured
+            // surface in the app; toasts stay floating because they are
+            // notifications (see ToastWindowManager).
+            window.level = .normal
+            window.collectionBehavior = []
+            window.sharingType = .readOnly
             self.window = window
         }
 
@@ -139,7 +148,7 @@ final class OnboardingWindowManager {
             self?.finish()
         }
 
-        // Same theme pin as every floating panel of the redesign.
+        // Same theme pin as every other surface of the redesign.
         window.appearance = NSAppearance.from(appState.appTheme)
 
         // The 1s permission polling already lives in the manager — the card's
