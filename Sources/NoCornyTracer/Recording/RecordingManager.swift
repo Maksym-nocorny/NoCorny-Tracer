@@ -346,8 +346,15 @@ final class RecordingManager {
             handOver: { take in onCaptureFinished?(take) },
             markFinishing: { [weak self] busy in self?.isFinishing = busy },
             merge: {
-                guard shouldMerge, let systemAudio else { return }
-                _ = await SystemAudioMerger.mergeInPlace(recording: outputURL, systemAudio: systemAudio.url)
+                if shouldMerge, let systemAudio {
+                    _ = await SystemAudioMerger.mergeInPlace(recording: outputURL, systemAudio: systemAudio.url)
+                }
+                // Every finished take then gets its movie index moved to the front - merged
+                // or not, the export and the writer both leave it at the end. See FastStart
+                // for why the writer cannot be asked to do this itself. A take the caller is
+                // about to throw away (abort) skips it for the same reason it skips the merge.
+                guard mergeSystemAudio else { return }
+                _ = await FastStart.applyInPlace(recording: outputURL)
             },
             sizeOnDisk: {
                 let attrs = try? FileManager.default.attributesOfItem(atPath: outputURL.path)

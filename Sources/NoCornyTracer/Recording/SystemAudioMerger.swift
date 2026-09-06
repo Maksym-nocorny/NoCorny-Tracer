@@ -94,6 +94,14 @@ enum SystemAudioMerger {
             )
 
             let assemble = try makeExportSession(for: finalComposition, preset: AVAssetExportPresetPassthrough)
+            // Put the movie index at the front while we are rewriting the file anyway - it
+            // saves the recording a second pass in FastStart, which would otherwise export
+            // the whole thing again to move it. Only when the volume has room for it: the
+            // optimised export stages the data in a sidecar and copies it into place, so it
+            // holds 2 copies at its peak, and this merge is the one that must never fail for
+            // want of disk - a failed merge costs the far end of the call, a slow-starting
+            // file costs a few seconds on the web.
+            assemble.shouldOptimizeForNetworkUse = FastStart.hasRoomToRewrite(fileAt: recordingURL)
             if let error = await run(assemble, to: mergedURL, as: .mp4) {
                 throw error
             }
@@ -140,7 +148,8 @@ enum SystemAudioMerger {
         return true
     }
 
-    private static func makeExportSession(for asset: AVAsset, preset: String) throws -> AVAssetExportSession {
+    /// Shared with FastStart, which rewrites the container the same way.
+    static func makeExportSession(for asset: AVAsset, preset: String) throws -> AVAssetExportSession {
         guard let session = AVAssetExportSession(asset: asset, presetName: preset) else {
             throw MergeError.exportSessionUnavailable
         }
@@ -149,7 +158,7 @@ enum SystemAudioMerger {
 
     /// Runs an export and returns the failure, if any. macOS 15 replaced the whole
     /// callback API; the app still supports 14, so both paths stay until the floor moves.
-    private static func run(_ session: AVAssetExportSession, to url: URL, as fileType: AVFileType) async -> Error? {
+    static func run(_ session: AVAssetExportSession, to url: URL, as fileType: AVFileType) async -> Error? {
         if #available(macOS 15.0, *) {
             do {
                 try await session.export(to: url, as: fileType)

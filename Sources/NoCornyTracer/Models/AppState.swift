@@ -304,6 +304,12 @@ final class AppState {
         // suite made a live request per constructed AppState and wrote the reply into the
         // real defaults, so the seam protected the settings and not the account.
         self.tracerAPIClient = TracerAPIClient(refreshesOnLaunch: connectsToTracer)
+        // Leftovers of a fast-start pass or a merge that a force quit, a crash or the quit
+        // deadline cut short. Gated like the client: a test constructing an AppState must
+        // not reach into the real Movies folder.
+        if connectsToTracer {
+            FastStart.sweepOrphans(in: Self.recordingsDirectory)
+        }
         if let themeRaw = defaults.string(forKey: "appTheme"),
            let theme = AppTheme(rawValue: themeRaw) {
             self.appTheme = theme
@@ -883,6 +889,13 @@ final class AppState {
 
         guard let updated = Self.applyingStopResult(stopped, to: recordings) else {
             LogManager.shared.log("🗑️ Recording: deleted while its audio was being mixed - not bringing it back")
+            // The row stays gone, and so must the file: the merge and the fast-start pass
+            // both end in a swap that will happily put a fresh copy at a path the user just
+            // emptied, leaving an orphan in the folder that nothing points at.
+            try? FileManager.default.removeItem(at: recording.fileURL)
+            if let systemAudioURL = recording.systemAudioURL {
+                try? FileManager.default.removeItem(at: systemAudioURL)
+            }
             return
         }
         recordings = updated
