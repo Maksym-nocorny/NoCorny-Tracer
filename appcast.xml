@@ -4,6 +4,17 @@
     <title>NoCornyTracer Updates</title>
     <language>en</language>
     <item>
+      <title>Version 4.5.3</title>
+      <pubDate>Sun, 06 Sep 2026 16:27:13 +0000</pubDate>
+      <sparkle:version>4.5.3</sparkle:version>
+      <sparkle:shortVersionString>4.5.3</sparkle:shortVersionString>
+      <enclosure
+        url="https://github.com/Maksym-nocorny/NoCorny-Tracer/releases/download/v4.5.3/NoCornyTracer-4.5.3.dmg"
+        sparkle:edSignature="aeJbKEVdIHivbzAyAQA1xCLk3qmnFfwNgqm/PMJc/Af7mBTutV9KtN3oZmC3BHYU6+nMpYQyZ2/3YZIc+MrGAw=="
+        length="14185525"
+        type="application/octet-stream"/>
+    </item>
+    <item>
       <title>Version 4.5.2</title>
       <pubDate>Thu, 27 Aug 2026 17:00:33 +0000</pubDate>
       <sparkle:version>4.5.2</sparkle:version>
