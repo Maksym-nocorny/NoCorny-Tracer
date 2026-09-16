@@ -443,7 +443,7 @@ final class AppState {
             self.saveRecordings()
             LogManager.shared.log("🔴 Recording: the screen stream stopped - the take was kept", type: .error)
             if self.connectsToTracer { SoundManager.shared.play(.abort) }
-            Task { await self.processRecording(id: kept.id) }
+            self.startProcessing(id: kept.id)
         }
 
         recordingManager.onWriterFailed = { [weak self] in
@@ -903,7 +903,7 @@ final class AppState {
 
         // Process everything in the background (non-blocking)
         let recordingID = recording.id
-        Task { await self.processRecording(id: recordingID) }
+        self.startProcessing(id: recordingID)
     }
 
     /// The writer died mid-recording: everything appended from now on would be
@@ -921,7 +921,7 @@ final class AppState {
             recordings = Self.writing(salvaged, into: recordings)
             saveRecordings()
             let recordingID = salvaged.id
-            Task { await self.processRecording(id: recordingID) }
+            self.startProcessing(id: recordingID)
         }
         // Audible cue that the recording ended on its own, so the user knows to check.
         SoundManager.shared.play(.abort)
@@ -947,6 +947,23 @@ final class AppState {
         fmt.locale = Locale(identifier: "en_US_POSIX")
         fmt.dateFormat = "d MMM yyyy HH:mm"
         return "Recording · \(fmt.string(from: creationDate))"
+    }
+
+    /// Recordings whose pipeline is running, claimed before the task is even created. See
+    /// `PipelineClaims` for why the row statuses cannot stand in for this.
+    private let activePipelines = PipelineClaims()
+
+    var hasActivePipeline: Bool { !activePipelines.isEmpty }
+
+    /// The one door into `processRecording`. The claim is taken synchronously on the caller's
+    /// thread, so there is no instant between "handed off" and "running" in which the app
+    /// looks idle, and it goes with the run however the run ends.
+    private func startProcessing(id: UUID) {
+        activePipelines.claim(id)
+        Task {
+            defer { self.activePipelines.release(id) }
+            await self.processRecording(id: id)
+        }
     }
 
     /// Background processing: init → open browser → parallel video+thumb upload →
@@ -2085,7 +2102,7 @@ final class AppState {
         saveRecordings()
 
         let recordingID = recording.id
-        Task { await self.processRecording(id: recordingID) }
+        self.startProcessing(id: recordingID)
     }
 
     // MARK: - Retry Transcription

@@ -257,6 +257,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         appState.hotkeyManager.start(appState: appState)
         Task { await appState.syncDropboxState() }
 
+        // Keep the on-device model compiled before a recording waits on it. Busy covers
+        // the whole stretch from the take to its transcript: a warm that starts in the gap
+        // between stop and "Queued" is the one that collides with the transcribe. The
+        // pipeline claim is what closes that gap; the row statuses are the net under it.
+        LocalModelWarmup.shared.start(
+            engineIsLocal: { [weak appState] in appState?.transcriptionEngine == .localWhisper },
+            isBusy: { [weak appState] in
+                guard let appState else { return true }
+                let manager = appState.recordingManager
+                return manager.isRecording || manager.isFinishing || manager.isStopping
+                    || appState.hasActivePipeline
+                    || !appState.retryingTranscriptions.isEmpty
+                    || appState.recordings.contains { $0.isTranscriptionActive || $0.uploadStatus == .uploading }
+            }
+        )
+
         let manager = commandBarWindowManager ?? CommandBarWindowManager()
         commandBarWindowManager = manager
         manager.show(appState: appState)

@@ -1,5 +1,10 @@
 # Changelog
 
+## [4.5.4] - 2026-09-16
+### Fixed
+- **On-device transcription no longer sits on "Queued" for minutes after an update.** macOS keeps the compiled copy of the model in its own cache and drops it on its own terms - after a system update, when disk space runs low, after a couple of weeks without use - and the next transcript paid for the rebuild while you watched: 3.5 minutes on a recent Mac. Tracer now does that rebuild in the background after an app or macOS update, or after 7 days without a local transcript, only while nothing is being recorded, uploaded or transcribed, and never in Low Power Mode. The model is let go of again once the cache is warm, so it does not sit in memory in between.
+- **A transcript that does catch the rebuild says "Preparing model…" instead of "Queued"**, so it no longer looks stuck behind something.
+
 ## [4.5.3] - 2026-09-06
 ### Fixed
 - **Shared recordings start playing much sooner.** Every recording carried its index at the very end of the file, so the web player had to ask Dropbox for the head of the file, then the tail, and only then the actual video before it could show a single frame - about 6 seconds on a cold start for a 280 MB take. New recordings put the index at the front, where a browser expects it, so 1 request does what took 3. Recordings made before this update play as before.

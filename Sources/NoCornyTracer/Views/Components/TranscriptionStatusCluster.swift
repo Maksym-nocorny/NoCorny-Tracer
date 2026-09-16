@@ -46,6 +46,19 @@ struct TranscriptionStatusCluster: View {
         }
     }
 
+    /// Whether a queued row is really waiting on the on-device model's compile. `.queued`
+    /// covers everything before the engine's first callback, and after a macOS or app update
+    /// that includes minutes of Core ML compile with no progress at all; "Queued" read as
+    /// stuck behind something (2026-09-16). The engine check keeps a cloud run from
+    /// borrowing a background warm's phase.
+    static func isPreparingLocalModel(engine: TranscriptionEngineKind, modelPhase: LocalModelState.Phase) -> Bool {
+        engine == .localWhisper && modelPhase == .preparing
+    }
+
+    static func queuedLabel(preparingModel: Bool) -> String {
+        preparingModel ? "Preparing model…" : "Queued"
+    }
+
     /// Failed-axis alert. Dark is the macro's #FF6B63; on light glass that value sits
     /// at 2.5:1, so the light scheme darkens it to #CC2921 (from the handoff).
     static let failedAlert = Color.adaptive(
@@ -64,13 +77,19 @@ struct TranscriptionStatusCluster: View {
             EmptyView()
 
         case .queued:
+            let preparing = Self.isPreparingLocalModel(
+                engine: appState.transcriptionEngine,
+                modelPhase: LocalModelState.shared.phase
+            )
             HStack(spacing: 6) {
                 icon("sparkles", tint: DrawerStyle.ink(0.45))
-                Text("Queued")
+                Text(Self.queuedLabel(preparingModel: preparing))
                     .font(.system(size: 11.5, weight: .medium))
                     .foregroundStyle(DrawerStyle.ink(0.45))
             }
-            .help("Waiting for transcription to start")
+            .help(preparing
+                ? "The on-device model is being compiled for this Mac. Transcription starts right after."
+                : "Waiting for transcription to start")
 
         case .transcribing(let percent):
             // Label + mini progress bar (round 7). The bar slot exists for the

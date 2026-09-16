@@ -259,6 +259,15 @@ final class LocalWhisperEngine: TranscriptionEngine {
         LocalModelState.pushRefresh()
     }
 
+    /// Re-pay the compile in the background after the system cache has plausibly dropped it
+    /// (see `LocalModelWarmup`). Same budget and no GPU fallback, as at download time: the
+    /// Neural Engine cache is the one a transcribe tries first.
+    static func warmCache(reason: String) async throws {
+        guard isAvailable, isModelDownloaded() else { return }
+        try await WhisperModelHost.shared.warmCache(reason: reason, aneBudget: prewarmANEBudget)
+        LocalModelState.pushRefresh()
+    }
+
     /// Free space against the volume the model would land on. `ImportantUsage` is the right
     /// key here: it counts space the system would free by evicting purgeable caches, which
     /// is what a large download actually gets to use.
@@ -681,9 +690,13 @@ private actor WhisperModelHost {
                         // recording. It does finish, measured at roughly 16 minutes cold,
                         // and it caches.
                         LogManager.shared.log("🎙️ Local: GPU timed out too, riding the prewarm compile to completion")
-                        try? await withDeadline(1500) { try await inFlight.value }
-                        guard let p = pipe else { throw LocalWhisperError.modelLoadTimedOut }
-                        return p
+                        let landed = (try? await withDeadline(1500) { try await inFlight.value }) != nil
+                        if let p = pipe { return p }
+                        // A background warm lets its model go the moment it lands, so the ride
+                        // can end at an empty host with the cache now warm: load our own below.
+                        // Still compiling or failed stays a timeout, because a second init
+                        // beside a live compile is the corruption this host exists to prevent.
+                        guard landed, initTask == nil else { throw LocalWhisperError.modelLoadTimedOut }
                     }
                 }
             }
@@ -698,6 +711,32 @@ private actor WhisperModelHost {
         try await task.value
         guard let p = pipe else { throw LocalWhisperError.modelNotReady }
         return p
+    }
+
+    /// Load for the cache's sake, then let the model go. A resident model would hold its
+    /// weights in memory for a recording that may be days away, and the next transcribe
+    /// reloads from a warm cache in about two seconds.
+    ///
+    /// Nothing to do when a model is already resident (it is what the next transcribe gets)
+    /// or when a load is already running (it fills the cache itself, and a second init beside
+    /// it corrupts both). A resident model does NOT refresh the stamp: the stamp dates the
+    /// last load, and an app left open for a week on one early transcript must still warm
+    /// after its next launch. A transcribe that joins while this warm is loading keeps the
+    /// reference it was handed; dropping ours does not touch it.
+    func warmCache(reason: String, aneBudget: Double) async throws {
+        guard pipe == nil, initTask == nil else { return }
+        LogManager.shared.log("🎙️ Local: warming the model cache in the background (\(reason))")
+        let t0 = Date()
+        _ = try await ensureLoaded(aneBudget: aneBudget, allowGPUFallback: false)
+        pipe = nil
+        LogManager.shared.log(String(format: "🎙️ Local: ✅ model cache warm in %.1fs, model released", Date().timeIntervalSince(t0)))
+    }
+
+    /// Every successful load goes through here, so the warm-up schedule knows the cache was
+    /// just filled no matter who asked for the load.
+    private func adopt(_ loaded: WhisperKit) {
+        pipe = loaded
+        LocalModelWarmup.recordLoad()
     }
 
     // MARK: Loading
@@ -731,7 +770,7 @@ private actor WhisperModelHost {
             let box = PipeBox()
             try await withDeadline(aneBudget) { box.set(try await WhisperKit(makeWhisperConfig(useANE: true))) }
             guard let loaded = box.value else { throw LocalWhisperError.modelNotReady }
-            pipe = loaded
+            adopt(loaded)
             LogManager.shared.log(String(format: "🎙️ Local: loaded in %.1fs (encoder=ANE)", Date().timeIntervalSince(t0)))
             return
         } catch is DeadlineError {
@@ -764,7 +803,7 @@ private actor WhisperModelHost {
             let box = PipeBox()
             try await withDeadline(1500) { box.set(try await WhisperKit(makeWhisperConfig(useANE: true))) }
             guard let loaded = box.value else { throw LocalWhisperError.modelLoadTimedOut }
-            pipe = loaded
+            adopt(loaded)
             LogManager.shared.log(String(format: "🎙️ Local: loaded in %.1fs (encoder=ANE, after the GPU timeout)", Date().timeIntervalSince(t0)))
         }
     }
@@ -784,7 +823,7 @@ private actor WhisperModelHost {
             let box = PipeBox()
             try await withDeadline(budget) { box.set(try await WhisperKit(makeWhisperConfig(useANE: false))) }
             guard let loaded = box.value else { throw LocalWhisperError.modelNotReady }
-            pipe = loaded
+            adopt(loaded)
             LogManager.shared.log(String(format: "🎙️ Local: loaded in %.1fs (encoder=GPU)", Date().timeIntervalSince(t0)))
         } catch is DeadlineError {
             LogManager.shared.log("🎙️ Local: GPU load timed out (>\(Int(budget))s), slow cold compile", type: .error)
