@@ -64,9 +64,9 @@ final class CommandBarPanel: NSPanel {
     }
 
     // ⌘-shortcuts never reach keyDown — AppKit routes them through the key
-    // window's performKeyEquivalent BEFORE the main menu. Intercepting here is
-    // also what stops ⌘, from opening the empty placeholder Settings scene
-    // (the documented phase-7 compromise) while the bar is key.
+    // window's performKeyEquivalent BEFORE the main menu. (Until 4.5.4 this was
+    // also what kept ⌘, from opening the empty placeholder Settings scene; that
+    // scene is gone, see NoCornyTracerApp.body.)
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if event.modifierFlags.contains(.command),
            event.charactersIgnoringModifiers == ",",

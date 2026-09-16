@@ -62,12 +62,20 @@ struct NoCornyTracerApp: App {
     }
 
     var body: some Scene {
-        // Zero windows (phase 7). `Settings { EmptyView() }` is the standard
-        // agent-style-app placeholder scene. Known compromise: the app menu's
-        // "Settings…" (⌘,) — visible on the rare occasions the app is active,
-        // e.g. during onboarding — opens this empty window. The real Settings
-        // live in the command bar's drawer (tray menu → Settings…).
-        Settings { EmptyView() }
+        // Zero windows (phase 7). A SwiftUI `App` must declare at least one scene,
+        // and the placeholder has to be one that can never become a window.
+        //
+        // It used to be `Settings { EmptyView() }`. Built against the macOS 27 SDK
+        // (Xcode 27, 2026-09-16) that scene started opening itself at every launch:
+        // an empty 900×450 "NoCorny Tracer Settings" window, on screen, with
+        // restoration disabled, while the same source built against SDK 26.5 never
+        // showed it. A MenuBarExtra that is not inserted has no window to show and
+        // no menu-bar item (the tray is our own NSStatusItem). It also retires the
+        // old compromise where ⌘, opened that empty window; the real Settings live
+        // in the command bar's drawer.
+        MenuBarExtra("NoCorny Tracer", isInserted: .constant(false)) {
+            EmptyView()
+        }
     }
 }
 
