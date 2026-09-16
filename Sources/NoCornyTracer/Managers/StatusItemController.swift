@@ -138,6 +138,11 @@ final class StatusItemController: NSObject {
         loadMenuBarImages()
 
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        // A fixed name for AppKit's saved position and visibility. Without one the item
+        // is named by creation order ("Item-0"), and since 4.5.4 the hidden MenuBarExtra
+        // placeholder is created first and takes that name. Order-dependent names can end
+        // up carrying another item's "hidden" state, which would take the tray with it.
+        item.autosaveName = "NoCornyTracer.tray"
         statusItem = item
 
         guard let button = item.button else { return }

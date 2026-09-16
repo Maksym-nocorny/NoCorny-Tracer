@@ -7,8 +7,8 @@ import Sparkle
 /// surface is imperative AppKit panels owned by the AppDelegate — the floating
 /// command bar (with its Gallery/Settings drawers), the recording pill, toasts,
 /// the storage banner, the camera bubble, the onboarding card and the tray.
-/// The `Settings` scene below is a required
-/// placeholder: a SwiftUI `App` must declare at least one scene.
+/// The never-inserted `MenuBarExtra` below is a required placeholder: a SwiftUI
+/// `App` must declare at least one scene.
 @main
 struct NoCornyTracerApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
