@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.5.5] - 2026-10-09
+### Fixed
+- **Pausing twice can no longer kill a recording.** A pause cuts the paused time out by shifting every later timestamp back. That shift was measured against whichever buffer came last, and a microphone buffer is stamped about a tenth of a second before it arrives. When a mic buffer was the last thing before the pause and a screen frame the first thing after it, the first resumed frame landed a few hundredths of a second before the previous one. The video writer accepts that frame and dies a few seconds later, leaving a file with no index that nothing can open. The resumed segment now starts strictly after the last frame and the last sound actually written, on every track, and a buffer that would still step backwards is dropped at the seam instead of reaching the writer. Reproduced headlessly with the exact order from the 9 October take, then fixed.
+- **A take the writer died on is no longer invisible.** The partial file stayed in ~/Movies/NoCornyTracer, but the library showed nothing, so it looked deleted. It now appears as a damaged recording with a red warning mark: the file is kept, never uploaded, transcribed or cleaned up, and a click shows it in Finder. The frames and sound inside are intact and can be rebuilt by hand; the recipe lives in scripts/recover_partial.
+- **System audio no longer goes missing after a resume** while the screen stands still and the microphone is off. The sidecar used to wait for the next changed frame before it accepted sound again.
+- **When the writer refuses a sample, the log now says which one**, with the timestamps on both tracks, instead of a bare -11800.
+
 ## [4.5.4] - 2026-09-16
 ### Fixed
 - **On-device transcription no longer sits on "Queued" for minutes after an update.** macOS keeps the compiled copy of the model in its own cache and drops it on its own terms - after a system update, when disk space runs low, after a couple of weeks without use - and the next transcript paid for the rebuild while you watched: 3.5 minutes on a recent Mac. Tracer now does that rebuild in the background after an app or macOS update, or after 7 days without a local transcript, only while nothing is being recorded, uploaded or transcribed, and never in Low Power Mode. The model is let go of again once the cache is warm, so it does not sit in memory in between.

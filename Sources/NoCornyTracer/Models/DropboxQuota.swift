@@ -23,7 +23,8 @@ enum DropboxQuota {
 enum LocalClipQueue {
     static func waitingCount(recordings: [Recording], fileExists: (URL) -> Bool) -> Int {
         recordings
-            .filter { $0.uploadStatus != .uploaded && fileExists($0.fileURL) }
+            // A damaged take never goes to Dropbox, so it is not "waiting" for anything.
+            .filter { $0.uploadStatus != .uploaded && !$0.isDamaged && fileExists($0.fileURL) }
             .count
     }
 }

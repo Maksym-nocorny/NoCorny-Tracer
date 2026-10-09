@@ -443,7 +443,7 @@ final class AppState {
             self.saveRecordings()
             LogManager.shared.log("🔴 Recording: the screen stream stopped - the take was kept", type: .error)
             if self.connectsToTracer { SoundManager.shared.play(.abort) }
-            self.startProcessing(id: kept.id)
+            self.handOffKeptTake(id: kept.id)
         }
 
         recordingManager.onWriterFailed = { [weak self] in
@@ -901,9 +901,12 @@ final class AppState {
         recordings = updated
         saveRecordings()
 
+        // A damaged take is the writer dying under a stop the user asked for: the stop
+        // sound never played (the salvage path skips it), so this is the audible cue.
+        if recording.isDamaged && connectsToTracer { SoundManager.shared.play(.abort) }
+
         // Process everything in the background (non-blocking)
-        let recordingID = recording.id
-        self.startProcessing(id: recordingID)
+        handOffKeptTake(id: recording.id)
     }
 
     /// The writer died mid-recording: everything appended from now on would be
@@ -920,8 +923,7 @@ final class AppState {
             // the merge ran" and throw away the recording the recovery just rescued.
             recordings = Self.writing(salvaged, into: recordings)
             saveRecordings()
-            let recordingID = salvaged.id
-            self.startProcessing(id: recordingID)
+            handOffKeptTake(id: salvaged.id)
         }
         // Audible cue that the recording ended on its own, so the user knows to check.
         SoundManager.shared.play(.abort)
@@ -959,11 +961,57 @@ final class AppState {
     /// thread, so there is no instant between "handed off" and "running" in which the app
     /// looks idle, and it goes with the run however the run ends.
     private func startProcessing(id: UUID) {
+        // Refused BEFORE the claim, so a damaged row never looks like work in flight.
+        if let row = recordings.first(where: { $0.id == id }), !Self.mayEnterPipeline(row) {
+            LogManager.shared.log("⚠️ Processing: refused for damaged recording \(id) - the file stays on disk", type: .error)
+            return
+        }
         activePipelines.claim(id)
         Task {
             defer { self.activePipelines.release(id) }
             await self.processRecording(id: id)
         }
+    }
+
+    /// Whether a recording may be uploaded, transcribed, or have its local file cleaned up
+    /// by the pipeline. A damaged take may not, ever: its file is an unreadable partial
+    /// that only a manual recovery can turn back into a video, so uploading it ships
+    /// garbage, transcribing it fails, and the pipeline's cleanup step would delete the
+    /// only copy. Every door into the pipeline (stop, writer recovery, interruption,
+    /// retry upload, retry transcription) asks this one question.
+    static func mayEnterPipeline(_ recording: Recording) -> Bool {
+        !recording.isDamaged
+    }
+
+    /// Where every kept take goes after it is in the list and saved: the pipeline for a
+    /// normal take, a toast for a damaged one. Damaged takes stay put in the library with
+    /// their file untouched.
+    private func handOffKeptTake(id: UUID) {
+        guard let row = recordings.first(where: { $0.id == id }) else { return }
+        guard Self.mayEnterPipeline(row) else {
+            announceDamagedTake(row)
+            return
+        }
+        startProcessing(id: id)
+    }
+
+    /// Tells the user a take came back damaged and where the file is. Critical, because an
+    /// info toast arriving next ("Uploaded - link copied" from an older row) must not
+    /// shove away the one message saying a recording did not end normally.
+    private func announceDamagedTake(_ take: Recording) {
+        LogManager.shared.log(
+            "🔴 Recording: kept as damaged, not uploaded - \(take.fileURL.lastPathComponent): \(take.damagedReason ?? "")",
+            type: .error)
+        let fileURL = take.fileURL
+        presentToast?(ToastContent(
+            icon: "exclamationmark.triangle.fill",
+            iconColor: Theme.Colors.recordRed,
+            message: "Recording damaged, file kept",
+            buttonTitle: "Show in Finder",
+            buttonAction: { NSWorkspace.shared.activateFileViewerSelecting([fileURL]) },
+            duration: 10,
+            priority: .critical
+        ))
     }
 
     /// Background processing: init → open browser → parallel video+thumb upload →
@@ -977,6 +1025,12 @@ final class AppState {
 
         guard let recording = recordings.first(where: { $0.id == id }) else {
             LogManager.shared.log("⚠️ Processing: Recording \(id) not found in state", type: .info)
+            return
+        }
+        // Second line of defence behind `startProcessing`: this function ends by deleting
+        // the local file, and for a damaged take that file is the only copy there is.
+        guard Self.mayEnterPipeline(recording) else {
+            LogManager.shared.log("⚠️ Processing: skipped damaged recording \(id)", type: .error)
             return
         }
         let fileURL = recording.fileURL
@@ -1864,6 +1918,9 @@ final class AppState {
             // the ordinary way there - the app finalises the file on the way out, and the
             // task that would have uploaded it goes with the process. Left as-is the row has
             // no path forward at all: the retry the list offers is only for `.failed`.
+            // A damaged take never had a run to strand. Flipping it to `.failed` with "tap to
+            // upload" would offer to upload an unreadable file, so it stays exactly as saved.
+            guard !r.isDamaged else { return r }
             guard Self.isStrandedAtLaunch(r.uploadStatus) else { return r }
             let neverStarted = r.uploadStatus == .notUploaded
             r.uploadStatus = .failed
@@ -2089,6 +2146,7 @@ final class AppState {
     /// process never left that state, and refusing it here is what left those rows stranded
     /// with the file sitting on disk.
     func retryUpload(_ recording: Recording) async {
+        guard Self.mayEnterPipeline(recording) else { return }
         guard recording.uploadStatus == .failed || recording.uploadStatus == .notUploaded else { return }
         guard FileManager.default.fileExists(atPath: recording.fileURL.path) else {
             print("📤 Retry: Local file no longer exists for slug=\(recording.tracerSlug ?? "none")")
@@ -2112,6 +2170,7 @@ final class AppState {
     /// through `retryUpload` (which re-enters the whole pipeline and reuses a cached
     /// transcript if one exists), and without the local file there is nothing to transcribe.
     func retryTranscription(_ recording: Recording) {
+        guard Self.mayEnterPipeline(recording) else { return }
         guard recording.uploadStatus == .uploaded,
               recording.effectiveTranscriptionStatus == .failed,
               FileManager.default.fileExists(atPath: recording.fileURL.path) else { return }

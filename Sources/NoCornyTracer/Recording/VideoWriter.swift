@@ -27,10 +27,48 @@ final class VideoWriter {
     private var sessionStartTime: CMTime = .zero
     private var isWriting = false
 
+    // MARK: - Pause timeline
+    //
+    // A pause removes time by subtracting `ptsOffset` from every source timestamp, on
+    // BOTH tracks, so audio and video inside one segment keep exactly their capture sync.
+    //
+    // The offset must be decided in OUTPUT time, against what was actually written on
+    // each track. The two sources run on different lags: a screen frame arrives a few ms
+    // after its stamp, while a mic buffer is stamped at its FIRST sample and arrives a
+    // whole buffer (about 105 ms) later. The old code measured the gap from one shared
+    // "last source PTS". When a mic buffer was the last append before the pause and a
+    // video frame the first after the resume, the gap included the mic lag, too much time
+    // was cut, and the first resumed frame was stamped about 40 ms BEFORE the last written
+    // one. The H.264 writer accepts that append and then dies with -11800 / -16364, which
+    // leaves a file with no moov (incident 2026-10-09).
+
     private var ptsOffset: CMTime = .zero
-    private var lastSourcePTS: CMTime = .zero
     private var isPaused = false
+    /// Raised by resume(). The first buffer of EITHER track that arrives afterwards places
+    /// the new segment (see `placeResumedSegment`) and lowers it.
     private var needsResumeAdjustment = false
+    /// Earliest output time the current segment may use: strictly after the last written
+    /// sample of both tracks at the moment of the last resume. Invalid before any resume.
+    private var segmentStart: CMTime = .invalid
+    private var resumeCount = 0
+
+    /// Last timestamps actually accepted by the writer, in OUTPUT (restamped) time.
+    private var lastVideoOutPTS: CMTime = .invalid
+    private var lastAudioOutPTS: CMTime = .invalid
+    private var lastAudioOutEnd: CMTime = .invalid
+    /// End of the last system-audio buffer handed to the sidecar, on the same output
+    /// timeline. The sidecar drops any buffer that does not move past its last one, so a
+    /// resumed segment must also start after this, not only after the two MP4 tracks.
+    private var lastSystemAudioOutEnd: CMTime = .invalid
+    /// Buffers whose restamped time would not move their own track forward. Expected at
+    /// a resume seam (a mic buffer captured mostly during the pause), never elsewhere.
+    private var restampDrops = 0
+    private var appendRejectionLogged = false
+
+    /// Slack for CMTime rounding when the offset mixes timescales (1e9 for the screen,
+    /// 48000 for the mic): the buffer that places a segment must not be dropped for
+    /// landing a few ns before the start it defined.
+    private static let seamTolerance = CMTime(value: 1, timescale: 1000)
 
     /// Fired once (on the writing queue) when an append discovers the writer died
     /// mid-recording. CoreMedia's periodic fragment flush can fail spontaneously
@@ -148,15 +186,54 @@ final class VideoWriter {
     
     func pause() {
         writingQueue.async {
+            guard !self.isPaused else { return }
             self.isPaused = true
+            LogManager.shared.log("⏸ Writer: paused - last video out \(Self.format(self.lastVideoOutPTS)), last audio out end \(Self.format(self.lastAudioOutEnd)), last system audio out end \(Self.format(self.lastSystemAudioOutEnd)), offset \(Self.format(self.ptsOffset))")
         }
     }
-    
+
     func resume() {
         writingQueue.async {
-            self.needsResumeAdjustment = true
+            guard self.isPaused else { return }
             self.isPaused = false
+            self.resumeCount += 1
+            self.needsResumeAdjustment = true
         }
+    }
+
+    /// Places the segment that follows a resume. Runs on writingQueue for the first buffer
+    /// of either track that arrives after resume(), before that buffer is restamped.
+    ///
+    /// The new segment starts strictly after the last written sample of BOTH tracks: one
+    /// frame interval after the last video frame, and no earlier than the end of the last
+    /// mic buffer. It also starts no earlier than the end of the last system-audio buffer
+    /// given to the sidecar: on a static screen with the mic off, the last frame can be
+    /// seconds older than the pause while system audio kept flowing, and a start placed
+    /// only after that frame would map post-resume system audio behind what the sidecar
+    /// already holds (it would drop all of it until it caught up). The offset is chosen so this first buffer lands exactly there, whatever
+    /// its track. Everything else in the segment shares that offset, so it keeps its sync
+    /// with the first buffer; a buffer that would still land before the start (captured
+    /// during the pause, or a mic buffer straddling the resume behind an earlier frame) is
+    /// dropped by the per-track guard in the append paths.
+    private func placeResumedSegment(firstSourcePTS: CMTime, track: String) {
+        needsResumeAdjustment = false
+        var start = CMTime.invalid
+        if lastVideoOutPTS.isValid {
+            start = lastVideoOutPTS + CMTime(value: 1, timescale: CMTimeScale(fps))
+        }
+        if lastAudioOutEnd.isValid {
+            start = start.isValid ? CMTimeMaximum(start, lastAudioOutEnd) : lastAudioOutEnd
+        }
+        if lastSystemAudioOutEnd.isValid {
+            start = start.isValid ? CMTimeMaximum(start, lastSystemAudioOutEnd) : lastSystemAudioOutEnd
+        }
+        // Nothing written yet (paused before the first frame): the session anchor places it.
+        guard start.isValid else { return }
+
+        let previousOffset = ptsOffset
+        segmentStart = start
+        ptsOffset = firstSourcePTS - start
+        LogManager.shared.log("▶️ Writer: resumed #\(resumeCount) - first buffer \(track) src \(Self.format(firstSourcePTS)), segment starts at out \(Self.format(start)), removed \(Self.format(ptsOffset - previousOffset)), offset now \(Self.format(ptsOffset))")
     }
 
 
@@ -178,6 +255,11 @@ final class VideoWriter {
     /// on an empty file that took a different path entirely.
     var isReadyForVideo: Bool {
         writingQueue.sync { isWriting && armed && (videoInput?.isReadyForMoreMediaData ?? false) }
+    }
+
+    /// The audio twin of `isReadyForVideo`, for the same reason.
+    var isReadyForAudio: Bool {
+        writingQueue.sync { isWriting && armed && (audioInput?.isReadyForMoreMediaData ?? false) }
     }
 
     func appendVideoBuffer(_ sampleBuffer: CMSampleBuffer) {
@@ -207,24 +289,30 @@ final class VideoWriter {
                 sessionStartTime = originalPTS
                 writer.startSession(atSourceTime: originalPTS)
                 sessionStarted = true
-                lastSourcePTS = originalPTS
             }
 
             if needsResumeAdjustment {
-                let gap = originalPTS - lastSourcePTS
-                // We want the next segment to start immediately after the last segment
-                // A tiny gap of 1 frame interval (based on fps) is standard
-                let adjustment = gap - CMTime(value: 1, timescale: CMTimeScale(fps))
-                if adjustment.seconds > 0 {
-                    ptsOffset = ptsOffset + adjustment
-                }
-                needsResumeAdjustment = false
+                placeResumedSegment(firstSourcePTS: originalPTS, track: "video")
             }
 
-            lastSourcePTS = originalPTS
+            guard let reStamped = reStamp(sampleBuffer, offset: ptsOffset) else { return }
+            let outPTS = CMSampleBufferGetPresentationTimeStamp(reStamped)
 
-            if let reStamped = reStamp(sampleBuffer, offset: ptsOffset) {
-                videoInput.append(reStamped)
+            // The hard guard: a video PTS that does not move forward is accepted by
+            // append() and then kills the writer, so it never reaches the writer at all.
+            if lastVideoOutPTS.isValid, outPTS <= lastVideoOutPTS {
+                noteRestampDrop(track: "video", source: originalPTS, out: outPTS, lastOut: lastVideoOutPTS)
+                return
+            }
+            if segmentStart.isValid, outPTS + Self.seamTolerance < segmentStart {
+                noteRestampDrop(track: "video", source: originalPTS, out: outPTS, lastOut: segmentStart)
+                return
+            }
+
+            if videoInput.append(reStamped), writer.status == .writing {
+                lastVideoOutPTS = outPTS
+            } else {
+                noteAppendRejected(track: "video", writer: writer, source: originalPTS, out: outPTS)
             }
         }
     }
@@ -250,21 +338,33 @@ final class VideoWriter {
             }
             lastAudioPTS = originalPTS
 
+            // A mic buffer is stamped at its first sample and is about 105 ms long, so its
+            // stamp trails its arrival by a whole buffer. It can place a segment like a
+            // frame can; the offset is measured in output time, so the lag does not leak in.
             if needsResumeAdjustment {
-                let gap = originalPTS - lastSourcePTS
-                // Audio has 1024 samples per buffer usually, or smaller. 
-                // We use 1/fps of video as a safe "resume gap" for both streams.
-                let adjustment = gap - CMTime(value: 1, timescale: CMTimeScale(fps))
-                if adjustment.seconds > 0 {
-                    ptsOffset = ptsOffset + adjustment
-                }
-                needsResumeAdjustment = false
+                placeResumedSegment(firstSourcePTS: originalPTS, track: "audio")
             }
-            
-            lastSourcePTS = originalPTS
 
-            if let reStamped = reStamp(sampleBuffer, offset: ptsOffset) {
-                audioInput.append(reStamped)
+            guard let reStamped = reStamp(sampleBuffer, offset: ptsOffset) else { return }
+            let outPTS = CMSampleBufferGetPresentationTimeStamp(reStamped)
+
+            if lastAudioOutPTS.isValid, outPTS <= lastAudioOutPTS {
+                noteRestampDrop(track: "audio", source: originalPTS, out: outPTS, lastOut: lastAudioOutPTS)
+                return
+            }
+            // Only at a seam: a buffer that would start before the segment holds sound from
+            // the pause and would overlap what was already written. Steady-state buffers
+            // are never compared against the previous END, so ordinary jitter costs nothing.
+            if segmentStart.isValid, outPTS + Self.seamTolerance < segmentStart {
+                noteRestampDrop(track: "audio", source: originalPTS, out: outPTS, lastOut: segmentStart)
+                return
+            }
+
+            if audioInput.append(reStamped), writer.status == .writing {
+                lastAudioOutPTS = outPTS
+                lastAudioOutEnd = outPTS + Self.duration(of: reStamped)
+            } else {
+                noteAppendRejected(track: "audio", writer: writer, source: originalPTS, out: outPTS)
             }
         }
     }
@@ -279,19 +379,33 @@ final class VideoWriter {
     /// t=0 and how much paused time has been cut out since - and this writer is the only
     /// place that knows both. Reading them here, on the queue that owns them, is the same
     /// reasoning `appendAudioBuffer` uses to keep the mic in step with the picture.
-    func systemAudioTimeline(for pts: CMTime) -> (anchor: CMTime, presentationTime: CMTime)? {
-        writingQueue.sync { () -> (anchor: CMTime, presentationTime: CMTime)? in
+    func systemAudioTimeline(for sampleBuffer: CMSampleBuffer) -> (anchor: CMTime, presentationTime: CMTime)? {
+        let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        let duration = Self.duration(of: sampleBuffer)
+        return writingQueue.sync { () -> (anchor: CMTime, presentationTime: CMTime)? in
             guard isWriting, !isPaused, armed, sessionStarted else { return nil }
-            // A resume whose gap has not been folded into ptsOffset yet would stamp this
-            // buffer with the paused time still in it - a jump forward, followed by
-            // correctly-stamped buffers landing BEFORE it. Drop the frame interval or so
-            // it takes the video/mic path to absorb the gap instead.
-            guard !needsResumeAdjustment else { return nil }
             guard pts >= sessionStartTime else { return nil }
-            // ptsOffset is zero at the anchor and only grows as paused gaps are removed,
-            // so subtracting it puts the sidecar on the same trimmed timeline as the MP4's
-            // own tracks, while sessionStartTime stays the zero of both files.
-            return (sessionStartTime, pts - ptsOffset)
+            // A resume whose segment has not been placed yet: system audio places it like
+            // a mic buffer or a frame would. Waiting for one of those instead would drop
+            // all system audio for as long as the mic is off and the screen is static.
+            if needsResumeAdjustment {
+                placeResumedSegment(firstSourcePTS: pts, track: "system audio")
+            }
+            // ptsOffset is zero until the first resume and is then set at every resume so
+            // the segment starts right after what both MP4 tracks and the sidecar already hold. Subtracting
+            // it puts the sidecar on the same trimmed timeline as the MP4's own tracks,
+            // while sessionStartTime stays the zero of both files.
+            let presentationTime = pts - ptsOffset
+            // Sound captured before the segment start belongs to the pause (or overlaps
+            // the previous segment), exactly like the mic buffers the append path drops.
+            if segmentStart.isValid, presentationTime + Self.seamTolerance < segmentStart { return nil }
+            // A zero-length buffer still occupies its own timestamp in the sidecar.
+            let end = duration > .zero ? presentationTime + duration
+                                       : presentationTime + CMTime(value: 1, timescale: 1_000_000_000)
+            if !lastSystemAudioOutEnd.isValid || end > lastSystemAudioOutEnd {
+                lastSystemAudioOutEnd = end
+            }
+            return (sessionStartTime, presentationTime)
         }
     }
 
@@ -309,6 +423,42 @@ final class VideoWriter {
         if outOfOrderDrops == 1 {
             LogManager.shared.log("⚠️ Writer: dropped out-of-order \(track) buffer (pts \(pts.seconds)s ≤ last \(last.seconds)s) — realtime timing glitch", type: .error)
         }
+    }
+
+    /// Counts buffers whose restamped time would not advance their own track; logs the
+    /// first one of the recording with the numbers that explain it.
+    private func noteRestampDrop(track: String, source: CMTime, out: CMTime, lastOut: CMTime) {
+        restampDrops += 1
+        if restampDrops == 1 {
+            LogManager.shared.log("⚠️ Writer: dropped \(track) buffer at a resume seam - src \(Self.format(source)), out \(Self.format(out)), must be after \(Self.format(lastOut)), offset \(Self.format(ptsOffset)), resume #\(resumeCount)", type: .info)
+        }
+    }
+
+    /// An append the writer refused, or one after which it went .failed. Logged once with
+    /// the timing that led to it (the writer's own error does not say which sample it
+    /// choked on), then reported right away instead of on the next buffer.
+    private func noteAppendRejected(track: String, writer: AVAssetWriter, source: CMTime, out: CMTime) {
+        if !appendRejectionLogged {
+            appendRejectionLogged = true
+            LogManager.shared.log("🔴 Writer: \(track) append rejected - src \(Self.format(source)), out \(Self.format(out)), last video out \(Self.format(lastVideoOutPTS)), last audio out \(Self.format(lastAudioOutPTS)) (end \(Self.format(lastAudioOutEnd))), offset \(Self.format(ptsOffset)), resume #\(resumeCount), status \(writer.status.rawValue) - \(Self.describeError(writer.error))", type: .error)
+        }
+        reportFailureIfNeeded(writer)
+    }
+
+    private static func format(_ time: CMTime) -> String {
+        time.isValid ? String(format: "%.4fs", time.seconds) : "none"
+    }
+
+    /// A sample buffer's duration, computed from its sample count when CoreMedia does not
+    /// carry one (LPCM buffers built from a tap sometimes do not).
+    private static func duration(of sampleBuffer: CMSampleBuffer) -> CMTime {
+        let duration = CMSampleBufferGetDuration(sampleBuffer)
+        if duration.isValid, duration > .zero { return duration }
+        guard let format = CMSampleBufferGetFormatDescription(sampleBuffer),
+              let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(format)?.pointee,
+              asbd.mSampleRate > 0 else { return .zero }
+        return CMTime(value: CMTimeValue(CMSampleBufferGetNumSamples(sampleBuffer)),
+                      timescale: CMTimeScale(asbd.mSampleRate))
     }
 
     /// Formats an AVAssetWriter error including the underlying OSStatus — the part
@@ -362,14 +512,21 @@ final class VideoWriter {
         // making it append to an already-finished input → uncatchable NSException
         // crash at the exact moment a recording is saved.
         var totalDrops = 0
+        var seamDrops = 0
+        var resumes = 0
         writingQueue.sync {
             isWriting = false
             videoInput?.markAsFinished()
             audioInput?.markAsFinished()
             totalDrops = outOfOrderDrops
+            seamDrops = restampDrops
+            resumes = resumeCount
         }
         if totalDrops > 0 {
             LogManager.shared.log("⚠️ Writer: dropped \(totalDrops) out-of-order buffer(s) this recording", type: .info)
+        }
+        if seamDrops > 0 {
+            LogManager.shared.log("Writer: dropped \(seamDrops) buffer(s) at \(resumes) resume seam(s) this recording", type: .info)
         }
 
         return await withCheckedContinuation { continuation in

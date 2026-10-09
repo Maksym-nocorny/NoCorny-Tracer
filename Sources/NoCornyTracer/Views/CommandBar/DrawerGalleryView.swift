@@ -243,19 +243,26 @@ private struct DrawerRecordingRow: View {
         }
         .disabled(tracerPageURL == nil)
 
+        if recording.isDamaged {
+            Button("Show file in Finder") { revealDamagedFile() }
+        }
+
         Divider()
 
         Button("Retry upload") {
             Task { await appState.retryUpload(recording) }
         }
         // Same set retryUpload itself accepts: .notUploaded counts (a processing task
-        // that died with the process never left that state).
-        .disabled(recording.uploadStatus != .failed && recording.uploadStatus != .notUploaded)
+        // that died with the process never left that state). A damaged take is refused
+        // there, so it is disabled here too.
+        .disabled(recording.isDamaged
+                  || (recording.uploadStatus != .failed && recording.uploadStatus != .notUploaded))
 
         Button("Retry transcription") {
             appState.retryTranscription(recording)
         }
-        .disabled(recording.effectiveTranscriptionStatus != .failed
+        .disabled(recording.isDamaged
+                  || recording.effectiveTranscriptionStatus != .failed
                   || appState.retryingTranscriptions.contains(recording.id))
 
         if canReapplySpeakers {
@@ -299,9 +306,17 @@ private struct DrawerRecordingRow: View {
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Delete \u{201C}\(recording.displayName)\u{201D}?"
-        alert.informativeText = deletesFromServer
-            ? "Deletes this recording from Tracer and Dropbox. This cannot be undone."
-            : "Deletes the local file. This cannot be undone."
+        if recording.isDamaged {
+            // Spelled out, because this file is the only copy of the take and a manual
+            // recovery may still turn it back into a video.
+            alert.informativeText = "This recording is damaged. Deleting it removes the file "
+                + "\u{201C}\(recording.fileURL.lastPathComponent)\u{201D} from disk, and it can no "
+                + "longer be recovered. This cannot be undone."
+        } else {
+            alert.informativeText = deletesFromServer
+                ? "Deletes this recording from Tracer and Dropbox. This cannot be undone."
+                : "Deletes the local file. This cannot be undone."
+        }
         alert.addButton(withTitle: "Delete")
         alert.addButton(withTitle: "Cancel")
         alert.buttons.first?.hasDestructiveAction = true
@@ -445,8 +460,34 @@ private struct DrawerRecordingRow: View {
         TranscriptionStatusCluster(appState: appState, recording: recording)
     }
 
+    /// Shows the damaged take's file in Finder, selected, so it can be copied out for a
+    /// manual recovery. Nothing else in the app can open it.
+    private func revealDamagedFile() {
+        NSWorkspace.shared.activateFileViewerSelecting([recording.fileURL])
+    }
+
     @ViewBuilder
     private var uploadStatus: some View {
+        if recording.isDamaged {
+            // Instead of the upload axis, never next to it: a damaged take is never going
+            // to upload, and an "icloud.slash" there would read as "not yet".
+            Button {
+                revealDamagedFile()
+            } label: {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.Colors.recordRed)
+            }
+            .buttonStyle(.plain)
+            .help("\(recording.damagedReason ?? Recording.writerFailureDamageReason); click to show the file in Finder")
+            .pointerOnHover()
+        } else {
+            uploadAxisStatus
+        }
+    }
+
+    @ViewBuilder
+    private var uploadAxisStatus: some View {
         switch recording.uploadStatus {
         case .notUploaded:
             Image(systemName: "icloud.slash")

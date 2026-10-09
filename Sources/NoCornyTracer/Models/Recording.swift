@@ -52,6 +52,21 @@ struct Recording: Identifiable, Codable {
     /// Why the last transcription attempt failed, in words meant for the row's tooltip.
     /// Nil whenever `transcriptionStatus` is not `.failed`.
     var transcriptionError: String?
+    /// Set when the file on disk is a partial the writer left behind and nothing can read
+    /// it: the take is shown in the library and kept on disk, but never uploaded,
+    /// transcribed or deleted by the pipeline. Before this existed, such a take returned
+    /// nil from the stop and simply did not appear anywhere, so a file that could still be
+    /// rebuilt by hand looked like a deleted recording.
+    /// Optional with a default so an older cached recordings list still decodes.
+    var damagedReason: String?
+
+    /// The sentence a writer that died mid-recording leaves on its take. One constant, so
+    /// the salvage path, the tooltip and the tests agree word for word.
+    static let writerFailureDamageReason =
+        "Writer failed mid-recording; the file has no index and needs recovery"
+
+    /// True for a take whose file cannot be played as it is. See `damagedReason`.
+    var isDamaged: Bool { damagedReason != nil }
 
     // MARK: - Transcript
 
@@ -101,6 +116,7 @@ struct Recording: Identifiable, Codable {
         case transcriptEngine, systemAudioURL
         case diarizationMicPath, diarizationSystemPath, expectedSpeakers
         case transcriptionStatus, transcriptionError
+        case damagedReason
     }
 
     func encode(to encoder: Encoder) throws {
@@ -129,6 +145,7 @@ struct Recording: Identifiable, Codable {
         try container.encodeIfPresent(expectedSpeakers, forKey: .expectedSpeakers)
         try container.encodeIfPresent(transcriptionStatus, forKey: .transcriptionStatus)
         try container.encodeIfPresent(transcriptionError, forKey: .transcriptionError)
+        try container.encodeIfPresent(damagedReason, forKey: .damagedReason)
         // legacyInlineTranscript is deliberately absent: transcripts live in TranscriptStore.
     }
 

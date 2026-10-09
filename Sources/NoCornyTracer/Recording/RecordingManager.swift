@@ -23,7 +23,9 @@ final class RecordingManager {
     var currentFileURL: URL?
     
     // MARK: - Internal Timing
-    private var accumulatedDuration: TimeInterval = 0
+    /// Internal so a test can give a damaged take a length: it is the only duration a
+    /// partial with no index can show.
+    var accumulatedDuration: TimeInterval = 0
     private var lastStartTime: Date?
 
 
@@ -166,10 +168,9 @@ final class RecordingManager {
                     systemAudioWriter = sidecar
                     screenRecorder.onSystemAudioSampleBuffer = { [weak writer, weak sidecar] sampleBuffer in
                         guard let writer, let sidecar else { return }
-                        let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
                         // The video writer owns the timeline; the sidecar only ever writes
                         // where it is told to, so the two files cannot drift apart.
-                        guard let timing = writer.systemAudioTimeline(for: pts) else { return }
+                        guard let timing = writer.systemAudioTimeline(for: sampleBuffer) else { return }
                         sidecar.append(sampleBuffer, presentationTime: timing.presentationTime, anchor: timing.anchor)
                     }
                     LogManager.shared.log("🔊 System audio: capturing to sidecar \(SystemAudioWriter.sidecarURL(for: outputURL).lastPathComponent)")
@@ -271,10 +272,15 @@ final class RecordingManager {
             // don't leave a phantom recording or strand isPaused=true (which would drop
             // the next recording's first frames) — but do NOT delete the partial: try a
             // best-effort salvage first. Without movie fragments an interrupted file is
-            // usually unreadable (no moov), so this typically returns nil, but a file
-            // that did finalize enough to play is still recovered rather than dropped.
+            // usually unreadable (no moov); it still comes back, marked damaged, so the
+            // library shows it instead of hiding a file that can be rebuilt by hand. A file
+            // that did finalize enough to play is recovered as an ordinary take.
             let partialURL = currentFileURL
             let startedAt = recordingStartTime
+            // Read before the reset below: a damaged take carries no readable duration, so
+            // the wall-clock length of the take is the only figure the library can show.
+            let elapsed = lastStartTime.map { accumulatedDuration + Date().timeIntervalSince($0) }
+                ?? accumulatedDuration
             isRecording = false
             isPaused = false
             recordingDuration = 0
@@ -282,7 +288,8 @@ final class RecordingManager {
             lastStartTime = nil
             videoWriter = nil
             currentFileURL = nil
-            var salvaged = await salvagePartialRecording(at: partialURL, startedAt: startedAt)
+            var salvaged = await salvagePartialRecording(
+                at: partialURL, startedAt: startedAt, elapsed: elapsed)
             // No merge onto a salvaged partial - it is already damaged goods and the swap
             // is the one step that could lose it. The sidecar is still handed over.
             salvaged?.systemAudioURL = systemAudio?.url
@@ -433,14 +440,28 @@ final class RecordingManager {
 
     // MARK: - Salvage
 
-    /// Best-effort probe of the partial .mp4 a dead writer left behind. If it happens
-    /// to be readable (finalized enough to have a duration and a video track), return
-    /// it as a regular Recording so the normal pipeline uploads it instead of losing
-    /// the take. Returns nil (keeping the file on disk) if it can't be read — the
-    /// common case for a non-fragmented file interrupted before finishWriting.
-    private func salvagePartialRecording(at url: URL?, startedAt: Date?) async -> Recording? {
+    /// Best-effort probe of the partial .mp4 a dead writer left behind.
+    ///
+    /// - Readable (finalized enough to have a duration and a video track): a regular
+    ///   Recording, so the normal pipeline uploads it instead of losing the take.
+    /// - On disk but unreadable (the common case for a non-fragmented file interrupted
+    ///   before finishWriting: the samples are there, the index is not): still a Recording,
+    ///   marked with `damagedReason`. It used to come back as nil, which meant the file
+    ///   stayed on disk while the library showed nothing at all, so the user took the
+    ///   recording for deleted. The bytes are recoverable by hand (untrunc plus retiming
+    ///   rebuilt the 2026-10-09 take), so the row has to exist and point at them.
+    /// - Missing or empty: nil, because there is nothing to point at.
+    ///
+    /// Never deletes or modifies the file.
+    private func salvagePartialRecording(at url: URL?, startedAt: Date?, elapsed: TimeInterval) async -> Recording? {
         guard let url, FileManager.default.fileExists(atPath: url.path) else {
             LogManager.shared.log("🔴 Recording: stop failed — writer produced no file", type: .error)
+            return nil
+        }
+        let size = (try? FileManager.default.attributesOfItem(atPath: url.path))
+            .flatMap { $0[.size] as? NSNumber }?.uint64Value
+        guard let size, size > 0 else {
+            LogManager.shared.log("🔴 Recording: stop failed — writer left an empty file at \(url.lastPathComponent)", type: .error)
             return nil
         }
         // Ask for precise timing so the duration is scanned from the media rather than
@@ -450,15 +471,18 @@ final class RecordingManager {
               duration.isFinite, duration > 0.5,
               let videoTracks = try? await asset.loadTracks(withMediaType: .video),
               !videoTracks.isEmpty else {
-            LogManager.shared.log("🔴 Recording: stop failed — partial unreadable, kept at \(url.lastPathComponent)", type: .error)
-            return nil
+            var damaged = Recording(fileURL: url, createdAt: startedAt ?? Date(), duration: max(0, elapsed))
+            damaged.fileSize = size
+            damaged.damagedReason = Recording.writerFailureDamageReason
+            LogManager.shared.log(
+                "🔴 Recording: stop failed — partial unreadable, kept at \(url.lastPathComponent) "
+                + "(\(size) bytes, ~\(Int(elapsed))s) and listed as damaged: \(Recording.writerFailureDamageReason)",
+                type: .error)
+            return damaged
         }
 
         var recording = Recording(fileURL: url, createdAt: startedAt ?? Date(), duration: duration)
-        if let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
-           let size = attrs[.size] as? NSNumber {
-            recording.fileSize = size.uint64Value
-        }
+        recording.fileSize = size
         LogManager.shared.log("🔴 Recording: writer died mid-recording — salvaged \(Int(duration))s partial \(url.lastPathComponent)", type: .error)
         return recording
     }

@@ -151,10 +151,16 @@ final class SalvageOutcomeTests: XCTestCase {
         return sampleBuffer
     }
 
-    /// The other half of the branch: an unreadable partial comes back as nil, and the
-    /// manager still resets rather than stranding a phantom recording.
+    /// The other half of the branch: a partial that is not on disk at all comes back as nil,
+    /// and the manager still resets rather than stranding a phantom recording.
+    ///
+    /// Renamed from `testAnUnreadablePartialComesBackAsNil`. The fixture was always a
+    /// MISSING file, and nil is still right for that: there is nothing to point a row at.
+    /// An unreadable file that IS on disk no longer comes back as nil - it comes back
+    /// damaged, see `DamagedTakeTests`. That old nil is what made the 2026-10-09 take look
+    /// deleted while its bytes sat in the recordings folder.
     @MainActor
-    func testAnUnreadablePartialComesBackAsNil() async {
+    func testAMissingPartialComesBackAsNil() async {
         let manager = RecordingManager()
         manager.isRecording = true
         manager.currentFileURL = FileManager.default.temporaryDirectory
