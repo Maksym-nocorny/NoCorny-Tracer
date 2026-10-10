@@ -1,4 +1,5 @@
 import Foundation
+import Network
 
 /// Keeps the on-device model compiled before anyone is waiting on it.
 ///
@@ -29,6 +30,9 @@ final class LocalModelWarmup {
         let appBuild: String
         let osBuild: String
         let loadedAt: Date
+        /// Which model folder the load was of. Optional so stamps written by 4.5.x still
+        /// decode; a missing variant reads as "not the current one" and warms.
+        var variant: String? = nil
     }
 
     enum Reason: Equatable {
@@ -36,6 +40,8 @@ final class LocalModelWarmup {
         case neverLoaded
         case appUpdated(from: String, to: String)
         case systemUpdated
+        /// The last load was of another model (the legacy one, during the update window).
+        case modelChanged
         case idle(days: Int)
 
         var logDescription: String {
@@ -43,6 +49,7 @@ final class LocalModelWarmup {
             case .neverLoaded: return "no load on record"
             case .appUpdated(let from, let to): return "app updated \(from) → \(to)"
             case .systemUpdated: return "macOS updated"
+            case .modelChanged: return "model changed"
             case .idle(let days): return "no load for \(days) days"
             }
         }
@@ -57,10 +64,13 @@ final class LocalModelWarmup {
     /// The app build counts although no source ties the cache key to it: every cold compile
     /// on record (24.08, 06.09, 16.09) followed either an app update or a macOS update, and
     /// warming on a false positive is a two-second load.
-    nonisolated static func reason(stamp: Stamp?, appBuild: String, osBuild: String, now: Date) -> Reason? {
+    nonisolated static func reason(
+        stamp: Stamp?, appBuild: String, osBuild: String, now: Date, variant: String = LocalWhisperEngine.variant
+    ) -> Reason? {
         guard let stamp else { return .neverLoaded }
         if stamp.appBuild != appBuild { return .appUpdated(from: stamp.appBuild, to: appBuild) }
         if stamp.osBuild != osBuild { return .systemUpdated }
+        if stamp.variant != variant { return .modelChanged }
         let idle = now.timeIntervalSince(stamp.loadedAt)
         guard idle >= idleThreshold else { return nil }
         return .idle(days: Int(idle / 86_400))
@@ -94,6 +104,53 @@ final class LocalModelWarmup {
         engineIsLocal && modelReady && !busy && !lowPower && !gaveUp && ramGB > 8
     }
 
+    // MARK: - Auto-download policy (pure, covered by LocalModelWarmupPolicyTests)
+
+    /// Whether the model may start coming down on its own right now. Since 4.6.0 the
+    /// on-device engine is the default, and a default that needs a visit to Settings and a
+    /// click on "Download" is not one: every recording until then would quietly go to the
+    /// cloud, or nowhere for a signed-out user. So the model is fetched in the background,
+    /// with the same restraint as a warm:
+    /// - `engineIsLocal == false`: the user chose the cloud; 1.6 GB they did not ask for.
+    /// - `modelPresent`: the CURRENT model is complete (a legacy one does not count: the
+    ///   update window is exactly when this has to run).
+    /// - `downloading`: already on its way, from here or from the Settings button.
+    /// - `busy`: a take, an upload or a transcript is running; the download would compete
+    ///   for the disk and the network, and the compile that follows it for everything.
+    /// - `lowPower`: the user asked the Mac to save energy.
+    /// - `optedOut`: the user pressed "Remove" in Settings. Fetching it back behind their
+    ///   back would make that button a lie; "Download" there clears the flag.
+    /// - `expensiveNetwork`: a hotspot, a metered link, or Low Data Mode. 1.6 GB over a
+    ///   phone's plan is not a background decision.
+    /// - `failedRecently`: a download failed within `retryAfterFailure` (no disk, no
+    ///   network). The app lives for weeks between launches, so a failure is not forever,
+    ///   but it is not a reason to try again every half hour either.
+    nonisolated static func mayDownload(
+        engineIsLocal: Bool,
+        modelPresent: Bool,
+        downloading: Bool,
+        busy: Bool,
+        lowPower: Bool,
+        optedOut: Bool,
+        expensiveNetwork: Bool,
+        failedRecently: Bool
+    ) -> Bool {
+        engineIsLocal && !modelPresent && !downloading && !busy && !lowPower && !optedOut
+            && !expensiveNetwork && !failedRecently
+    }
+
+    /// How long a failed download holds the next attempt.
+    nonisolated static let retryAfterFailure: TimeInterval = 6 * 3600
+
+    /// Set by "Remove" in Settings, cleared by "Download" there.
+    nonisolated static let autoDownloadOptOutKey = "localModelAutoDownloadOptOut"
+
+    /// First look after launch. A minute, not the warm's ten: the bytes do not compete with
+    /// a take the way the compile does, and the sooner they land the fewer recordings go to
+    /// the cloud meanwhile. The compile that follows the download still waits for `busy`
+    /// to clear, because the download is skipped while anything runs.
+    static let downloadDelay: TimeInterval = 60
+
     // MARK: - Stamp storage
 
     nonisolated static let stampKey = "localModelLastLoad"
@@ -111,9 +168,13 @@ final class LocalModelWarmup {
     /// Called by the model host after every successful load, whoever asked for it: a
     /// transcribe warms the cache exactly as well as a background warm does. Skipped under
     /// tests, which must not write the developer's real defaults.
-    nonisolated static func recordLoad() {
+    ///
+    /// Stamped with the variant that was LOADED, not the one the engine wants now: the new
+    /// model can land during a load of the legacy one, and a stamp claiming the new one has
+    /// loaded would skip the warm that compiles it.
+    nonisolated static func recordLoad(variant: String) {
         guard !LogManager.isRunningUnderTests else { return }
-        saveStamp(Stamp(appBuild: currentAppBuild, osBuild: currentOSBuild, loadedAt: Date()), to: .standard)
+        saveStamp(Stamp(appBuild: currentAppBuild, osBuild: currentOSBuild, loadedAt: Date(), variant: variant), to: .standard)
     }
 
     nonisolated static var currentAppBuild: String {
@@ -140,8 +201,13 @@ final class LocalModelWarmup {
     private var timer: Timer?
     private var isWarming = false
     private var gaveUp = false
+    private var isDownloading = false
+    private var lastDownloadFailure: Date?
     private var engineIsLocal: () -> Bool = { false }
     private var isBusy: () -> Bool = { true }
+    /// Whether the current network path is one a 1.6 GB download should not take on its own.
+    private var expensiveNetwork = false
+    private let pathMonitor = NWPathMonitor()
 
     private init() {}
 
@@ -150,6 +216,22 @@ final class LocalModelWarmup {
     func start(engineIsLocal: @escaping () -> Bool, isBusy: @escaping () -> Bool) {
         self.engineIsLocal = engineIsLocal
         self.isBusy = isBusy
+
+        // A Mac that updated from 4.5.x carries the 3 GB legacy model next to the new one
+        // once that has landed. Through the model host, so it never runs under a load.
+        Task.detached(priority: .utility) { await LocalWhisperEngine.reclaimLegacyModelsWhenIdle() }
+
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            let expensive = path.isExpensive || path.isConstrained
+            Task { @MainActor in self?.expensiveNetwork = expensive }
+        }
+        pathMonitor.start(queue: DispatchQueue(label: "com.nocorny.tracer.model-network", qos: .utility))
+
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(Self.downloadDelay * 1_000_000_000))
+            self.tickDownload()
+        }
+
         timer?.invalidate()
         let timer = Timer(
             fire: Date().addingTimeInterval(Self.launchDelay),
@@ -163,12 +245,57 @@ final class LocalModelWarmup {
         self.timer = timer
     }
 
+    /// Fetch the current model in the background when the policy allows it. Bytes only: the
+    /// compile that follows cannot be cancelled and must not start under a take that began
+    /// while the bytes were coming down, so it is left to the warm tick, which checks `busy`
+    /// at its own fire time. A tick is kicked right after the download so a free Mac compiles
+    /// at once rather than at the next half hour.
+    private func tickDownload() {
+        guard !isDownloading,
+              LocalWhisperEngine.isAvailable,
+              Self.mayDownload(
+                engineIsLocal: engineIsLocal(),
+                modelPresent: LocalWhisperEngine.isModelDownloaded(variant: LocalWhisperEngine.variant),
+                downloading: LocalModelState.shared.phase == .downloading || LocalModelState.shared.phase == .preparing,
+                busy: isBusy(),
+                lowPower: ProcessInfo.processInfo.isLowPowerModeEnabled,
+                optedOut: UserDefaults.standard.bool(forKey: Self.autoDownloadOptOutKey),
+                expensiveNetwork: expensiveNetwork,
+                failedRecently: lastDownloadFailure.map { Date().timeIntervalSince($0) < Self.retryAfterFailure } ?? false
+              )
+        else { return }
+
+        isDownloading = true
+        LogManager.shared.log("🎙️ Local: fetching the on-device model in the background (\(LocalWhisperEngine.variant))")
+        Task { @MainActor in
+            defer { self.isDownloading = false }
+            do {
+                try await LocalWhisperEngine.downloadModel(prewarm: false)
+                self.tick()
+            } catch LocalWhisperError.downloadAlreadyRunning {
+                // The Settings button got there first. Not a failure, and nothing to show:
+                // that download reports its own progress and its own errors.
+            } catch {
+                self.lastDownloadFailure = Date()
+                LocalModelState.pushFailure(error.localizedDescription)
+                LogManager.shared.log("🎙️ Local: background download did not finish (\(error)), next attempt in \(Int(Self.retryAfterFailure / 3600)) hours", type: .error)
+            }
+        }
+    }
+
     private func tick() {
+        tickDownload()
+        // A reclaim that stood aside at launch because a load was in flight gets another
+        // chance here, rather than at the next launch weeks away.
+        Task.detached(priority: .utility) { await LocalWhisperEngine.reclaimLegacyModelsWhenIdle() }
         guard !isWarming,
               LocalWhisperEngine.isAvailable,
               Self.mayWarm(
                 engineIsLocal: engineIsLocal(),
-                modelReady: LocalWhisperEngine.isModelDownloaded(),
+                // The CURRENT model only. In the update window the legacy one is complete and
+                // the new one still coming down; compiling the legacy model then is minutes
+                // of Neural Engine for a folder about to be removed.
+                modelReady: LocalWhisperEngine.isModelDownloaded(variant: LocalWhisperEngine.variant),
                 busy: isBusy(),
                 lowPower: ProcessInfo.processInfo.isLowPowerModeEnabled,
                 gaveUp: gaveUp,

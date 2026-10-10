@@ -36,10 +36,15 @@ final class AINamingService {
         self.namingService = naming
         self.preferredKind = preferredKind
         self.expectedSpeakers = expectedSpeakers
+        let gemini = CloudGeminiEngine(proxyClient: proxyClient, namingService: naming)
+        let groq = CloudGroqEngine(proxyClient: transcriptionClient)
         self.engines = [
-            .cloudGemini: CloudGeminiEngine(proxyClient: proxyClient, namingService: naming),
-            .cloudGroq: CloudGroqEngine(proxyClient: transcriptionClient),
-            .localWhisper: LocalWhisperEngine(),
+            .cloudGemini: gemini,
+            .cloudGroq: groq,
+            // The on-device engine hands a too-slow recording to the cloud (see
+            // `SlowDecodeProbe`), but only when a cloud engine could actually answer:
+            // readiness here is "signed in", read at the moment the probe fires.
+            .localWhisper: LocalWhisperEngine(cloudRescueAvailable: { gemini.isReady || groq.isReady }),
         ]
     }
 
@@ -55,6 +60,12 @@ final class AINamingService {
     /// `errorCode` and the fallback below, and a test has to be able to name both sides of it.
     /// The default engine shipped emitting a stringified error here, which matched nothing.
     static let refusalCodes: Set<String> = ["engine_disabled", "premium_required", "engine_not_configured"]
+
+    /// Error codes that mean "this engine gave the recording up so another could finish it
+    /// sooner". Today that is one: the on-device engine judging this Mac too slow
+    /// (`LocalWhisperEngine.tooSlowCode`). Walked exactly like a refusal, and the engine
+    /// that gave up is never asked again in the same run.
+    static let handoffCodes: Set<String> = [LocalWhisperEngine.tooSlowCode]
 
     /// Injection point for tests.
     convenience init(engine: TranscriptionEngine, namingService: NamingService) {
@@ -89,6 +100,12 @@ final class AINamingService {
 
     private var readyEngines: [TranscriptionEngine] {
         Self.fallbackOrder.compactMap { engines[$0] }.filter(\.isReady)
+    }
+
+    /// Whether an engine's answer is one the walk moves past rather than stops at.
+    private static func walksOn(_ errorCode: String?) -> Bool {
+        let code = errorCode ?? ""
+        return refusalCodes.contains(code) || handoffCodes.contains(code)
     }
 
     /// True when the pipeline can run at all. Callers use it to skip the work up front
@@ -135,16 +152,36 @@ final class AINamingService {
         // like it. Still narrow: only when no cues came back, and it stops the moment an
         // engine answers or fails for a reason that is about the recording rather than the
         // account.
-        if result.srt == nil, Self.refusalCodes.contains(result.errorCode ?? "") {
+        //
+        // A hand-off (`handoffCodes`) walks the same way: the on-device engine found this
+        // Mac too slow and a cloud engine was ready, so the cloud finishes the recording.
+        let handedOff = Self.handoffCodes.contains(result.errorCode ?? "")
+        if result.srt == nil, Self.walksOn(result.errorCode) {
             var refusedBy = engine.kind
             for alternative in readyEngines where alternative.kind != engine.kind {
-                LogManager.shared.log("🎛️ Engine: \(refusedBy.rawValue) refused (\(result.errorCode ?? "unknown")), falling back to \(alternative.kind.rawValue)")
+                LogManager.shared.log("🎛️ Engine: \(refusedBy.rawValue) \(Self.handoffCodes.contains(result.errorCode ?? "") ? "handed off" : "refused") (\(result.errorCode ?? "unknown")), falling back to \(alternative.kind.rawValue)")
                 // A different engine starts from nothing, and the bar has to say so.
                 progress(TranscriptionProgress(completedChunks: 0, totalChunks: 0, fraction: 0))
-                result = await alternative.transcribe(videoURL: videoURL, multiSpeaker: diarize, progress: progress)
+                // The on-device engine reached THIS way is the last resort: every cloud
+                // engine has just declined, so there is nobody to hand a slow decode to.
+                result = await LocalWhisperEngine.$rescueDisabled.withValue(alternative.kind == .localWhisper) {
+                    await alternative.transcribe(videoURL: videoURL, multiSpeaker: diarize, progress: progress)
+                }
                 if result.srt != nil { break }
-                guard Self.refusalCodes.contains(result.errorCode ?? "") else { break }
+                guard Self.walksOn(result.errorCode) else { break }
                 refusedBy = alternative.kind
+            }
+        }
+
+        // A hand-off the cloud could not finish (signed in but offline, plan refused, token
+        // dead) must not end with nothing: 4.5.5 would have produced a slow transcript on
+        // this Mac, and so does 4.6.0. Back to the on-device engine with the probe switched
+        // off, so it decodes to the end at whatever speed it has.
+        if handedOff, result.srt == nil {
+            LogManager.shared.log("🎛️ Engine: the cloud could not finish the handed-off recording (\(result.errorCode ?? "unknown")), decoding it on this Mac to the end")
+            progress(TranscriptionProgress(completedChunks: 0, totalChunks: 0, fraction: 0))
+            result = await LocalWhisperEngine.$rescueDisabled.withValue(true) {
+                await engine.transcribe(videoURL: videoURL, multiSpeaker: diarize, progress: progress)
             }
         }
 

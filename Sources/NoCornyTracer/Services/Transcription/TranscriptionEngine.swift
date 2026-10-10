@@ -14,6 +14,23 @@ enum TranscriptionEngineKind: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
+    /// What a Mac that has never picked an engine transcribes with.
+    ///
+    /// On this Mac from 4.6.0: free, offline, and with the real turbo model fast enough that
+    /// the cloud's remaining edge is about two to one. The cloud stays the default where the
+    /// model cannot load at all (Intel), and the orchestrator covers the gaps for everyone
+    /// else: a recording made before the model has come down, or on a Mac that decodes
+    /// slower than real time, goes to the cloud on its own. A choice the user made earlier
+    /// is stored and wins over this.
+    static var defaultForThisMac: TranscriptionEngineKind {
+        defaultKind(appleSilicon: LocalWhisperEngine.isAvailable)
+    }
+
+    /// The pure half, so the policy is covered without asking the hardware.
+    static func defaultKind(appleSilicon: Bool) -> TranscriptionEngineKind {
+        appleSilicon ? .localWhisper : .cloudGemini
+    }
+
     /// How `/api/tokens/me` names this engine in `features.cloudEngines`. Spelled out
     /// rather than derived from `rawValue`, which is a persisted UserDefaults key and says
     /// "cloud" for Gemini for historical reasons.
@@ -80,6 +97,13 @@ struct TranscriptionProgress: Sendable, Equatable {
 final class MonotonicProgress: @unchecked Sendable {
     private let lock = NSLock()
     private var reported: Double = 0
+
+    /// The highest fraction reported so far. The on-device slow-Mac probe reads it to turn
+    /// "how far along the bar is" into "how many seconds of audio have been decoded".
+    var current: Double {
+        lock.lock(); defer { lock.unlock() }
+        return reported
+    }
 
     func advance(to fraction: Double) -> Double? {
         lock.lock(); defer { lock.unlock() }

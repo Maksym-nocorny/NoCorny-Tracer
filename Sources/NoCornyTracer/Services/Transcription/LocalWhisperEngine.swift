@@ -24,13 +24,72 @@ final class LocalWhisperEngine: TranscriptionEngine {
 
     let kind: TranscriptionEngineKind = .localWhisper
 
-    /// Reported to telemetry so a local transcript is distinguishable from a Gemini one.
+    /// Asked, while a decode runs, whether a cloud engine could take the recording over if
+    /// this Mac turns out too slow (see `SlowDecodeProbe`). Wired by the orchestrator from
+    /// the cloud engines' readiness; the default says no, so a bare engine (tests, the
+    /// benchmark harness) never gives up on its own Mac.
+    private let cloudRescueAvailable: @Sendable () -> Bool
+
+    /// Set by the orchestrator around a re-run on this Mac after a hand-off the cloud could
+    /// not finish (signed in but offline, plan refused, token dead): the probe stays quiet and
+    /// the Mac decodes at whatever speed it has, because the alternative is no transcript.
+    @TaskLocal static var rescueDisabled = false
+
+    init(cloudRescueAvailable: @escaping @Sendable () -> Bool = { false }) {
+        self.cloudRescueAvailable = cloudRescueAvailable
+    }
+
+    /// Reported to telemetry so a local transcript is distinguishable from a Gemini one. The
+    /// web's pricing table keys on this exact string (`ai-pricing.ts`), so it stays as it was
+    /// across the model switch below: the name was always meant to say "large-v3-turbo", and
+    /// from 4.6.0 it finally is one.
     static let modelName = "whisperkit-large-v3-turbo"
 
-    /// The single on-device model. Multilingual large-v3 turbo, roughly 1.5 GB on disk and
-    /// comfortably faster than real time on any M-series chip. The string has to match the
-    /// folder WhisperKit creates under `argmaxinc/whisperkit-coreml/`.
-    static let variant = "openai_whisper-large-v3_turbo"
+    /// The on-device model: OpenAI's Whisper large-v3-turbo (the September 2024 release,
+    /// large-v3's encoder with a 4-layer decoder), about 1.6 GB on disk. The string has to
+    /// match the folder WhisperKit creates under `argmaxinc/whisperkit-coreml/`.
+    ///
+    /// Naming trap, learned the expensive way: in that repo the `_turbo` SUFFIX means
+    /// Argmax's compressed build of whatever model precedes it, NOT OpenAI's turbo. Up to
+    /// 4.5.5 this was `openai_whisper-large-v3_turbo`, believed to be turbo, and it is the
+    /// FULL large-v3: `config.json` says `decoder_layers: 32`, the TextDecoder weighs 1.8 GB,
+    /// the folder 3 GB, and every transcript decoded through 32 decoder layers instead of 4.
+    /// Corder caught it first (0.15.75): a 400 s two-track call on an M1 Air went from 131 s
+    /// to 30 s with the real turbo, and the text agreed with the cloud transcript slightly
+    /// better. OpenAI's turbo in WhisperKit naming is `large-v3-v20240930`.
+    static let defaultVariant = "openai_whisper-large-v3-v20240930_turbo"
+
+    /// The model the app wants: what `downloadModel` fetches and what a fresh Mac ends up
+    /// with. A `var` for exactly one reader, the benchmark harness (`LocalASRBenchTests`),
+    /// which points it at each variant in turn to time them on the same recording. Nothing
+    /// in the app writes it.
+    static var variant = defaultVariant
+
+    /// Model folders earlier builds left on disk, oldest last. Read by `activeVariant` so a
+    /// Mac that updated keeps transcribing on the model it has until the new one has landed,
+    /// and by `reclaimLegacyModels` so the 3 GB folder goes once it is no longer needed.
+    static let legacyVariants = ["openai_whisper-large-v3_turbo"]
+
+    /// The model a transcribe loads right now: `variant` when it is complete on disk,
+    /// otherwise the first legacy model that is, otherwise `variant` (the download target)
+    /// so a missing model reads as "not downloaded" rather than as a legacy path.
+    ///
+    /// Exists for the update window. Switching the default to a model nobody has yet would
+    /// otherwise turn every updated Mac into "model not downloaded" the moment the app
+    /// relaunched, and a signed-out user with a two-hour take queued would get nothing until
+    /// 1.6 GB had come down. `WhisperModelHost` reloads when this answer changes.
+    static var activeVariant: String {
+        if isModelDownloaded(variant: variant) { return variant }
+        if let legacy = legacyVariants.first(where: { isModelDownloaded(variant: $0) }) { return legacy }
+        return variant
+    }
+
+    /// What the Settings row shows next to "Ready". The legacy model is three gigabytes,
+    /// and a user who looks while the update is still coming down deserves to know why
+    /// the number is not the one the changelog promised.
+    static var readySizeLabel: String {
+        activeVariant == variant ? "Ready · 1.6 GB" : "Ready · 3 GB (older model)"
+    }
 
     /// Refuse to start a 1.5 GB download onto a nearly-full disk. A download that dies at
     /// 90% for lack of space leaves a bundle that looks plausible and fails at load time,
@@ -128,8 +187,10 @@ final class LocalWhisperEngine: TranscriptionEngine {
     /// loudly: `isModelDownloaded` looks in an empty directory, reports every finished
     /// download as incomplete, and the UI snaps back to "Download model" the instant the
     /// no-op re-download returns.
-    static var modelFolderURL: URL {
-        modelsDir
+    static var modelFolderURL: URL { modelFolderURL(for: activeVariant) }
+
+    static func modelFolderURL(for variant: String, under base: URL = modelsDir) -> URL {
+        base
             .appendingPathComponent("models", isDirectory: true)
             .appendingPathComponent("argmaxinc", isDirectory: true)
             .appendingPathComponent("whisperkit-coreml", isDirectory: true)
@@ -139,13 +200,49 @@ final class LocalWhisperEngine: TranscriptionEngine {
     /// HuggingFace's download-staging cache, a SIBLING of the model folder. Hub decides
     /// what is "already fetched" from what is in here, so deleting a corrupt model without
     /// also clearing this makes the next download resume from the same bad bytes forever.
-    static var huggingFaceDownloadCacheURL: URL {
-        modelFolderURL
+    static var huggingFaceDownloadCacheURL: URL { huggingFaceDownloadCacheURL(for: activeVariant) }
+
+    static func huggingFaceDownloadCacheURL(for variant: String, under base: URL = modelsDir) -> URL {
+        modelFolderURL(for: variant, under: base)
             .deletingLastPathComponent()
             .appendingPathComponent(".cache", isDirectory: true)
             .appendingPathComponent("huggingface", isDirectory: true)
             .appendingPathComponent("download", isDirectory: true)
             .appendingPathComponent(variant, isDirectory: true)
+    }
+
+    // MARK: - Legacy models
+
+    /// Remove model folders earlier builds left behind, once they can no longer be needed.
+    ///
+    /// Up to 4.5.5 the on-device model was the full large-v3 (3 GB, see `legacyVariants`).
+    /// After the update every Mac that had it carries both models until this runs: at launch
+    /// and right after a download. Never while the current model is incomplete or still
+    /// coming down, because until it lands the legacy folder is the one `activeVariant`
+    /// serves transcripts from. Returns the bytes freed, 0 when there was nothing to do.
+    @discardableResult
+    static func reclaimLegacyModels(under base: URL = modelsDir) -> Int64 {
+        guard isModelDownloaded(variant: variant, under: base) else { return 0 }
+        let fm = FileManager.default
+        var freed: Int64 = 0
+        // `variant` can itself be a legacy name (the benchmark harness points it at the old
+        // model to time it): the model under test must not be swept away as its own leftover.
+        for legacy in legacyVariants where legacy != variant {
+            let targets = [modelFolderURL(for: legacy, under: base), huggingFaceDownloadCacheURL(for: legacy, under: base)]
+                .filter { fm.fileExists(atPath: $0.path) }
+            guard !targets.isEmpty else { continue }
+            for url in targets {
+                if let walker = fm.enumerator(at: url, includingPropertiesForKeys: [.fileSizeKey]) {
+                    for case let file as URL in walker {
+                        freed += Int64((try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+                    }
+                }
+                try? fm.removeItem(at: url)
+            }
+            LogManager.shared.log("🎙️ Local: removed the legacy model \(legacy), freed \(freed / 1_000_000) MB")
+        }
+        if freed > 0 { LocalModelState.pushRefresh() }
+        return freed
     }
 
     /// The tokenizer ships in a separate `openai/whisper-large-v3` repo, not with the Core
@@ -167,9 +264,16 @@ final class LocalWhisperEngine: TranscriptionEngine {
     /// last, so a fetch interrupted near the end leaves packages that look finished and
     /// fail the Core ML load on both encoders.
     static func isModelDownloaded() -> Bool {
-        if DownloadProgressRegistry.shared.current != nil { return false }
+        isModelDownloaded(variant: activeVariant)
+    }
 
-        let dir = modelFolderURL
+    /// Per variant, so the update window can tell "the new model is still coming down" from
+    /// "the legacy model is complete and can serve meanwhile". A download in flight only
+    /// disqualifies the variant it is writing.
+    static func isModelDownloaded(variant: String, under base: URL = modelsDir) -> Bool {
+        if DownloadProgressRegistry.shared.downloadingVariant == variant { return false }
+
+        let dir = modelFolderURL(for: variant, under: base)
         let fm = FileManager.default
         var isDir: ObjCBool = false
         guard fm.fileExists(atPath: dir.path, isDirectory: &isDir), isDir.boolValue else {
@@ -219,11 +323,17 @@ final class LocalWhisperEngine: TranscriptionEngine {
     /// The compile runs here, with a generous budget and no GPU fallback, precisely so it
     /// does NOT run during the user's first transcribe. It caches to disk, so from then on
     /// loads take seconds.
+    ///
+    /// `prewarm: false` fetches the bytes and stops. The background auto-download uses it on
+    /// 8 GB Macs, where the model host loads on the GPU directly and a transcribe that
+    /// arrives mid-compile would start a second GPU init beside it (Metal answers that with
+    /// SIGABRT, see `LocalModelWarmup.mayWarm`); there the first transcribe pays the compile
+    /// itself, alone, as it always has.
     func downloadModel(progress: (@Sendable (Double) -> Void)? = nil) async throws {
         try await Self.downloadModel(progress: progress)
     }
 
-    static func downloadModel(progress: (@Sendable (Double) -> Void)? = nil) async throws {
+    static func downloadModel(prewarm: Bool = true, progress: (@Sendable (Double) -> Void)? = nil) async throws {
         guard isAvailable else { throw LocalWhisperError.notAvailableOnAppleSilicon }
         guard DownloadProgressRegistry.shared.current == nil else {
             throw LocalWhisperError.downloadAlreadyRunning
@@ -232,7 +342,7 @@ final class LocalWhisperEngine: TranscriptionEngine {
         try FileManager.default.createDirectory(at: modelsDir, withIntermediateDirectories: true)
         try checkFreeSpace()
 
-        if !isModelDownloaded() {
+        if !isModelDownloaded(variant: variant) {
             LogManager.shared.log("🎙️ Local: downloading \(variant) into \(modelsDir.path)")
             DownloadProgressRegistry.shared.set(progress: 0.0)
             do {
@@ -246,17 +356,28 @@ final class LocalWhisperEngine: TranscriptionEngine {
             LogManager.shared.log("🎙️ Local: ✅ download complete (\(variant))")
         }
 
-        do {
-            _ = try await WhisperModelHost.shared.ensureLoaded(
-                aneBudget: prewarmANEBudget, allowGPUFallback: false
-            )
-        } catch LocalWhisperError.modelLoadTimedOut {
-            // The compile is still going and will cache when it lands. The model is on
-            // disk and usable, so this is not a download failure; a transcribe started now
-            // falls back to the GPU encoder rather than hanging.
-            LogManager.shared.log("🎙️ Local: first compile still running past \(Int(prewarmANEBudget))s, leaving it to finish in the background")
+        if prewarm {
+            do {
+                if try await !WhisperModelHost.shared.prewarmIfIdle(aneBudget: prewarmANEBudget) {
+                    LogManager.shared.log("🎙️ Local: model host busy, leaving the first compile to the background warm")
+                }
+            } catch LocalWhisperError.modelLoadTimedOut {
+                // The compile is still going and will cache when it lands. The model is on
+                // disk and usable, so this is not a download failure; a transcribe started now
+                // falls back to the GPU encoder rather than hanging.
+                LogManager.shared.log("🎙️ Local: first compile still running past \(Int(prewarmANEBudget))s, leaving it to finish in the background")
+            }
         }
         LocalModelState.pushRefresh()
+        // The new model is complete, so the folder an earlier build left behind has nothing
+        // left to serve. Three gigabytes on every Mac that updated.
+        await reclaimLegacyModelsWhenIdle()
+    }
+
+    /// `reclaimLegacyModels`, gated on the model host being idle. The entry point for the
+    /// app; the ungated function is for the unit tests' temporary folders.
+    static func reclaimLegacyModelsWhenIdle() async {
+        _ = await WhisperModelHost.shared.reclaimLegacyIfIdle()
     }
 
     /// Re-pay the compile in the background after the system cache has plausibly dropped it
@@ -312,10 +433,20 @@ final class LocalWhisperEngine: TranscriptionEngine {
 
     /// Delete the model on disk. Also clears the sibling Hub cache, otherwise the next
     /// download resumes from whatever is staged there.
-    static func deleteModel() {
-        try? FileManager.default.removeItem(at: modelFolderURL)
-        try? FileManager.default.removeItem(at: huggingFaceDownloadCacheURL)
+    ///
+    /// One variant, decided once. Reading `activeVariant` twice here deleted the new model's
+    /// folder on the first line and, with it gone, the LEGACY model's cache on the second,
+    /// leaving the new model's poisoned cache behind for the next download to resume from.
+    static func deleteModel(variant: String = activeVariant) {
+        try? FileManager.default.removeItem(at: modelFolderURL(for: variant))
+        try? FileManager.default.removeItem(at: huggingFaceDownloadCacheURL(for: variant))
         LocalModelState.pushRefresh()
+    }
+
+    /// "Remove" in Settings: every model this app knows, current and legacy. A user who asks
+    /// for the model to go means the 3 GB folder too, not whichever one happened to be active.
+    static func deleteAllModels() {
+        for v in [variant] + legacyVariants { deleteModel(variant: v) }
     }
 
     // MARK: - Transcription
@@ -353,7 +484,7 @@ final class LocalWhisperEngine: TranscriptionEngine {
             return Self.failure(code: "not_apple_silicon", fatal: true, since: t0)
         }
         guard Self.isModelDownloaded() else {
-            LogManager.shared.log("🎙️ Local: ⏭️  Model not downloaded, refusing to fetch 1.5 GB mid-transcribe")
+            LogManager.shared.log("🎙️ Local: ⏭️  Model not downloaded, refusing to fetch 1.6 GB mid-transcribe")
             return Self.failure(code: "local_model_missing", fatal: true, since: t0)
         }
 
@@ -414,8 +545,8 @@ final class LocalWhisperEngine: TranscriptionEngine {
         // WhisperKit instance, so it is cleared before this function returns -- the serial
         // gate guarantees nobody else is mid-transcribe while it is set.
         let totalDuration = analysis.totalDuration
+        let monotonic = MonotonicProgress()
         if totalDuration > 0 {
-            let monotonic = MonotonicProgress()
             pipe.segmentDiscoveryCallback = { segments in
                 guard let last = segments.last else { return }
                 guard let fraction = monotonic.advance(to: Double(last.end) / totalDuration) else { return }
@@ -424,9 +555,32 @@ final class LocalWhisperEngine: TranscriptionEngine {
         }
         defer { pipe.segmentDiscoveryCallback = nil }
 
+        // The slow-Mac probe reads the same monotonic fraction the bar does, credited with the
+        // silence the VAD saw after it (Whisper reports nothing for a quiet window, and a
+        // quiet minute must not read as a slow minute). Without a duration there is no rate
+        // to judge, so such a run is never handed off.
+        let decodeStart = Date()
+        let decodingVariant = Self.activeVariant
+        let speech = analysis.segments.map { (start: $0.startSeconds, end: $0.endSeconds) }
+        let canRescue = cloudRescueAvailable
+        let rescueOff = Self.rescueDisabled
+        let decodedSeconds: @Sendable () -> Double = {
+            SlowDecodeProbe.creditedPosition(position: monotonic.current * totalDuration, speech: speech, duration: totalDuration)
+        }
+
         let results: [TranscriptionResult]
         do {
-            results = try await pipe.transcribe(audioPath: audioURL.path, decodeOptions: decodeOptions)
+            switch try await Self.decode(
+                pipe: pipe, audioPath: audioURL.path, options: decodeOptions,
+                decodedSeconds: decodedSeconds,
+                canRescue: { totalDuration > 0 && !rescueOff && canRescue() }
+            ) {
+            case .results(let decoded):
+                results = decoded
+            case .tooSlow(let factor, let decoded, let wall):
+                LogManager.shared.log(String(format: "🎙️ Local: ⏭️  decoding at %.2fx real time (%.0f s of %.0f s in %.0f s), this Mac is too slow, handing the recording to the cloud", factor, decoded, totalDuration, wall))
+                return Self.failure(code: Self.tooSlowCode, fatal: true, since: t0, attempts: attempts)
+            }
         } catch is CancellationError {
             LogManager.shared.log("🎙️ Local: transcription cancelled")
             return Self.failure(code: "cancelled", fatal: true, since: t0, attempts: attempts)
@@ -443,6 +597,8 @@ final class LocalWhisperEngine: TranscriptionEngine {
             return Self.failure(code: "local_transcribe_failed", fatal: true, since: t0, attempts: attempts)
         }
 
+        Self.logDecodeSummary(results: results, audioSec: totalDuration, variant: decodingVariant, since: decodeStart)
+
         // Whisper decodes in 30-second windows and snaps the last segment of a window to its
         // edge, so a 148-second recording hands back a cue ending around 168. `SrtCodec` and
         // the Groq path both bound cues to the recording; do the same here rather than ship a
@@ -450,26 +606,56 @@ final class LocalWhisperEngine: TranscriptionEngine {
         // reason to throw the transcript away, so that case bounds nothing.
         let recordingEnd = analysis.totalDuration > 0 ? analysis.totalDuration : .infinity
 
-        var segments: [SrtSegment] = []
         var dropped = 0
-        for result in results {
-            for s in result.segments {
-                let text = s.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !text.isEmpty else { continue }
-                guard !Hallucinations.isHallucination(text) else {
-                    dropped += 1
-                    continue
-                }
-                let start = Double(s.start)
-                guard start < recordingEnd else { continue }
-                let end = min(Double(s.end), recordingEnd)
-                guard end > start else { continue }
-                segments.append(SrtSegment(start: start, end: end, text: text))
-            }
-        }
+        var segments = Self.cues(from: results, recordingEnd: recordingEnd, dropped: &dropped)
         // Chunked decoding hands back one result per window and the windows are not
         // guaranteed to arrive in order.
         segments.sort { $0.start < $1.start }
+
+        // Whisper drops whole 30-second windows now and then: on a 289 s take the turbo
+        // model came back without 227-257 s in one run of five and without 182-212 s in
+        // another, nothing hallucinated, nothing logged, the speech simply absent. The VAD
+        // already knows where people spoke, so every voiced stretch the decode left without a
+        // cue is decoded again on its own; a window that collapsed in context decodes fine
+        // from its own start. Corder found the same (0.15.64) and recovers the same way.
+        let gaps = GapRecovery.uncoveredSpans(
+            speech: speech, cues: segments.map { (start: $0.start, end: $0.end) }, duration: recordingEnd
+        )
+        if !gaps.isEmpty {
+            let listed = gaps.map { String(format: "%.0f-%.0f", $0.start, $0.end) }.joined(separator: ", ")
+            LogManager.shared.log("🎙️ Local: \(gaps.count) voiced span(s) came back without cues (\(listed) s), decoding them again alone")
+            var clipOptions = decodeOptions
+            clipOptions.clipTimestamps = gaps.flatMap { [Float($0.start), Float($0.end)] }
+            // A short clip is a poor place to guess a language: hold the main pass's answer.
+            if clipOptions.language == nil, let majority = Self.majorityLanguage(of: results) {
+                clipOptions.language = majority
+                clipOptions.detectLanguage = false
+            }
+            do {
+                let extra = try await pipe.transcribe(audioPath: audioURL.path, decodeOptions: clipOptions)
+                var droppedInGaps = 0
+                var recovered = Self.cues(from: extra, recordingEnd: recordingEnd, dropped: &droppedInGaps)
+                    .filter { cue in gaps.contains { cue.start < $0.end && cue.end > $0.start } }
+                let isEcho: (SrtSegment) -> Bool = { cue in
+                    GapRecovery.isEdgeEcho(
+                        cue.text,
+                        previous: segments.last(where: { $0.end <= cue.start + 0.001 })?.text,
+                        next: segments.first(where: { $0.start >= cue.end - 0.001 })?.text
+                    )
+                }
+                let echoes = recovered.filter(isEcho).count
+                recovered.removeAll(where: isEcho)
+                let noise = recovered.filter { !GapRecovery.isPlausibleRecovery(text: $0.text) }.count
+                recovered.removeAll { !GapRecovery.isPlausibleRecovery(text: $0.text) }
+                dropped += droppedInGaps
+                segments.append(contentsOf: recovered)
+                segments.sort { $0.start < $1.start }
+                LogManager.shared.log("🎙️ Local: recovered \(recovered.count) cue(s) from the gaps\(echoes > 0 ? ", dropped \(echoes) edge echo(es)" : "")\(noise > 0 ? ", dropped \(noise) filler(s) over noise" : "")")
+            } catch {
+                // The transcript in hand is still a transcript; the gaps stay gaps.
+                LogManager.shared.log("🎙️ Local: gap recovery failed (\(error)), keeping the transcript as decoded", type: .error)
+            }
+        }
 
         // Decoding straight through yields long cues -- eight seconds and more of speech in
         // one block, which is unreadable as a subtitle. The cloud path already splits these
@@ -521,6 +707,110 @@ final class LocalWhisperEngine: TranscriptionEngine {
         }
     }
 
+    // MARK: - Decoding
+
+    /// WhisperKit's segments as cues on the recording's timeline: trimmed, with hallucinated
+    /// lines dropped and counted, and bounded to the recording. Whisper snaps the last
+    /// segment of a window to the window's edge, so a 148-second recording hands back a cue
+    /// ending around 168; bounding it here is what keeps a subtitle from outliving its video.
+    private static func cues(from results: [TranscriptionResult], recordingEnd: Double, dropped: inout Int) -> [SrtSegment] {
+        var segments: [SrtSegment] = []
+        for result in results {
+            for s in result.segments {
+                let text = s.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !text.isEmpty else { continue }
+                guard !Hallucinations.isHallucination(text) else {
+                    dropped += 1
+                    continue
+                }
+                let start = Double(s.start)
+                guard start < recordingEnd else { continue }
+                let end = min(Double(s.end), recordingEnd)
+                guard end > start else { continue }
+                segments.append(SrtSegment(start: start, end: end, text: text))
+            }
+        }
+        return segments
+    }
+
+    /// The language most windows of a pass agreed on, for the gap clips to inherit.
+    private static func majorityLanguage(of results: [TranscriptionResult]) -> String? {
+        var tally: [String: Int] = [:]
+        for r in results where !r.segments.isEmpty { tally[r.language, default: 0] += r.segments.count }
+        return tally.max { $0.value < $1.value }?.key
+    }
+
+    /// The error code a run too slow for this Mac comes back with. The orchestrator treats
+    /// it like a refusal and asks a cloud engine; it is never retried on-device.
+    static let tooSlowCode = "local_too_slow"
+
+    private enum DecodeOutcome {
+        case results([TranscriptionResult])
+        case tooSlow(factor: Double, decodedSec: Double, wall: TimeInterval)
+    }
+
+    /// Run the decode with a probe beside it. Whichever answers first decides, and the other
+    /// is cancelled: WhisperKit checks for cancellation between windows, so a handed-off
+    /// decode stops within one window rather than running on for an hour behind the cloud.
+    ///
+    /// The probe never fires without somewhere to go. A signed-out Mac keeps decoding at
+    /// whatever speed it has, because a slow transcript is still a transcript and the
+    /// alternative is none.
+    private static func decode(
+        pipe: WhisperKit,
+        audioPath: String,
+        options: DecodingOptions,
+        decodedSeconds: @escaping @Sendable () -> Double,
+        canRescue: @escaping @Sendable () -> Bool
+    ) async throws -> DecodeOutcome {
+        try await withThrowingTaskGroup(of: DecodeOutcome?.self) { group in
+            group.addTask {
+                .results(try await pipe.transcribe(audioPath: audioPath, decodeOptions: options))
+            }
+            group.addTask {
+                let start = Date()
+                while true {
+                    try await Task.sleep(nanoseconds: UInt64(SlowDecodeProbe.interval * 1_000_000_000))
+                    let wall = Date().timeIntervalSince(start)
+                    let decoded = decodedSeconds()
+                    if SlowDecodeProbe.isTooSlow(decodedAudioSec: decoded, wallSec: wall), canRescue() {
+                        return .tooSlow(factor: decoded / wall, decodedSec: decoded, wall: wall)
+                    }
+                }
+            }
+            defer { group.cancelAll() }
+            for try await outcome in group {
+                if let outcome { return outcome }
+            }
+            throw CancellationError()
+        }
+    }
+
+    /// One line per run with what WhisperKit measured: wall time against audio time, encoder
+    /// and decoder seconds, decoder loops and temperature fallbacks, and the language it
+    /// detected per window. Before 4.6.0 the log had the cue count and nothing else, so a
+    /// slow transcript could not be told apart from a fallback storm or a mis-detected
+    /// language. Nothing in it identifies the recording.
+    private static func logDecodeSummary(results: [TranscriptionResult], audioSec: Double, variant: String, since start: Date) {
+        let wall = Date().timeIntervalSince(start)
+        var languages: [String: Int] = [:]
+        var encode = 0.0, decode = 0.0, loops = 0.0, fallbackSec = 0.0
+        for r in results {
+            languages[r.language, default: 0] += 1
+            encode += r.timings.encoding
+            decode += r.timings.decodingLoop
+            loops += r.timings.totalDecodingLoops
+            // Seconds spent in temperature fallbacks. WhisperKit's fallback COUNT is assigned,
+            // not summed, so it reads as the last window's temperature index, not a total.
+            fallbackSec += r.timings.decodingFallback
+        }
+        let langs = languages.sorted { $0.value > $1.value }.map { "\($0.key) \($0.value)" }.joined(separator: ", ")
+        LogManager.shared.log(String(
+            format: "🎙️ Local: decoded %.0f s of audio in %.1f s (%.2fx real time) on %@, encode %.1f s, decode %.1f s, %.0f decoder loops, %.1f s in fallbacks, language: %@",
+            audioSec, wall, audioSec / max(wall, 0.001), variant, encode, decode, loops, fallbackSec, langs.isEmpty ? "none" : langs
+        ))
+    }
+
     // MARK: - Failure mapping
 
     /// Which failures are worth another run.
@@ -563,6 +853,152 @@ final class LocalWhisperEngine: TranscriptionEngine {
 
     private static func elapsedMs(since t0: Date) -> Int {
         Int(Date().timeIntervalSince(t0) * 1000)
+    }
+}
+
+// MARK: - Gap recovery
+
+/// Which stretches of speech a decode left without a single cue, so they can be decoded
+/// again on their own. Pure: the VAD's segments and the decode's cues go in, clip ranges on
+/// the recording's timeline come out.
+enum GapRecovery {
+    /// Voiced audio a stretch must hold before it earns a second decode. Below this it is a
+    /// cough, a "yes", or the VAD's edge, and a clip that short confuses Whisper more than it
+    /// helps.
+    static let minVoicedSec: Double = 2.0
+    /// Air around each clip so Whisper hears the sentence edges rather than a word cut in half.
+    static let padSec: Double = 0.5
+    /// Stretches closer than this decode as one clip.
+    static let mergeGapSec: Double = 1.0
+    /// The most clips one run re-decodes. A transcript missing more than this did not lose
+    /// windows, it lost the recording (wrong language, broken audio), and a second pass would
+    /// only lose it again, slower.
+    static let maxSpans = 40
+
+    struct Span: Equatable {
+        let start: Double
+        let end: Double
+    }
+
+    static func uncoveredSpans(
+        speech: [(start: Double, end: Double)],
+        cues: [(start: Double, end: Double)],
+        duration: Double,
+        minVoiced: Double = minVoicedSec,
+        pad: Double = padSec,
+        mergeGap: Double = mergeGapSec,
+        cap: Int = maxSpans
+    ) -> [Span] {
+        let sortedCues = cues.sorted { $0.start < $1.start }
+
+        // Each voiced segment minus every cue that overlaps it, keeping the uncovered pieces
+        // long enough to matter.
+        var pieces: [Span] = []
+        for seg in speech.sorted(by: { $0.start < $1.start }) {
+            var cursor = seg.start
+            for cue in sortedCues where cue.end > seg.start && cue.start < seg.end {
+                if cue.start > cursor, cue.start - cursor >= minVoiced {
+                    pieces.append(Span(start: cursor, end: cue.start))
+                }
+                cursor = max(cursor, cue.end)
+            }
+            if seg.end > cursor, seg.end - cursor >= minVoiced {
+                pieces.append(Span(start: cursor, end: seg.end))
+            }
+        }
+        guard !pieces.isEmpty, pieces.count <= cap else { return [] }
+
+        // Merge neighbours, unless a cue sits between them: re-decoding across an existing
+        // cue would say its words a second time. Then pad, then clamp to the recording.
+        var merged: [Span] = []
+        for piece in pieces {
+            if let last = merged.last, piece.start - last.end <= mergeGap,
+               !sortedCues.contains(where: { $0.start >= last.end - 0.001 && $0.end <= piece.start + 0.001 }) {
+                merged[merged.count - 1] = Span(start: last.start, end: max(last.end, piece.end))
+            } else {
+                merged.append(piece)
+            }
+        }
+        // Pad for the sentence edges, but never into a neighbouring cue: a clip that starts
+        // half a second inside the previous cue transcribes its last word again, and that word
+        // came back as a subtitle of its own ("application" after "...in the application.").
+        let limit = duration.isFinite ? duration : .greatestFiniteMagnitude
+        return merged.map { span in
+            let previousEnd = sortedCues.filter { $0.end <= span.start + 0.001 }.map(\.end).max() ?? 0
+            let nextStart = sortedCues.filter { $0.start >= span.end - 0.001 }.map(\.start).min() ?? limit
+            return Span(start: max(previousEnd, max(0, span.start - pad)),
+                        end: min(nextStart, min(limit, span.end + pad)))
+        }.filter { $0.end > $0.start }
+    }
+
+    /// A recovered cue that merely repeats the edge of a neighbour. Whisper tends to re-say
+    /// the word a clip starts or ends on; a one- or two-word cue that is the tail of the cue
+    /// before it or the head of the cue after it is that echo, not speech that was missing.
+    static func isEdgeEcho(_ text: String, previous: String?, next: String?) -> Bool {
+        let w = tokens(text)
+        guard !w.isEmpty, w.count <= 2 else { return false }
+        if let p = previous.map(tokens), p.count >= w.count, Array(p.suffix(w.count)) == w { return true }
+        if let n = next.map(tokens), n.count >= w.count, Array(n.prefix(w.count)) == w { return true }
+        return false
+    }
+
+    /// Whether a recovered cue reads like recovered speech at all. The clips come from
+    /// stretches the main pass found nothing in, and an energy VAD counts keyboard clatter
+    /// and room noise as "voice", so Whisper is handed noise here more than anywhere else and
+    /// answers it with its favourite fillers: "Thank you." over twelve seconds of typing, a
+    /// lone "you". Their timestamps are invented too (the same "Thank you." came back as one
+    /// second on the next run), so duration cannot tell them apart. What can: this pass
+    /// exists to put back a LOST WINDOW, which is tens of words. One or two words in a
+    /// stretch the first pass heard nothing in are noise, and are dropped whatever they say.
+    static func isPlausibleRecovery(text: String) -> Bool {
+        tokens(text).count >= 3
+    }
+
+    private static func tokens(_ text: String) -> [String] {
+        text.lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+    }
+}
+
+// MARK: - Slow-Mac probe
+
+/// When an on-device decode is too slow to be worth finishing here.
+///
+/// The numbers are Corder's, measured on real Macs (0.15.71): a healthy Apple Silicon Mac
+/// decodes at 2x to 10x real time with the turbo model, while an 8 GB Mac under memory
+/// pressure ran at a fifth of real time and spent 83 minutes on 12 minutes of speech. Pure,
+/// so the decision is covered without a model on disk.
+enum SlowDecodeProbe {
+    /// How long a decode runs before anyone judges it. The first stretch of a cold run goes
+    /// to the window warm-up and, on a Mac that missed its Neural Engine budget, to the slower
+    /// GPU encoder; judging earlier would hand healthy Macs to the cloud for nothing.
+    static let probeAfter: TimeInterval = 180
+    /// Audio seconds decoded per wall second below which the Mac is too slow.
+    static let realtimeFloor: Double = 0.5
+    /// How often the probe looks.
+    static let interval: TimeInterval = 15
+
+    static func isTooSlow(
+        decodedAudioSec: Double,
+        wallSec: TimeInterval,
+        probeAfter: TimeInterval = probeAfter,
+        floor: Double = realtimeFloor
+    ) -> Bool {
+        guard wallSec >= probeAfter else { return false }
+        return decodedAudioSec / wallSec < floor
+    }
+
+    /// How far the decoder is, credited with the silence ahead of it. The bar moves on the
+    /// end of the last cue, and Whisper says nothing for a window with no speech, so during
+    /// a quiet stretch the position stands still while the decoder is in fact racing through
+    /// it. A position inside speech is taken as is; one in silence is moved to the start of
+    /// the next speech segment, or to the end when none is left. Generous on purpose: the
+    /// cost of under-reporting is a hand-off a healthy Mac did not need.
+    static func creditedPosition(position: Double, speech: [(start: Double, end: Double)], duration: Double) -> Double {
+        if speech.contains(where: { position >= $0.start && position < $0.end }) { return position }
+        let next = speech.map(\.start).filter { $0 > position }.min()
+        return min(duration, next ?? duration)
     }
 }
 
@@ -617,15 +1053,24 @@ private final class DownloadProgressRegistry: @unchecked Sendable {
 
     private let lock = NSLock()
     private var progress: Double?
+    /// Which folder the bytes are landing in. A download only makes ITS variant read as
+    /// incomplete; the legacy model next to it stays usable for the whole update window.
+    private var variant: String?
 
     var current: Double? {
         lock.lock(); defer { lock.unlock() }
         return progress
     }
 
+    var downloadingVariant: String? {
+        lock.lock(); defer { lock.unlock() }
+        return variant
+    }
+
     func set(progress value: Double?) {
         lock.lock()
         progress = value
+        variant = value == nil ? nil : LocalWhisperEngine.variant
         lock.unlock()
         LocalModelState.push(progress: value)
     }
@@ -642,12 +1087,17 @@ private actor WhisperModelHost {
     static let shared = WhisperModelHost()
 
     private var pipe: WhisperKit?
+    /// Which model folder `pipe` was loaded from. The folder on disk can change under a
+    /// resident instance: the real turbo lands while the legacy model is loaded, and
+    /// `LocalWhisperEngine.activeVariant` moves. The next caller then gets a fresh load
+    /// rather than the model the app has already stopped wanting.
+    private var loadedVariant: String?
     /// Single-flight guard. `WhisperKit(config)` fetches the tokenizer sidecar at init;
     /// two concurrent inits race on the same `.incomplete` file in the same folder and
     /// corrupt each other, which surfaces later as "Required configuration file missing:
     /// tokenizer.json". Funnelling every caller through one task makes the second wait
     /// instead of starting a competing download.
-    private var initTask: Task<Void, Error>?
+    private var initTask: Task<WhisperKit, Error>?
     /// Whether the in-flight task is a download-time prewarm (long budget, no GPU
     /// fallback) or a transcribe (short budget, GPU fallback). The distinction is load
     /// bearing, see `ensureLoaded`.
@@ -656,7 +1106,14 @@ private actor WhisperModelHost {
     func ensureLoaded(aneBudget: Double, allowGPUFallback: Bool) async throws -> WhisperKit {
         try await stageTokenizerIfNeeded()
 
-        if let p = pipe { return p }
+        if let p = pipe {
+            if loadedVariant == LocalWhisperEngine.activeVariant { return p }
+            // Safe to drop: a transcribe reaches here only through the serial gate, and a
+            // background warm only when nothing is resident, so nobody is mid-decode on it.
+            LogManager.shared.log("🎙️ Local: model on disk changed (\(loadedVariant ?? "?") → \(LocalWhisperEngine.activeVariant)), releasing the loaded one")
+            pipe = nil
+            loadedVariant = nil
+        }
 
         if let inFlight = initTask {
             if !initTaskIsPrewarm {
@@ -666,7 +1123,7 @@ private actor WhisperModelHost {
                 // waiting is safe.
                 do {
                     try await inFlight.value
-                    if let p = pipe { return p }
+                    if let p = residentIfCurrent() { return p }
                 } catch {
                     LogManager.shared.log("🎙️ Local: in-flight load failed (\(error)), loading ourselves", type: .error)
                 }
@@ -677,13 +1134,13 @@ private actor WhisperModelHost {
                 // different engines: Neural Engine versus Metal, no contention.
                 do {
                     try await withDeadline(aneBudget) { try await inFlight.value }
-                    if let p = pipe { return p }
+                    if let p = residentIfCurrent() { return p }
                 } catch {
                     guard allowGPUFallback else { throw LocalWhisperError.modelLoadTimedOut }
                     LogManager.shared.log("🎙️ Local: prewarm still compiling after \(Int(aneBudget))s, loading on the GPU alongside it")
                     do {
-                        try await loadGPU(budget: 180)
-                        if let p = pipe { return p }
+                        try await loadGPU(budget: 180, variant: LocalWhisperEngine.activeVariant)
+                        if let p = residentIfCurrent() { return p }
                     } catch LocalWhisperError.modelLoadTimedOut {
                         // Slowest class of Mac: the GPU compile could not land either. Ride
                         // the prewarm's ANE compile to completion rather than failing the
@@ -691,7 +1148,7 @@ private actor WhisperModelHost {
                         // and it caches.
                         LogManager.shared.log("🎙️ Local: GPU timed out too, riding the prewarm compile to completion")
                         let landed = (try? await withDeadline(1500) { try await inFlight.value }) != nil
-                        if let p = pipe { return p }
+                        if let p = residentIfCurrent() { return p }
                         // A background warm lets its model go the moment it lands, so the ride
                         // can end at an empty host with the cache now warm: load our own below.
                         // Still compiling or failed stays a timeout, because a second init
@@ -702,15 +1159,56 @@ private actor WhisperModelHost {
             }
         }
 
-        let task = Task<Void, Error> {
+        let task = Task<WhisperKit, Error> {
             try await self.loadPipe(aneBudget: aneBudget, allowGPUFallback: allowGPUFallback)
         }
         initTask = task
         initTaskIsPrewarm = !allowGPUFallback
-        defer { initTask = nil }
-        try await task.value
-        guard let p = pipe else { throw LocalWhisperError.modelNotReady }
+        // Ours to clear only while it is still ours: a waiter that resumed first may have
+        // started its own load by now, and wiping that would let a third caller start a
+        // second init beside it, the corruption this host exists to prevent.
+        defer { if initTask == task { initTask = nil } }
+        // The instance THIS load produced, not whatever `pipe` holds by the time the await
+        // returns: a waiter that saw the model on disk change can have released it meanwhile.
+        return try await task.value
+    }
+
+    /// The resident instance, but only if it came from the folder the engine wants NOW. A
+    /// load that was in flight while the new model landed may have adopted the legacy one;
+    /// handing that out would keep the slow model in service for the rest of the session.
+    private func residentIfCurrent() -> WhisperKit? {
+        guard let p = pipe else { return nil }
+        guard loadedVariant == LocalWhisperEngine.activeVariant else {
+            pipe = nil
+            loadedVariant = nil
+            return nil
+        }
         return p
+    }
+
+    /// The download-time compile. Only when nothing is loaded or loading: a transcribe mid-load
+    /// on the legacy model and a prewarm of the new one resuming in the wrong order used to
+    /// leave the transcribe with no instance at all (`local_model_missing`, no cloud fallback).
+    /// Returns false when it stood aside; the background warm pays the compile later.
+    func prewarmIfIdle(aneBudget: Double) async throws -> Bool {
+        // A resident instance of a model the engine no longer wants is not "busy": the new
+        // model has to be compiled regardless, and nobody is decoding on the old one here.
+        guard residentIfCurrent() == nil, initTask == nil else { return false }
+        _ = try await ensureLoaded(aneBudget: aneBudget, allowGPUFallback: false)
+        return true
+    }
+
+    /// Delete the legacy folders, but never under a load: WhisperKit reads the encoder last,
+    /// after minutes of decoder compile on an 8 GB Mac, and a folder that vanishes meanwhile
+    /// fails the load and wipes a model. Synchronous inside the actor, so no load can start
+    /// between the check and the removal. A resident instance is fine: its weights are mapped
+    /// into memory and outlive the files.
+    func reclaimLegacyIfIdle() -> Int64 {
+        guard initTask == nil else {
+            LogManager.shared.log("🎙️ Local: legacy model left in place, a load is in flight")
+            return 0
+        }
+        return LocalWhisperEngine.reclaimLegacyModels()
     }
 
     /// Load for the cache's sake, then let the model go. A resident model would hold its
@@ -724,7 +1222,7 @@ private actor WhisperModelHost {
     /// after its next launch. A transcribe that joins while this warm is loading keeps the
     /// reference it was handed; dropping ours does not touch it.
     func warmCache(reason: String, aneBudget: Double) async throws {
-        guard pipe == nil, initTask == nil else { return }
+        guard residentIfCurrent() == nil, initTask == nil else { return }
         LogManager.shared.log("🎙️ Local: warming the model cache in the background (\(reason))")
         let t0 = Date()
         _ = try await ensureLoaded(aneBudget: aneBudget, allowGPUFallback: false)
@@ -734,16 +1232,21 @@ private actor WhisperModelHost {
 
     /// Every successful load goes through here, so the warm-up schedule knows the cache was
     /// just filled no matter who asked for the load.
-    private func adopt(_ loaded: WhisperKit) {
+    private func adopt(_ loaded: WhisperKit, variant: String) {
         pipe = loaded
-        LocalModelWarmup.recordLoad()
+        loadedVariant = variant
+        LocalModelWarmup.recordLoad(variant: variant)
     }
 
     // MARK: Loading
 
-    private func loadPipe(aneBudget: Double, allowGPUFallback: Bool) async throws {
+    private func loadPipe(aneBudget: Double, allowGPUFallback: Bool) async throws -> WhisperKit {
         purgeIncompleteDownloads()
         clearStaleTokenizer()
+
+        // Pinned once per load. A download finishing mid-compile must not make the config
+        // and the bookkeeping disagree about which folder this instance came from.
+        let variant = LocalWhisperEngine.activeVariant
 
         // Nothing below reports progress: the Core ML compile is silent and can run for
         // minutes. Say "preparing" rather than leaving a progress bar frozen near the end.
@@ -760,19 +1263,18 @@ private actor WhisperModelHost {
         let ramGB = ProcessInfo.processInfo.physicalMemory / 1_073_741_824
         if ramGB <= 8 {
             LogManager.shared.log("🎙️ Local: \(ramGB) GB RAM, loading on the GPU directly with a generous budget")
-            try await loadGPU(budget: 1500)
-            return
+            return try await loadGPU(budget: 1500, variant: variant)
         }
 
-        LogManager.shared.log("🎙️ Local: loading WhisperKit (ANE) from \(LocalWhisperEngine.modelFolderURL.path), budget \(Int(aneBudget))s")
+        LogManager.shared.log("🎙️ Local: loading WhisperKit (ANE) from \(LocalWhisperEngine.modelFolderURL(for: variant).path), budget \(Int(aneBudget))s")
         do {
             let t0 = Date()
             let box = PipeBox()
-            try await withDeadline(aneBudget) { box.set(try await WhisperKit(makeWhisperConfig(useANE: true))) }
+            try await withDeadline(aneBudget) { box.set(try await WhisperKit(makeWhisperConfig(useANE: true, variant: variant))) }
             guard let loaded = box.value else { throw LocalWhisperError.modelNotReady }
-            adopt(loaded)
+            adopt(loaded, variant: variant)
             LogManager.shared.log(String(format: "🎙️ Local: loaded in %.1fs (encoder=ANE)", Date().timeIntervalSince(t0)))
-            return
+            return loaded
         } catch is DeadlineError {
             // The init that lost the race keeps compiling and caches when it finishes, so
             // the next load is fast. For this run:
@@ -793,7 +1295,7 @@ private actor WhisperModelHost {
         }
 
         do {
-            try await loadGPU(budget: 180)
+            return try await loadGPU(budget: 180, variant: variant)
         } catch LocalWhisperError.modelLoadTimedOut {
             // Both compiles missed their budgets. Rather than fail the recording, wait out
             // the ANE compile leaked in step 1: it is the one that actually completes on
@@ -801,10 +1303,11 @@ private actor WhisperModelHost {
             LogManager.shared.log("🎙️ Local: GPU timed out too, riding the leaked ANE compile to completion")
             let t0 = Date()
             let box = PipeBox()
-            try await withDeadline(1500) { box.set(try await WhisperKit(makeWhisperConfig(useANE: true))) }
+            try await withDeadline(1500) { box.set(try await WhisperKit(makeWhisperConfig(useANE: true, variant: variant))) }
             guard let loaded = box.value else { throw LocalWhisperError.modelLoadTimedOut }
-            adopt(loaded)
+            adopt(loaded, variant: variant)
             LogManager.shared.log(String(format: "🎙️ Local: loaded in %.1fs (encoder=ANE, after the GPU timeout)", Date().timeIntervalSince(t0)))
+            return loaded
         }
     }
 
@@ -817,20 +1320,22 @@ private actor WhisperModelHost {
     /// alongside the ANE compile and doubles the heat for fifteen minutes. Failing fast here
     /// drops to the ANE ride, which is the path that actually completes. The 8 GB caller
     /// overrides with a generous budget because there the GPU has nothing to race.
-    private func loadGPU(budget: TimeInterval) async throws {
+    @discardableResult
+    private func loadGPU(budget: TimeInterval, variant: String) async throws -> WhisperKit {
         let t0 = Date()
         do {
             let box = PipeBox()
-            try await withDeadline(budget) { box.set(try await WhisperKit(makeWhisperConfig(useANE: false))) }
+            try await withDeadline(budget) { box.set(try await WhisperKit(makeWhisperConfig(useANE: false, variant: variant))) }
             guard let loaded = box.value else { throw LocalWhisperError.modelNotReady }
-            adopt(loaded)
+            adopt(loaded, variant: variant)
             LogManager.shared.log(String(format: "🎙️ Local: loaded in %.1fs (encoder=GPU)", Date().timeIntervalSince(t0)))
+            return loaded
         } catch is DeadlineError {
             LogManager.shared.log("🎙️ Local: GPU load timed out (>\(Int(budget))s), slow cold compile", type: .error)
             throw LocalWhisperError.modelLoadTimedOut
         } catch {
-            LogManager.shared.log("🎙️ Local: GPU init error (\(error)), both encoders failed, wiping the model and its download cache", type: .error)
-            LocalWhisperEngine.deleteModel()
+            LogManager.shared.log("🎙️ Local: GPU init error (\(error)), both encoders failed, wiping \(variant) and its download cache", type: .error)
+            LocalWhisperEngine.deleteModel(variant: variant)
             throw LocalWhisperError.modelCorruptWiped(error.localizedDescription)
         }
     }
@@ -907,14 +1412,14 @@ private actor WhisperModelHost {
 /// `download: true` lets WhisperKit fetch the tokenizer sidecar if staging somehow missed
 /// it; the model files on disk are reused either way. `prewarm: false` skips a second
 /// compile that batch transcription has no use for.
-private func makeWhisperConfig(useANE: Bool) -> WhisperKitConfig {
+private func makeWhisperConfig(useANE: Bool, variant: String) -> WhisperKitConfig {
     let compute = useANE
         ? ModelComputeOptions(audioEncoderCompute: .cpuAndNeuralEngine)
         : ModelComputeOptions(audioEncoderCompute: .cpuAndGPU)
     return WhisperKitConfig(
-        model: LocalWhisperEngine.variant,
+        model: variant,
         downloadBase: LocalWhisperEngine.modelsDir,
-        modelFolder: LocalWhisperEngine.modelFolderURL.path,
+        modelFolder: LocalWhisperEngine.modelFolderURL(for: variant).path,
         computeOptions: compute,
         verbose: false,
         logLevel: .error,

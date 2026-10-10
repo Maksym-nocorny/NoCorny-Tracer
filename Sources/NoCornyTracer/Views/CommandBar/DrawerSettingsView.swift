@@ -489,9 +489,12 @@ struct DrawerSettingsView: View {
         switch modelPhase {
         case .ready:
             modelDot(Theme.Colors.statusGreen)
-            modelStatusText("Ready · 1.5 GB")
+            modelStatusText(LocalWhisperEngine.readySizeLabel)
             modelLink("Remove") {
-                LocalWhisperEngine.deleteModel()
+                // A removal the user asked for stays removed: the background fetch that
+                // keeps the default engine supplied must not undo this button.
+                UserDefaults.standard.set(true, forKey: LocalModelWarmup.autoDownloadOptOutKey)
+                LocalWhisperEngine.deleteAllModels()
                 LocalModelState.pushRefresh()
             }
 
@@ -543,6 +546,7 @@ struct DrawerSettingsView: View {
 
     private func startModelDownload() {
         modelDownloadError = nil
+        UserDefaults.standard.set(false, forKey: LocalModelWarmup.autoDownloadOptOutKey)
         Task {
             do {
                 try await LocalWhisperEngine.downloadModel()

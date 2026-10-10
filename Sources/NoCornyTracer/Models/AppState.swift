@@ -38,7 +38,7 @@ final class AppState {
         transcriptionClient: TranscriptionProxyClient(
             tokenProvider: { [weak self] in self?.tracerAPIClient.apiToken }
         ),
-        preferredKind: { [weak self] in self?.transcriptionEngine ?? .cloudGemini },
+        preferredKind: { [weak self] in self?.transcriptionEngine ?? TranscriptionEngineKind.defaultForThisMac },
         expectedSpeakers: { [weak self] in self?.expectedSpeakers ?? .auto }
     )
     let hotkeyManager = HotkeyManager()
@@ -138,7 +138,9 @@ final class AppState {
             defaults.set(expectedSpeakers.rawValue, forKey: "expectedSpeakers")
         }
     }
-    var transcriptionEngine: TranscriptionEngineKind = .cloudGemini {
+    /// On this Mac by default since 4.6.0 (Apple Silicon); the stored choice, when there is
+    /// one, wins. See `TranscriptionEngineKind.defaultForThisMac`.
+    var transcriptionEngine: TranscriptionEngineKind = TranscriptionEngineKind.defaultForThisMac {
         didSet {
             defaults.set(transcriptionEngine.rawValue, forKey: "transcriptionEngine")
         }
