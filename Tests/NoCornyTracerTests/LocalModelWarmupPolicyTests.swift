@@ -12,12 +12,25 @@ final class LocalModelWarmupPolicyTests: XCTestCase {
     private let os = "Version 26.6.2 (Build 25G83)"
     private let now = Date(timeIntervalSince1970: 1_789_550_000)
 
-    private func stamp(app: String = "4.5.4", os: String? = nil, ago: TimeInterval = 3600) -> LocalModelWarmup.Stamp {
-        LocalModelWarmup.Stamp(appBuild: app, osBuild: os ?? self.os, loadedAt: now.addingTimeInterval(-ago))
+    private let model = "openai_whisper-large-v3-v20240930_turbo"
+
+    private func stamp(app: String = "4.5.4", os: String? = nil, ago: TimeInterval = 3600, variant: String? = "openai_whisper-large-v3-v20240930_turbo") -> LocalModelWarmup.Stamp {
+        LocalModelWarmup.Stamp(appBuild: app, osBuild: os ?? self.os, loadedAt: now.addingTimeInterval(-ago), variant: variant)
     }
 
     private func reason(_ stamp: LocalModelWarmup.Stamp?) -> LocalModelWarmup.Reason? {
-        LocalModelWarmup.reason(stamp: stamp, appBuild: "4.5.4", osBuild: os, now: now)
+        LocalModelWarmup.reason(stamp: stamp, appBuild: "4.5.4", osBuild: os, now: now, variant: model)
+    }
+
+    /// The update window: a transcribe on the legacy model stamped this build, then the new
+    /// model landed. Without this the new model would never be compiled ahead of a take.
+    func testALoadOfAnotherModelWarms() {
+        XCTAssertEqual(reason(stamp(variant: "openai_whisper-large-v3_turbo")), .modelChanged)
+    }
+
+    /// Stamps written by 4.5.x carry no variant; they must still decode, and they warm.
+    func testAStampWithoutAVariantWarms() {
+        XCTAssertEqual(reason(stamp(variant: nil)), .modelChanged)
     }
 
     // MARK: - Reason
