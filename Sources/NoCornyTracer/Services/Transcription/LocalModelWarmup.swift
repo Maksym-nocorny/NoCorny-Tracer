@@ -193,7 +193,28 @@ final class LocalModelWarmup {
     /// it starts, and someone who opened the app to record is often still picking a window
     /// at the two-minute mark, not recording yet, so "not busy" would let it start under
     /// their take. By ten they are recording (the tick skips) or they were not here to record.
-    static let launchDelay: TimeInterval = 600
+    /// Except when the cache is KNOWN to be cold: see `coldLaunchDelay`.
+    nonisolated static let launchDelay: TimeInterval = 600
+    /// First look after a launch whose cache is known to be cold (4.6.2): the app or macOS
+    /// updated, the model changed, or it never loaded. Seconds, not minutes, because the
+    /// cold compile is paid either way, and the only question is who waits for it.
+    /// Someone who clicked "relaunch to update" usually records straight away: on 14.10.2026
+    /// the take started 12 s after the relaunch, and its one-minute transcript then sat on
+    /// "Preparing model..." for 62 s while the compile that the ten-minute wait had put off
+    /// ran in front of it. Started at launch, the same compile (76 s on an M5) runs during
+    /// the take instead and is done or nearly done when the take ends. A cache that is only
+    /// idle (`Reason.idle`) is probably still warm, so it keeps the ten minutes.
+    nonisolated static let coldLaunchDelay: TimeInterval = 5
+
+    /// Which first look a launch gets. Pure, so the choice is covered without a timer.
+    nonisolated static func firstLookDelay(for reason: Reason?) -> TimeInterval {
+        switch reason {
+        case .appUpdated?, .systemUpdated?, .modelChanged?, .neverLoaded?:
+            return coldLaunchDelay
+        case .idle?, nil:
+            return launchDelay
+        }
+    }
     /// Later looks. Only the idle rule can become true while the app runs, so this is cheap
     /// and rarely does anything; a busy tick simply waits for the next one.
     static let checkInterval: TimeInterval = 1800
@@ -230,6 +251,22 @@ final class LocalModelWarmup {
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: UInt64(Self.downloadDelay * 1_000_000_000))
             self.tickDownload()
+        }
+
+        // A cache known to be cold gets an early, one-off look; the regular schedule below
+        // stays as it was. Warm only: the download keeps its own delay.
+        let launchReason = Self.reason(
+            stamp: Self.loadStamp(from: .standard),
+            appBuild: Self.currentAppBuild,
+            osBuild: Self.currentOSBuild,
+            now: Date()
+        )
+        let firstLook = Self.firstLookDelay(for: launchReason)
+        if firstLook < Self.launchDelay {
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: UInt64(firstLook * 1_000_000_000))
+                self.tickWarm()
+            }
         }
 
         timer?.invalidate()
@@ -285,6 +322,10 @@ final class LocalModelWarmup {
 
     private func tick() {
         tickDownload()
+        tickWarm()
+    }
+
+    private func tickWarm() {
         // A reclaim that stood aside at launch because a load was in flight gets another
         // chance here, rather than at the next launch weeks away.
         Task.detached(priority: .utility) { await LocalWhisperEngine.reclaimLegacyModelsWhenIdle() }

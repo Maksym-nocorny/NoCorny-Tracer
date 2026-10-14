@@ -1,5 +1,9 @@
 # Changelog
 
+## [4.6.2] - 2026-10-14
+### Fixed
+- **The first transcript after an update no longer waits for the model to be prepared.** macOS keeps the on-device model compiled for the Neural Engine in its own cache and drops that copy after a macOS or Tracer update. Tracer rebuilt it in the background, but only ten minutes after launch, so a take recorded right after "relaunch to update" paid the rebuild itself: about a minute on "Preparing model..." on a recent Mac. When the cache is known to be cold (after an app or macOS update, a model change, or on a first load), the rebuild now starts five seconds after launch and runs while you record. A cache that is only idle keeps the ten-minute wait.
+
 ## [4.6.1] - 2026-10-14
 ### Changed
 - **Transcription runs on this Mac first, and the cloud is its backup.** A Mac that had picked "Cloud (Gemini)" before 4.6.0 kept it, because 4.6.0 changed the default only for Macs that had never chosen. Most of those choices date from when the on-device model took minutes per recording; 4.6.0 fixed the speed. On Apple Silicon a stored cloud choice now moves to "On-device (Whisper)" once, on the first launch of 4.6.1. Picking Gemini again in Settings after that is kept as before. Intel Macs keep the cloud, and so does a Mac where the on-device model was removed in Settings.

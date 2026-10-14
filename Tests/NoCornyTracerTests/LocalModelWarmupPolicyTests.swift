@@ -104,6 +104,27 @@ final class LocalModelWarmupPolicyTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(LocalModelWarmup.launchDelay, 600)
     }
 
+    /// 4.6.2: a cache KNOWN to be cold is compiled seconds after launch, because the next
+    /// transcript pays the compile anyway. On 14.10.2026 the take started 12 s after the
+    /// update relaunch and its transcript waited 62 s for the compile the ten minutes put off.
+    func testAKnownColdCacheIsWarmedRightAfterLaunch() {
+        let cold: [LocalModelWarmup.Reason] = [
+            .appUpdated(from: "4.6.1", to: "4.6.2"), .systemUpdated, .modelChanged, .neverLoaded,
+        ]
+        for reason in cold {
+            XCTAssertEqual(LocalModelWarmup.firstLookDelay(for: reason), LocalModelWarmup.coldLaunchDelay,
+                           "\(reason.logDescription) must not wait ten minutes")
+        }
+        XCTAssertLessThan(LocalModelWarmup.coldLaunchDelay, 12, "must beat a take started 12 s after the relaunch")
+    }
+
+    /// A cache that is merely idle is probably still warm, and a warm one needs no look at
+    /// all: both keep the ten minutes that spare someone who opened the app to record.
+    func testAnIdleOrWarmCacheKeepsTheTenMinutes() {
+        XCTAssertEqual(LocalModelWarmup.firstLookDelay(for: .idle(days: 8)), LocalModelWarmup.launchDelay)
+        XCTAssertEqual(LocalModelWarmup.firstLookDelay(for: nil), LocalModelWarmup.launchDelay)
+    }
+
     // MARK: - Pipeline claims
 
     func testAClaimHoldsUntilItsRunReleasesIt() {
