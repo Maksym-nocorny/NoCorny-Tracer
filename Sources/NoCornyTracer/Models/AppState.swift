@@ -127,9 +127,6 @@ final class AppState {
     // toggle. The persisted `panelsCapturable` key is ignored from here on; a
     // silent migration, because the setting has no successor to carry a value to.
 
-    /// Which engine transcribes. Defaults to the cloud so nothing changes for anyone
-    /// already using the app; on-device is opt-in until its model is downloaded, which is
-    /// a deliberate 1.5 GB decision rather than something that happens on first launch.
     /// How many people the user expects in a recording. A default for new recordings only:
     /// `DiarizationAudioCache` keeps the audio, so a wrong answer is corrected per recording
     /// from the Recordings list rather than by recording again.
@@ -324,9 +321,26 @@ final class AppState {
            let speakers = ExpectedSpeakers(rawValue: speakersRaw) {
             self.expectedSpeakers = speakers
         }
-        if let engineRaw = defaults.string(forKey: "transcriptionEngine"),
-           let engine = TranscriptionEngineKind(rawValue: engineRaw) {
-            self.transcriptionEngine = engine
+        let storedEngine = defaults.string(forKey: "transcriptionEngine")
+            .flatMap(TranscriptionEngineKind.init(rawValue:))
+        if let storedEngine {
+            self.transcriptionEngine = storedEngine
+        }
+        // 4.6.1: on this Mac first, the cloud as the fallback - a cloud choice stored before
+        // this release moves to on-device once (see `localFirstMigration`). didSet does not
+        // fire in init, so the migrated value is written back explicitly.
+        if let moved = TranscriptionEngineKind.localFirstMigration(
+            stored: storedEngine,
+            alreadyApplied: defaults.bool(forKey: TranscriptionEngineKind.localFirstMigrationKey),
+            appleSilicon: LocalWhisperEngine.isAvailable,
+            modelRemovedByUser: defaults.bool(forKey: LocalModelWarmup.autoDownloadOptOutKey)
+        ) {
+            self.transcriptionEngine = moved
+            defaults.set(moved.rawValue, forKey: "transcriptionEngine")
+            LogManager.shared.log("🎛️ Engine: moved the stored \(storedEngine?.rawValue ?? "none") choice to \(moved.rawValue) (on-device first, the cloud as the fallback)")
+        }
+        if LocalWhisperEngine.isAvailable {
+            defaults.set(true, forKey: TranscriptionEngineKind.localFirstMigrationKey)
         }
         self.noiseSuggestionDismissedForever = defaults.bool(forKey: Self.noiseSuggestionDismissedKey)
         if let modeRaw = defaults.string(forKey: "captureMode"),
@@ -1462,7 +1476,9 @@ final class AppState {
         // (oversized request, signed out, bad request) and chunked runs that already did their
         // own internal retry wave — re-running those costs a full re-encode plus N more calls
         // to fail identically. Before this gate, a 413 burned six doomed POSTs and ~45s.
-        if let firstPass, generatedSubtitles == nil, aiName == nil, !firstPass.fatal {
+        // `retryForTranscript` (4.6.1): a title without a transcript after an on-device
+        // failure is still worth the second pass; the title it already has is kept below.
+        if let firstPass, generatedSubtitles == nil, aiName == nil || firstPass.retryForTranscript, !firstPass.fatal {
             LogManager.shared.log("🤖 Combined: ⚠️ First pass returned nothing — waiting 10s before second pass...", type: .error)
             try? await Task.sleep(nanoseconds: 10_000_000_000)
             let secondPass = await aiNamingService.generateSubtitlesAndName(
@@ -1470,7 +1486,7 @@ final class AppState {
                 progress: progressHandler
             )
             generatedSubtitles = secondPass.srt
-            aiName = secondPass.name
+            aiName = secondPass.name ?? aiName
             aiUsage.add(secondPass.usage)
             aiTotalLatencyMs += secondPass.latencyMs
             aiTotalAttempts += secondPass.attempts
@@ -1480,6 +1496,8 @@ final class AppState {
             aiSucceeded = aiSucceeded || secondPass.success
             if generatedSubtitles == nil && aiName == nil {
                 LogManager.shared.log("🤖 Combined: ❌ Both passes failed — proceeding with placeholder name and no transcript", type: .error)
+            } else if generatedSubtitles == nil {
+                LogManager.shared.log("🤖 Combined: ❌ Second pass brought no transcript — keeping the title (\(aiName?.count ?? 0) chars)", type: .error)
             } else {
                 LogManager.shared.log("🤖 Combined: ✅ Second pass succeeded - title \(aiName?.count ?? 0) chars, srtLen=\(generatedSubtitles?.count ?? 0)")
             }

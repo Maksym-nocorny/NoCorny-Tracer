@@ -27,6 +27,12 @@ struct NamingResult {
     /// partial transcript is visible in telemetry rather than silently shipping as complete.
     var totalChunks: Int = 1
     var failedChunks: Int = 0
+    /// True when the run has no transcript but a second pass could still produce one, even
+    /// though a title came back. Set only after an on-device failure the cloud could not
+    /// stand in for (4.6.1): the cloud can title a recording from its frames while every
+    /// transcript chunk fails, and the caller's second pass otherwise waits only for a run
+    /// that produced nothing at all.
+    var retryForTranscript: Bool = false
 }
 
 /// Internal (not private) so `planChunks` — a pure, deterministic function that is the

@@ -19,9 +19,10 @@ enum TranscriptionEngineKind: String, CaseIterable, Identifiable {
     /// On this Mac from 4.6.0: free, offline, and with the real turbo model fast enough that
     /// the cloud's remaining edge is about two to one. The cloud stays the default where the
     /// model cannot load at all (Intel), and the orchestrator covers the gaps for everyone
-    /// else: a recording made before the model has come down, or on a Mac that decodes
-    /// slower than real time, goes to the cloud on its own. A choice the user made earlier
-    /// is stored and wins over this.
+    /// else: a recording made before the model has come down, on a Mac that decodes slower
+    /// than real time, or one the model fails on (4.6.1) goes to the cloud on its own. A
+    /// choice the user made earlier is stored and wins over this, after the one-time move in
+    /// `localFirstMigration`.
     static var defaultForThisMac: TranscriptionEngineKind {
         defaultKind(appleSilicon: LocalWhisperEngine.isAvailable)
     }
@@ -29,6 +30,40 @@ enum TranscriptionEngineKind: String, CaseIterable, Identifiable {
     /// The pure half, so the policy is covered without asking the hardware.
     static func defaultKind(appleSilicon: Bool) -> TranscriptionEngineKind {
         appleSilicon ? .localWhisper : .cloudGemini
+    }
+
+    /// Set once `localFirstMigration` has been applied on this Mac, whatever it decided.
+    static let localFirstMigrationKey = "transcriptionEngineLocalFirstApplied"
+
+    /// The one-time move of a stored cloud choice to on-device (4.6.1).
+    ///
+    /// 4.6.0 made on-device the default only for a Mac that had never picked an engine, so a
+    /// "Cloud (Gemini)" stored earlier kept winning and those Macs stayed on the cloud. Most
+    /// of those choices date from when the on-device engine was the full 32-layer large-v3
+    /// and took minutes per recording; 4.6.0 fixed the speed, and from 4.6.1 the cloud is no
+    /// longer an alternative to the on-device engine but its backup
+    /// (`AINamingService.onDeviceFailureCodes`). Decision of 14.10.2026: transcribe on this
+    /// Mac first, the cloud is the fallback path.
+    ///
+    /// So a stored cloud engine moves to on-device exactly once, on Apple Silicon only. A
+    /// cloud engine picked AFTER this has run is a fresh, informed choice and stays. So is a
+    /// model removed in Settings: moving that user would show "On-device" with no model and
+    /// downloads switched off, and every recording would go to the cloud anyway.
+    ///
+    /// Returns the engine to store, or nil to leave the stored choice alone. The caller marks
+    /// the move as applied only on Apple Silicon, so settings carried over from an Intel Mac
+    /// (or a Rosetta run) still get it on the first native launch.
+    static func localFirstMigration(
+        stored: TranscriptionEngineKind?,
+        alreadyApplied: Bool,
+        appleSilicon: Bool,
+        modelRemovedByUser: Bool = false
+    ) -> TranscriptionEngineKind? {
+        guard !alreadyApplied, appleSilicon, !modelRemovedByUser else { return nil }
+        switch stored {
+        case .cloudGemini?, .cloudGroq?: return .localWhisper
+        case .localWhisper?, nil: return nil
+        }
     }
 
     /// How `/api/tokens/me` names this engine in `features.cloudEngines`. Spelled out

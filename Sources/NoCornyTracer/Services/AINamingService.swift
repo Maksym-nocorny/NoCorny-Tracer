@@ -67,6 +67,31 @@ final class AINamingService {
     /// that gave up is never asked again in the same run.
     static let handoffCodes: Set<String> = [LocalWhisperEngine.tooSlowCode]
 
+    /// Error codes that mean "this Mac could not transcribe the recording": the on-device
+    /// model is missing, would not load, or decoded nothing usable. From 4.6.1 the cloud is
+    /// the on-device engine's backup rather than its alternative (decision of 14.10.2026:
+    /// on this Mac first, the cloud as the fallback path), so these walk to a ready cloud
+    /// engine the way a hand-off does. 4.6.0 walked only on `local_too_slow`: a model that
+    /// failed to load left the recording without a transcript while a signed-in cloud
+    /// engine sat idle.
+    ///
+    /// Two local codes stay out on purpose: `cancelled` (somebody stopped the run) and
+    /// `audio_extraction_failed` (every engine reads the same extracted audio, so the cloud
+    /// would fail on it the same way). Spelled out like the refusal codes: this set and the
+    /// codes `LocalWhisperEngine` emits are one contract.
+    static let onDeviceFailureCodes: Set<String> = [
+        "local_model_missing",
+        "local_disk_full",
+        "local_model_corrupt",
+        "local_model_compiling",
+        "local_model_download_failed",
+        "local_tokenizer_unavailable",
+        "local_download_in_progress",
+        "local_model_load_failed",
+        "local_transcribe_failed",
+        "local_empty_transcript",
+    ]
+
     /// Injection point for tests.
     convenience init(engine: TranscriptionEngine, namingService: NamingService) {
         self.init(engines: [engine], preferring: engine.kind, namingService: namingService)
@@ -105,7 +130,15 @@ final class AINamingService {
     /// Whether an engine's answer is one the walk moves past rather than stops at.
     private static func walksOn(_ errorCode: String?) -> Bool {
         let code = errorCode ?? ""
-        return refusalCodes.contains(code) || handoffCodes.contains(code)
+        return refusalCodes.contains(code) || handoffCodes.contains(code) || onDeviceFailureCodes.contains(code)
+    }
+
+    /// How the walk's log line names the reason it moved on.
+    private static func walkReason(_ errorCode: String?) -> String {
+        let code = errorCode ?? ""
+        if handoffCodes.contains(code) { return "handed off" }
+        if onDeviceFailureCodes.contains(code) { return "failed on this Mac" }
+        return "refused"
     }
 
     /// True when the pipeline can run at all. Callers use it to skip the work up front
@@ -155,11 +188,15 @@ final class AINamingService {
         //
         // A hand-off (`handoffCodes`) walks the same way: the on-device engine found this
         // Mac too slow and a cloud engine was ready, so the cloud finishes the recording.
+        // So does an on-device failure (`onDeviceFailureCodes`, 4.6.1): the cloud is the
+        // on-device engine's backup.
         let handedOff = Self.handoffCodes.contains(result.errorCode ?? "")
+        let failedOnDevice = Self.onDeviceFailureCodes.contains(result.errorCode ?? "")
+        let onDeviceFailureFatal = result.fatal
         if result.srt == nil, Self.walksOn(result.errorCode) {
             var refusedBy = engine.kind
             for alternative in readyEngines where alternative.kind != engine.kind {
-                LogManager.shared.log("🎛️ Engine: \(refusedBy.rawValue) \(Self.handoffCodes.contains(result.errorCode ?? "") ? "handed off" : "refused") (\(result.errorCode ?? "unknown")), falling back to \(alternative.kind.rawValue)")
+                LogManager.shared.log("🎛️ Engine: \(refusedBy.rawValue) \(Self.walkReason(result.errorCode)) (\(result.errorCode ?? "unknown")), falling back to \(alternative.kind.rawValue)")
                 // A different engine starts from nothing, and the bar has to say so.
                 progress(TranscriptionProgress(completedChunks: 0, totalChunks: 0, fraction: 0))
                 // The on-device engine reached THIS way is the last resort: every cloud
@@ -170,6 +207,32 @@ final class AINamingService {
                 if result.srt != nil { break }
                 guard Self.walksOn(result.errorCode) else { break }
                 refusedBy = alternative.kind
+            }
+        }
+
+        // An on-device failure the cloud could not stand in for. Whether a second pass is
+        // worth it depends on both sides: the on-device run is retryable when its failure was
+        // (a cold compile that timed out, `local_model_compiling`, is usually warm ten seconds
+        // later), the cloud when it failed for any reason but a refusal (a refusal repeats).
+        // Without this, a plan refusal (fatal) would end for good a recording 4.6.0 retried on
+        // this Mac, and a parked engine answering "disabled" (not fatal) would buy a second
+        // full decode of a recording the Mac had already failed on for good.
+        var retryForTranscript = false
+        if failedOnDevice, result.srt == nil {
+            if result.success, result.errorCode == nil {
+                // The cloud's honest "nobody spoke here" is an answer: a second pass would
+                // decode the same audio on this Mac again and pay for the same call.
+                result.fatal = true
+            } else {
+                let cloudRetryable = !result.fatal && !Self.refusalCodes.contains(result.errorCode ?? "")
+                result.fatal = onDeviceFailureFatal && !cloudRetryable
+                // The cloud can title a recording from its frames while every transcript chunk
+                // fails, and the caller's second pass otherwise waits only for a run with no
+                // title at all - so the missing transcript has to be asked for in so many words.
+                retryForTranscript = !result.fatal
+                // That fallback title reports success, which would close the row as done with
+                // no subtitles and no Retry. Here it is a failed transcription that kept a title.
+                result.success = false
             }
         }
 
@@ -226,7 +289,8 @@ final class AINamingService {
             errorCode: result.errorCode,
             fatal: result.fatal,
             totalChunks: result.totalChunks,
-            failedChunks: result.failedChunks
+            failedChunks: result.failedChunks,
+            retryForTranscript: retryForTranscript
         )
     }
 

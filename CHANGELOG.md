@@ -1,5 +1,11 @@
 # Changelog
 
+## [4.6.1] - 2026-10-14
+### Changed
+- **Transcription runs on this Mac first, and the cloud is its backup.** A Mac that had picked "Cloud (Gemini)" before 4.6.0 kept it, because 4.6.0 changed the default only for Macs that had never chosen. Most of those choices date from when the on-device model took minutes per recording; 4.6.0 fixed the speed. On Apple Silicon a stored cloud choice now moves to "On-device (Whisper)" once, on the first launch of 4.6.1. Picking Gemini again in Settings after that is kept as before. Intel Macs keep the cloud, and so does a Mac where the on-device model was removed in Settings.
+### Fixed
+- **A recording the on-device model fails on is finished by the cloud.** 4.6.0 handed a recording to the cloud only when this Mac was too slow. When the model was missing, would not load, timed out compiling, or decoded nothing usable, the recording was left without a transcript while you were signed in. Now any of these goes to the cloud. A cancelled run and a recording whose audio cannot be read stay on this Mac, and so does everything when you are signed out. If the cloud cannot take it either, the recording still gets its second pass whenever one side could succeed on a retry, including when the cloud managed a title but no subtitles.
+
 ## [4.6.0] - 2026-10-10
 ### Changed
 - **On-device transcription is about four times faster, with the same text.** The model that shipped as "turbo" since 3.17.0 was the full Whisper large-v3 with a 32-layer decoder, 3 GB on disk; WhisperKit's "_turbo" suffix means its own compressed build, not OpenAI's turbo. Tracer now loads OpenAI's actual large-v3-turbo (4 decoder layers, 1.6 GB). Measured on the same recording, see the release notes for the numbers. The new model downloads in the background on the first launch after the update, the old 3 GB folder is removed once it has landed, and recordings made in between still transcribe on the old model.
