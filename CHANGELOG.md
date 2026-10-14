@@ -2,7 +2,7 @@
 
 ## [4.6.2] - 2026-10-14
 ### Fixed
-- **The first transcript after an update no longer waits for the model to be prepared.** macOS keeps the on-device model compiled for the Neural Engine in its own cache and drops that copy after a macOS or Tracer update. Tracer rebuilt it in the background, but only ten minutes after launch, so a take recorded right after "relaunch to update" paid the rebuild itself: about a minute on "Preparing model..." on a recent Mac. When the cache is known to be cold (after an app or macOS update, a model change, or on a first load), the rebuild now starts five seconds after launch and runs while you record. A cache that is only idle keeps the ten-minute wait.
+- **The first transcript after an update no longer waits for the model to be prepared.** macOS keeps the on-device model compiled for the Neural Engine in its own cache and drops that copy after a macOS update. Tracer rebuilt it in the background, but only ten minutes after launch, so a take recorded right after launching paid the rebuild itself: about a minute on "Preparing model..." on a recent Mac. When the cache may be cold (after a macOS update, a model change, on a first load, or after a Tracer update, where a check costs about a second if the cache is still there), the rebuild now starts five seconds after launch and runs while you record. A cache that is only idle keeps the ten-minute wait.
 
 ## [4.6.1] - 2026-10-14
 ### Changed
