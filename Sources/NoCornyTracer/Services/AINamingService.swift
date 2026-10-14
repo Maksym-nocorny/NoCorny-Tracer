@@ -219,9 +219,10 @@ final class AINamingService {
         // full decode of a recording the Mac had already failed on for good.
         var retryForTranscript = false
         if failedOnDevice, result.srt == nil {
-            if result.success, result.errorCode == nil {
+            if result.errorCode == "no_speech" || (result.success && result.errorCode == nil) {
                 // The cloud's honest "nobody spoke here" is an answer: a second pass would
-                // decode the same audio on this Mac again and pay for the same call.
+                // decode the same audio on this Mac again and pay for the same call. The
+                // single-call path says it with no error code, the chunked one as `no_speech`.
                 result.fatal = true
             } else {
                 let cloudRetryable = !result.fatal && !Self.refusalCodes.contains(result.errorCode ?? "")

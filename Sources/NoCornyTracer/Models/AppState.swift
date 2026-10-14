@@ -2214,7 +2214,11 @@ final class AppState {
         // processRecording uses.
         let id = recording.id
         let fileURL = recording.fileURL
-        let placeholderTitle = Self.placeholderTitle(for: recording.createdAt)
+        // The title to fall back on when the retry produces none. A title an earlier run
+        // already earned wins over the timestamp: from 4.6.1 a row can fail its transcript
+        // and still keep the cloud's title, and a retry whose naming call fails must not
+        // overwrite that title on the web with the placeholder.
+        let placeholderTitle = recording.aiGeneratedName ?? Self.placeholderTitle(for: recording.createdAt)
         let slug = recording.tracerSlug
         let uploadFolder = recording.dropboxFolder
         Task {

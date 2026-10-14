@@ -251,6 +251,20 @@ final class LocalFirstTests: XCTestCase {
         XCTAssertFalse(result.retryForTranscript)
     }
 
+    /// The chunked path says the same thing as `no_speech`, and it is just as final: a second
+    /// pass would upload every chunk again for the same answer.
+    func testAChunkedNoSpeechFromTheCloudEndsTheRunToo() async {
+        let local = ScriptedEngine.failing(.localWhisper, code: "local_model_compiling", fatal: false)
+        let gemini = ScriptedEngine(.cloudGemini, answers: [EngineResult(
+            srt: nil, name: "Music only", usage: .zero, model: "cloud",
+            latencyMs: 0, attempts: 1, success: true, errorCode: "no_speech", fatal: true
+        )])
+        let result = await service([local, gemini], preferring: .localWhisper)
+            .generateSubtitlesAndName(for: video)
+        XCTAssertTrue(result.fatal)
+        XCTAssertFalse(result.retryForTranscript)
+    }
+
     /// The flag belongs to the on-device walk only: a cloud-first run that got a title and no
     /// transcript behaves exactly as before 4.6.1.
     func testACloudFirstRunNeverAsksForTheTranscriptRetry() async {
